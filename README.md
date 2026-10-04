@@ -70,12 +70,13 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 --socket FILE:/dev/ttyS0,b115200,raw      # a physical UART / Serial-over-LAN device
 --socket UNIX-CONNECT:/run/vm/guest.sock  # a VM host-end chardev socket
 --socket VSOCK-CONNECT:3:9000             # vsock (cid:port)
---socket WS-LISTEN:0.0.0.0:8080           # websocket
+--socket WS-LISTEN:0.0.0.0:8080           # websocket (insecure)
+--socket WSS-CONNECT:host:443             # websocket-secure (TLS) — see Crypto
 --socket EXEC:'ssh jump nc target 23'     # ride the link over ANY program's stdio
 --socket STDIO                            # ride stdio
 ```
 
-Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix, `tokio-serial`, `tokio-vsock`, `ws_stream_tungstenite`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe.
+Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe. `WSS` (and, situationally, `WEBTRANSPORT`) are the *secure* transports (see *Crypto*) — the only crypto-bearing L1 backends built in, because they mandate a complete, self-contained layering.
 
 ### L2 — PPP, in userspace
 
@@ -106,8 +107,8 @@ Because L2 is PPP terminating into a kernel IP interface, the link is itself a *
 
 The two ends have **different** process constraints:
 
-- **`pdb` (client-side) is necessarily multiprocess.** Each `pdb exec …` you type is a distinct OS process; `central` is a separate singleton process; they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
-- **`pdbd` (daemon-side) is multiworker, not necessarily multiprocess.** Its hard requirement is a **connection owner per tunnel** (something holds the socket fd and drives it) plus **`execve` children**. The `execve` children are necessarily separate processes (`execve` replaces the image); the *connection owners* need not be — they may be `async` tasks, threads, or processes. Process-per-tunnel is a **choice for crash/exploit isolation** (a faulting tunnel can't corrupt the core — `sshd`-privsep's rationale), not an architectural requirement. An alternative-language `pdbd` may run a single-process worker pool — and if it instead runs a *multiprocess* pool, that core↔worker boundary becomes public wire (see *Control plane*).
+- **`pdb` (client-side) requires multiprocess.** Each `pdb exec …` you type is a distinct OS process; `central` is a separate singleton process; they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
+- **`pdbd` (daemon-side) is multiworker and does not require multiprocess.** Its hard requirement is a **connection owner per tunnel** (something holds the socket fd and drives it) plus **`execve` children**. The `execve` children do run as separate processes (`execve` replaces the image); the *connection owners* need not be — they may be `async` tasks, threads, or processes. Process-per-tunnel is a **choice for crash/exploit isolation** (a faulting tunnel can't corrupt the core — `sshd`-privsep's rationale), not an architectural requirement. An alternative-language `pdbd` may run a single-process worker pool — and if it instead runs a *multiprocess* pool, that core↔worker boundary becomes public wire (see *Control plane*).
 
 Common to both ends: a small, long-lived **control-plane core** owns the link and the control channel, while volatile per-connection work lives in disposable workers (`sshd`'s process-per-connection, `adbd`'s per-stream model). Concurrency within a worker is `async` (tokio); isolation *between* tunnels is whatever boundary the impl chose.
 
@@ -122,20 +123,28 @@ flowchart LR
     subgraph client["client-side"]
         E1["pdb (ephemeral)"]
         E2["pdb (ephemeral)"]
-        C["<b>pdb central</b> — concept, not a command<br/>singleton link-owner<br/>exits when tunnel table → 0"]
-        E1 -->|local IPC| C
-        E2 -->|local IPC| C
+        CC["pdb (central)"]
+        E1 -->|local IPC| CC
+        E2 -->|local IPC| CC
     end
     subgraph daemon["daemon-side — always-on"]
-        D["<b>pdbd</b><br/>persistent; idles waiting for a peer"]
+        DC["pdbd (central)"]
+        W1["pdbd (worker)"]
+        W2["pdbd (worker)"]
+        DC -->|local IPC| W1
+        DC -->|local IPC| W2
     end
-    C <==>|"PPP link over the L1 pipe<br/>(assumed unreliable)"| D
+    CC <==>|control channel| DC
+    E1 <-.->|data tunnel| W1
+    CC <-.->|standing forward| W2
 ```
 
-- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. It is the permanent endpoint.
-- **`pdb`** — the client, in **two modes**. *`pdb central` is a concept/role, never a command you type:*
-  - **ephemeral** — the per-command invocations you actually run (`pdb exec …`, `pdb forward …`).
-  - **central** — a **singleton** client-side process that owns the PPP link. It exists so the expensive, fragile link is established *once* and amortized, never rebuilt per command.
+Heavy line = the single **control channel** (RPC); dotted = per-command **data tunnels**. **Every one of them is a separate kernel-TCP connection multiplexed over the one PPP link.** The **centrals** own the link and the control channel; the **connection owners** — an ephemeral (or central, for a standing forward) on the client, a worker on the daemon — each hold their own tunnel's socket fd, so bulk data never flows *through* a central. The parenthesised `(central)` is a **role**, never a command you type.
+
+- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. The permanent endpoint.
+- **`pdb`** — the client, in **two roles**:
+  - **(ephemeral)** — the per-command invocations you actually run (`pdb exec …`, `pdb forward …`), each the connection owner of its own tunnel.
+  - **(central)** — a **singleton** client-side process that owns the PPP link and the control channel, so the expensive, fragile link is established *once* and amortized, never rebuilt per command.
 
 **Orchestration.** You only ever invoke an *ephemeral* `pdb`. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches to it. Every ephemeral shares that single central. There is no `pdb central` command; central is spawned, discovered, and reaped implicitly.
 
@@ -145,22 +154,25 @@ flowchart LR
 
 ### Tunnel ownership
 
-**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP. The difference is not a layer; it's **which process holds the endpoint socket:**
+**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP. The difference is not a layer; it's **which process holds each endpoint socket.** Ownership is symmetric: every tunnel has a **connection owner at each end**, and the centrals stay out of the data path.
 
 ```mermaid
 flowchart TB
-    C["pdb central"]
-    D["pdbd"]
-    C <===>|"control channel — one TCP conn"| D
-    C <===>|"tunnel: exec — pid = ephemeral"| D
-    C <===>|"tunnel: forward — pid = central"| D
-    G["some app"] <-. "general-purpose PPP network (TCP/UDP)<br/>kernel-forwarded, NO pdbd socket" .-> R["some remote"]
+    CC["pdb (central)"]
+    DC["pdbd (central)"]
+    E["pdb (ephemeral)"]
+    W1["pdbd (worker)"]
+    W2["pdbd (worker)"]
+    CC <==>|control channel| DC
+    E <-->|"tunnel: exec — owners: ephemeral ↔ worker"| W1
+    CC <-->|"tunnel: forward — owners: central ↔ worker"| W2
+    G["some app"] <-. "general-purpose PPP network — kernel-forwarded, no pdbd socket" .-> R["some remote"]
 ```
 
-- A **debug tunnel** is a connection `pdbd` holds the socket fd for (it `accept`ed or `connect`ed it, tagged it a tunnel-id). `pdbd` tracks exactly these.
-- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdbd` socket** — it never enters `pdbd`'s table. It shows up only in the *kernel's* view (`ss` / `conntrack`).
+- A **debug tunnel** has a tunnel-id and a connection owner at each end: the daemon-side **worker** that `accept`ed/`connect`ed it, and a client-side owner — the **ephemeral** for an `exec`/`shell` tunnel, or **central** for a standing `forward`/`bind`. Each central keeps the *tunnel table* (for control + refcount); the owner holds the *fd*.
+- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdbd` socket** — it never enters a tunnel table. It shows up only in the *kernel's* view (`ss` / `conntrack`).
 
-Ownership needs no packet inspection: it's just "which fds does `pdbd` hold." The kernel does the TCP for everything regardless.
+Ownership needs no packet inspection: it's just which process holds the fd. The kernel does the TCP for everything regardless.
 
 **Who holds the fd, and how it gets there.** The owning worker (a `pdbd` conn-worker, or a client-side ephemeral for its own `exec`) **opens its tunnel socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` and holds the fd itself. Nothing passes an fd across a boundary, which keeps every boundary portable and language-neutral: a cross-language or cross-host worker cannot receive a Unix `SCM_RIGHTS` descriptor. **fd-passing** (`SCM_RIGHTS`) is kept only as an **optional same-host optimization** — when central already holds a listening socket and both ends are co-located Unix processes — and is never part of the wire contract.
 
@@ -250,7 +262,56 @@ A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to
 
 ## Crypto
 
-**No crypto on trusted channels** (local serial / vsock / unix socket) — on a trusted point-to-point pipe it is pure overhead. Crypto/auth is a **pluggable transport-layer concern**: absent on trusted pipes, and expected (e.g. mutual-TLS) for networked transports. `pdbd` is therefore *not* a drop-in `ssh`-over-hostile-network replacement until that slot is filled; out of the box it unifies **trusted-channel** remote exec.
+`pdbd` has **no crypto layer of its own**, by design. Security is either a **built-in secure *transport*** — one with a complete, self-contained layering the tool can own end-to-end — or **external wrapping** of an insecure transport. It is never a pdbd-implemented "encrypt my arbitrary L1" feature.
+
+**Why the line falls between WSS and OpenSSL.** A built-in crypto-bearing transport has to be *fully specified*, so the tool knows exactly what it plugs into. **Websocket-secure mandates its whole stack** — WebSocket (L7) over TLS over TCP (L4) — a complete, standard, self-contained secure byte-stream with a defined handshake. **OpenSSL/TLS generically does not** — it is a general-purpose secure socket, usually over TCP but bound to no particular lower layer, with open-ended cert/cipher/verify policy. Owning that inside pdbd means owning all of that policy surface, and it has no single obvious shape. So **WSS (and, situationally, WebTransport) are built in; everything else secures externally.**
+
+### Built-in — Websocket-secure (`WSS`)
+
+The primary secure transport. TLS + cert verification come from the WS stack (`tokio-tungstenite` + `rustls`); pdbd just selects it as an L1:
+
+```bash
+# daemon
+pdbd --socket WSS-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
+# client
+pdb  --socket WSS-CONNECT:gateway.example:443  exec -- uname -a
+```
+
+(Running pdbd's PPP/kernel-TCP over a TCP-based WSS is TCP-in-TCP — the standard caveat for any TCP-based L1, accepted for the uniform IP-link model; see *L1*.)
+
+### Built-in — WebTransport (`WEBTRANSPORT`, situational)
+
+WebTransport rides HTTP/3 = QUIC = **UDP**, so it needs UDP reachability and a younger Rust stack (`wtransport` on `quinn`). It is the secure transport for a QUIC-capable network, **not** a universal baseline — offered alongside WSS, never in place of it:
+
+```bash
+pdbd --socket WEBTRANSPORT-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
+pdb  --socket WEBTRANSPORT-CONNECT:gateway.example:443  exec -- uname -a
+```
+
+### External — secure with OpenSSL (not built in)
+
+For a plain TLS pipe, wrap the transport with the `EXEC:` escape hatch — `socat` or the `openssl` binary terminates TLS and hands pdbd a plaintext stdio pipe, so pdbd carries **no TLS code**:
+
+```bash
+# via socat OPENSSL
+pdbd --socket EXEC:'socat - OPENSSL-LISTEN:4433,reuseaddr,cert=server.pem,key=server.key,verify=1'
+pdb  --socket EXEC:'socat - OPENSSL:gateway.example:4433,verify=1'  exec -- uname -a
+
+# via the openssl binary (s_server / s_client)
+pdbd --socket EXEC:'openssl s_server -quiet -accept 4433 -cert server.pem -key server.key'
+pdb  --socket EXEC:'openssl s_client -quiet -connect gateway.example:4433'  exec -- uname -a
+```
+
+### Baseline — insecure, over a trusted channel
+
+On a trusted point-to-point pipe (local serial, `vsock`, unix socket) crypto is pure overhead and is simply omitted — the canonical `pdbd` deployment:
+
+```bash
+pdbd --socket FILE:/dev/ttyS0,b115200,raw
+pdb  --socket FILE:/dev/ttyUSB0,b115200,raw  exec -- uname -a
+```
+
+So out of the box `pdbd` secures a WAN hop with **WSS / WebTransport**, secures an arbitrary pipe with **external OpenSSL via `EXEC:`**, and runs **bare on a trusted channel** — without ever growing a general-purpose crypto layer.
 
 ---
 
@@ -321,7 +382,8 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 - Serial: [`tokio-serial`](https://crates.io/crates/tokio-serial) `5.5.0` (async, over [`mio-serial`](https://crates.io/crates/mio-serial) `5.0.7` / [`serialport`](https://crates.io/crates/serialport) `4.10.1`) — the v0 transport.
 - vsock: [`tokio-vsock`](https://crates.io/crates/tokio-vsock) `0.7.2` — the VM-guest transport.
-- WebSocket: [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` — a WebSocket that presents as an `AsyncRead`/`AsyncWrite`, so it plugs in as just another L1 pipe.
+- WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*).
+- WebTransport (`webtransport`, situational secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; needs a UDP substrate, so it is offered alongside `wss`, not as a baseline.
 
 **Kernel plumbing:**
 
