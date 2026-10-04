@@ -100,17 +100,16 @@ Because L2 is PPP terminating into a kernel IP interface, the link is itself a *
 `pdbd` is, above the link, an RPC/debug agent. Commands: `exec`, `shell`, `forward`, `bind`, `socat`, `drop`, `list`.
 
 - **`exec` vs `shell`.** `exec` is a structured `execve(argv[])` with stdio tunneled and a real exit code — *no shell, no PTY* (the automation-friendly primitive, like `adb exec-out`). `shell` allocates a PTY (`adb shell` / `ssh -t`). Each invocation is a *fresh, isolated process*, which is what eliminates the dirty-state problem a single shared console would have.
-- **One control channel, one TCP tunnel per command.** The control channel is a single connection carrying lightweight RPCs (start / drop / list). Each command gets its **own** TCP tunnel — a separate kernel TCP connection — *not* multiplexed streams on one connection. On a lossy link this deliberately avoids HTTP/2-style cross-stream head-of-line blocking (the QUIC-vs-HTTP/2 lesson): a stalled tunnel stalls only itself.
+- **Control plane vs data plane — two different multiplexers.** The **control channel** carries lightweight RPCs (start / drop / list / events); its many concurrent logical streams are multiplexed by the **RPC framework itself** (see *Control plane*), never hand-rolled. Each command's **bulk** gets its **own** TCP tunnel — a separate kernel TCP connection, multiplexed by the **kernel** (4-tuple), *not* streams on one connection. Splitting the two is deliberate: bulk on per-connection kernel TCP avoids the HTTP/2-style cross-stream head-of-line blocking (the QUIC-vs-HTTP/2 lesson) that would couple unrelated tunnels on a lossy link, while the tiny control messages lose nothing to the RPC lib's stream mux.
 
 ### Process model
 
-`pdbd` is **multiprocess**, modeled on `sshd`/`adbd`:
+The two ends have **different** process constraints:
 
-- a **control-plane core** owns the single control channel and the link;
-- **each debug tunnel is serviced concurrently and in isolation** — the daemon fans out per-tunnel work across worker processes (`sshd`'s process-per-connection; `adbd`'s per-stream model), so one tunnel can never stall or corrupt another, and a crashing tunnel can't take the core down;
-- **`exec`/`shell` run as child processes** — a real `execve` per invocation, which is the isolation that makes every command fresh-state (no shared-shell carryover).
+- **`pdb` (client-side) is necessarily multiprocess.** Each `pdb exec …` you type is a distinct OS process; `central` is a separate singleton process; they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
+- **`pdbd` (daemon-side) is multiworker, not necessarily multiprocess.** Its hard requirement is a **connection owner per tunnel** (something holds the socket fd and drives it) plus **`execve` children**. The `execve` children are necessarily separate processes (`execve` replaces the image); the *connection owners* need not be — they may be `async` tasks, threads, or processes. Process-per-tunnel is a **choice for crash/exploit isolation** (a faulting tunnel can't corrupt the core — `sshd`-privsep's rationale), not an architectural requirement. An alternative-language `pdbd` may run a single-process worker pool — and if it instead runs a *multiprocess* pool, that core↔worker boundary becomes public wire (see *Control plane*).
 
-Concurrency within a process is `async` (tokio); isolation *between* tunnels is a process boundary. The split is deliberate: the core stays small and long-lived, while the volatile per-connection work lives in disposable workers.
+Common to both ends: a small, long-lived **control-plane core** owns the link and the control channel, while volatile per-connection work lives in disposable workers (`sshd`'s process-per-connection, `adbd`'s per-stream model). Concurrency within a worker is `async` (tokio); isolation *between* tunnels is whatever boundary the impl chose.
 
 ---
 
@@ -140,7 +139,7 @@ flowchart LR
 
 **Orchestration.** You only ever invoke an *ephemeral* `pdb`. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches to it. Every ephemeral shares that single central. There is no `pdb central` command; central is spawned, discovered, and reaped implicitly.
 
-**IPC.** ephemeral ↔ central speak over a **local IPC socket** (a unix domain socket). central owns the one PPP link and the control channel to `pdbd`, and **multiplexes every ephemeral's requests onto it**; an ephemeral's `exec`/`shell` stdio streams ephemeral ↔ central ↔ tunnel ↔ `pdbd`. The ephemeral is a thin local client; central is where the link, the control channel, and the tunnel table live.
+**IPC.** ephemeral ↔ central speak over a **local IPC socket** (a unix domain socket). central owns the one PPP link and the control channel to `pdbd`; it is an **RPC router, not a byte relay** — it forwards each ephemeral's control calls onto the link and keeps the tunnel table, but stays *out* of the bulk data path. An ephemeral's own tunnel socket is owned by the ephemeral (see *Tunnel ownership*), so `exec`/`shell` bytes flow ephemeral ↔ `pdbd`-worker directly over kernel TCP, never through central. The ephemeral is a thin local client; central is where the link, the control channel, and the tunnel table live. The three control hops and the wire standard they share are detailed under *Control plane*.
 
 **Lifecycle.** central's lifetime is **refcounted to the tunnel table — not to the number of ephemerals.** It exits when the active-tunnel count drops to zero, which brings the link down. So a standing `forward`/`bind` (a tunnel *owned by central*) keeps central alive after the ephemeral that launched it has exited, while an `exec`/`shell` tunnel dies with its ephemeral. (An idle-linger grace before exit is an option, to keep a warm link across bursts of activity.)
 
@@ -162,6 +161,8 @@ flowchart TB
 - **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdbd` socket** — it never enters `pdbd`'s table. It shows up only in the *kernel's* view (`ss` / `conntrack`).
 
 Ownership needs no packet inspection: it's just "which fds does `pdbd` hold." The kernel does the TCP for everything regardless.
+
+**Who holds the fd, and how it gets there.** The owning worker (a `pdbd` conn-worker, or a client-side ephemeral for its own `exec`) **opens its tunnel socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` and holds the fd itself. Nothing passes an fd across a boundary, which keeps every boundary portable and language-neutral: a cross-language or cross-host worker cannot receive a Unix `SCM_RIGHTS` descriptor. **fd-passing** (`SCM_RIGHTS`) is kept only as an **optional same-host optimization** — when central already holds a listening socket and both ends are co-located Unix processes — and is never part of the wire contract.
 
 ### Cleanup — reactive first, `drop` as a convenience
 
@@ -188,6 +189,54 @@ sequenceDiagram
 ```
 
 Two native mechanisms do the heavy lifting: **LCP echo** detects the dead/half-open peer, and a **returning peer's Configure-Request forces renegotiation** even if the survivor hasn't timed out yet (RFC 1661 `RCR`-in-`Opened`). **PPP heals the *link*; `pdbd` heals the *session*** — it hooks PPP's layer-down event to reap orphaned children, firewall holes, and dead connections, so the returning `central` meets a clean daemon.
+
+---
+
+## Control plane — RPC, muxing & interoperability
+
+The data plane is multiplexed by the **kernel** (per-tunnel 4-tuple) and `ppproto` (frames on the pipe) — settled, and no userspace muxer is pulled for it. What genuinely needs multiplexing is the **control plane**, which is **three segments**:
+
+1. **pdb ephemeral → pdb central** — local IPC (UDS)
+2. **pdb central → pdbd central** — over the PPP link (kernel TCP over the TUN)
+3. **pdbd central → pdbd conn-worker** — local IPC (UDS), *present only when the daemon runs a multiprocess worker pool*
+
+Each carries many small concurrent logical streams (start-exec, tunnel-opened, exit-status, list, drop, keepalive). None of it is hand-rolled: the multiplexer is the **RPC framework's own**.
+
+### The interop requirement — a universal wire, not a Rust API
+
+`pdbd`/`pdb` are a *reference* implementation. The wire must be a **standardized, language-neutral protocol with a published schema**, so independent reimplementations — `gopdbd`/`gopdb`, `jpdbd`/`jpdb`, `cpdbd`/`cpdb` — are **plug-and-play with each other and with this one**. A `cpdb` ephemeral controlling a `gopdb` central talking to a `jpdbd` central driving a Rust `pdbd` conn-worker must *just work*. That rules out any language-private RPC (e.g. a Rust-serde framing): the contract is the wire, and the wire is a standard.
+
+This makes **segment 3 a public interface, conditionally**: a daemon that runs a multiprocess worker pool **must** speak the standard across it (so a `jpdbd` central and a Rust conn-worker interoperate); a single-process daemon has no such wire and legitimately opts out. The clean guarantee is **one standard service, with central and pdbd-central as routers that forward it** — then the worker boundary speaks the identical service for free.
+
+### The choice
+
+Two protocols satisfy "international standard + built-in mux + first-party implementations in every target language":
+
+| Protocol | Wire | Mux | Multi-language |
+| --- | --- | --- | --- |
+| **gRPC** *(recommended)* | HTTP/2 + protobuf (CNCF) | **HTTP/2 streams — RFC 9113** | grpc-go, grpc-java, grpc C/C++ core, Python, C#, … — first-party; interop is its whole purpose |
+| **Cap'n Proto RPC** *(alternative)* | Cap'n Proto wire + `rpc.capnp` | question/answer-id mux + promise pipelining (in-spec) | C++, Rust, Go, Java, Python |
+
+**gRPC is the recommendation** — cross-language interop is the solved, boring case, and its mux (HTTP/2) is itself an IETF RFC. Cap'n Proto is the credible alternative (promise pipelining cuts round-trips on a high-latency serial link, and it is lighter than HTTP/2), with thinner multi-language RPC-layer maturity. A Rust-only RPC (`tarpc` et al.) is **disqualified** by the interop requirement, whatever its ergonomics.
+
+> This is why gRPC/`tonic` is *not* in the rejected pile for the control plane. The HTTP/2 head-of-line concern applies only to carrying **tunnel bulk** — many high-throughput streams on one connection — which is exactly what the per-tunnel kernel-TCP design keeps *off* the RPC. Tiny control messages lose nothing to HTTP/2.
+
+### The contract is a versioned schema
+
+The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`) defining the service — `Exec`/`Shell`/`Forward`/`Bind`/`List`/`Drop`, message types, streaming semantics. Every implementation codegens from it; it is a **published interface contract consumers depend on at a version**, not a transient file.
+
+### Two standardized layers, stacked
+
+The "control channel" is really two already-international standards on top of each other:
+
+1. **PPP link control** — LCP/IPCP (`ppproto`), **RFC 1661 / 1332**: establishes the link, negotiates addresses, carries liveness.
+2. **Application RPC** — gRPC + `pdbd.proto`, over kernel TCP, which exists only *after* IPCP brings up IP (so the RPC always rides a reliable stream).
+
+The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/TCP → RFC-9113 HTTP/2 → protobuf. A reimplementer has a spec for every layer.
+
+### Why the data plane needs no muxer at all
+
+A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so each tunnel is just another kernel socket, demuxed by 4-tuple. The only scenario a data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a mux buys nothing the kernel does not already give.
 
 ---
 
@@ -230,6 +279,27 @@ No single tool does what `pdbd` does — **transport-agnostic remote exec *and* 
 
 - [`websocat`](https://docs.rs/websocat) / `socat` — socat-style address specifiers; the dialect reference for `pdbd`'s `--socket` L1 addresses (grammar *reimplemented*, never copied from GPL `socat`).
 
+**Control-plane wire & mux standards** — what the interop requirement draws on:
+
+- **gRPC** (HTTP/2 + protobuf, CNCF) / **Cap'n Proto RPC** — the two language-neutral RPC standards with built-in stream multiplexing and first-party implementations across Go/Java/C++/Python/C#/Rust; the interop contract (see *Control plane*).
+- **HTTP/2 — RFC 9113** / **QUIC** ([`quinn`](https://docs.rs/quinn)) — the mux + connection-migration reference designs. QUIC is the honest alternative to the whole PPP-over-pipe stack (mux + migration + reliability, in userspace over UDP); **rejected** because it requires a UDP datagram substrate and `pdbd`'s premise is an *arbitrary, possibly non-IP byte pipe* (serial, pty, a command's stdio) — you can run PPP over `EXEC:'ssh …'`, you cannot run QUIC over it.
+- [`yamux`](https://docs.rs/yamux) (libp2p) — a mature userspace stream multiplexer; the thing we **don't** pull, because the kernel IP layer makes it unnecessary.
+
+**Multiplexing daemon & privilege separation** — the process-model prior art:
+
+- **`adb`** — one binary is client *and* server, binds `localhost:5037`, **auto-starts the server if absent**, refcounts, and is "one giant multiplexing loop." The direct model for `pdb central`'s singleton / auto-spawn / refcount lifecycle.
+- **OpenSSH privilege separation** — a privileged monitor + unprivileged, disposable per-connection children with a narrow op-set across the boundary; the model for the core-vs-worker split.
+
+**Roaming / recovery from a dead peer:**
+
+- **Mosh / SSP** — stateless UDP roaming (highest-seq authentic packet re-targets the peer; ≤3 s heartbeat; survives IP/NAT change). The comparison point for our LCP-echo + RCR-in-Opened recovery — Mosh does it at L4 with sequence numbers; we do it at L2 with PPP while kernel TCP tunnels ride on top.
+- **QUIC connection migration** — connection-IDs route across a changed 5-tuple; the same recovery goal solved at the transport layer (and UDP-bound, as above).
+
+**Port-forward / tunnel fleet** — the `forward`/`bind` prior art:
+
+- [`russh`](https://docs.rs/russh) (Rust) — exposes `direct-tcpip`/`forward-tcpip` + unix-socket forwarding; the embeddable-SSH reference for the forwarding primitives.
+- **rathole** (Rust, 14 k★), **bore** (Rust, 11 k★), **chisel** (Go, 17 k★, tunnel-over-HTTP), **frp** (Go, 110 k★) — the NAT-traversal tunnel fleet; prior art for port-forward UX and reverse tunnels (none transport-agnostic the way `pdbd` aims to be).
+
 **The tools this unifies:** `adb`, `ssh`, `qemu-guest-agent`, `docker exec` — each solves one transport or one capability; `pdbd` is the single endpoint that spans them.
 
 ---
@@ -257,7 +327,24 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 - [`rtnetlink`](https://crates.io/crates/rtnetlink) `0.23.0` — program routes/addresses on the TUN from the IPCP-negotiated values, without shelling out to `ip`.
 
-**Considered and rejected:** [`tonic`](https://crates.io/crates/tonic) `0.14.6` (gRPC) — `pdbd`'s control protocol is a thin framed message set over one channel, with per-command TCP tunnels carrying the bulk; gRPC/HTTP-2 would re-introduce the head-of-line coupling the per-tunnel design exists to avoid.
+**Control plane — RPC (language-neutral; see *Control plane*):**
+
+- [`tonic`](https://crates.io/crates/tonic) `0.14.6` — gRPC/HTTP-2; **recommended** for the three control segments. Its HTTP/2 stream mux *is* the control-plane multiplexer, and the wire is a CNCF standard with first-party implementations in every target language.
+- [`capnp-rpc`](https://crates.io/crates/capnp-rpc) `0.27.0` — Cap'n Proto RPC; the alternative (promise pipelining, lighter than HTTP/2).
+
+**Process model (daemon workers + exec):**
+
+- [`nix`](https://crates.io/crates/nix) `0.31.3` — `fork`/`execve`/`waitpid` and the raw syscalls the worker + exec model needs.
+- PTY (for `shell`): [`portable-pty`](https://crates.io/crates/portable-pty) `0.9.0` (wezterm, cross-platform, mature) or [`pty-process`](https://crates.io/crates/pty-process) `0.5.3` (tokio-native).
+- [`interprocess`](https://crates.io/crates/interprocess) `2.4.4` — async cross-platform local IPC (UDS + named pipes) for the ephemeral↔central socket, if not reusing the RPC lib's own UDS transport.
+- [`sendfd`](https://crates.io/crates/sendfd) `0.4.5` / [`anchovy`](https://crates.io/crates/anchovy) `0.4.1` (async) / [`command-fds`](https://crates.io/crates/command-fds) `0.3.3` — `SCM_RIGHTS` fd-passing, for the **optional same-host** tunnel-handoff optimization only (not the portable default; see *Tunnel ownership*).
+
+**Considered and rejected:**
+
+- [`yamux`](https://crates.io/crates/yamux) `0.14.1` / [`tokio-yamux`](https://crates.io/crates/tokio-yamux) `0.3.20` — userspace stream multiplexer. Unnecessary: the kernel IP layer multiplexes the data plane by 4-tuple, and the RPC framework multiplexes the control plane. We never carry many logical streams over one connection ourselves.
+- [`quinn`](https://crates.io/crates/quinn) `0.11.12` (QUIC) — bundles mux + migration + reliability, but requires a UDP datagram substrate; incompatible with `pdbd`'s arbitrary-byte-pipe premise (serial, pty, `EXEC:` stdio).
+- `tarpc` — Rust-/serde-private RPC; **disqualified by the interop requirement** (no language-neutral wire a `gopdb`/`jpdb` could target).
+- **gRPC for tunnel *bulk*** — gRPC is recommended for the control plane but rejected for carrying tunnel bulk: many high-throughput streams on one HTTP/2 connection reintroduce the cross-stream head-of-line blocking the per-tunnel kernel-TCP design exists to avoid.
 
 ---
 
@@ -266,6 +353,8 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 **v0 (the core):** a daemon + client, userspace-PPP + TUN over a serial transport, the control channel, and `exec` + `forward`.
 
 **Later:** kernel-PPP backend, `vsock`/`ws` transports, multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
+
+**Interoperability (a first-class goal, not an afterthought):** a published, versioned `pdbd.proto` is the cross-language contract. Independent reimplementations — `gopdbd`/`gopdb`, `jpdbd`/`jpdb`, `cpdbd`/`cpdb` — are meant to be **plug-and-play** with this reference impl and each other, mixing freely across the three control segments (see *Control plane*). An alternative daemon may skip a multiprocess worker pool; if it keeps one, that boundary must speak the standard wire.
 
 **Per-deployment:** environment specifics — e.g. the guest kernel's `CONFIG_TUN`, or whatever a mandatory-access-control policy on an enforcing host must grant the daemon so it can create its TUN and program `netfilter` — are a property of each use case, not of `pdbd` itself.
 
