@@ -266,7 +266,7 @@ A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to
 
 ## Crypto
 
-`pdbd` grows **no crypto layer of its own**. Its stance is *approximately* **socat's** — select a secured transport, pass its options through, hold no security *policy* — with one deliberate departure: socat carries OpenSSL **internally**, `pdbd` does not. TLS is composed *externally* (below), so pdbd ships no TLS stack of its own. (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
+`pdbd` grows **no general-purpose crypto layer**. Its stance is *approximately* **socat's** — select a secured transport, pass its options through, hold no security *policy* — with one deliberate departure: socat exposes **OpenSSL as a generic wrap** over any address, and `pdbd` has no such generic TLS wrap. The TLS it *does* ship is **bound inside the built-in `WSS`/`WEBTRANSPORT` transports** (rustls, feature-gated); wrapping an *arbitrary* L1 in TLS is composed externally (below). (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
 
 So the only question is **which secured transports are built in vs composed externally**, and it reduces to **one criterion**:
 
