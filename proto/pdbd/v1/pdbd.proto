@@ -1,65 +1,26 @@
 syntax = "proto3";
 
-// pdbd control-plane wire contract — the cross-language interface every
-// implementation (the Rust reference, gopdb/jpdb/cpdb, …) generates from, so they
-// interoperate. Design: see README (§"Control plane") and sw2m/pdbd#2.
-//
-// CONTROL plane only. Bulk data — exec/shell stdio, forwarded bytes — never crosses
-// these RPCs; it rides a per-command kernel-TCP tunnel over the PPP link, named here
-// by a `Tunnel`. These RPCs start/stop work, coordinate who opens each tunnel, and
-// report lifecycle events. The on-tunnel byte framing (how a std-stream trio or a PTY
-// master is carried) is a separate payload spec, out of scope here.
-//
-// Versioning: the package is the major version (`pdbd.v1`); within it, evolve only
-// compatibly (append fields, never renumber or repurpose). `Hello.wire_version`
-// negotiates finer revisions across a mixed-implementation link.
+// Control-plane wire contract — schema only. All semantics (the RPC surface, the
+// event protocol, request/field meanings, versioning) are documented in the README
+// (§"Control plane"); see also sw2m/pdbd#2.
 package pdbd.v1;
 
-// One service, spoken identically across all three control segments
-// (pdb client/worker → pdb central → pdbd central → pdbd worker). The centrals route
-// it; a worker serves the subset covering the tunnels it owns.
 service ControlService {
-  // Capability/version handshake: each peer learns the other's implementation, wire
-  // revision, and optional features, so a mixed-implementation link degrades knowably.
   rpc Hello(HelloRequest) returns (HelloResponse);
-
-  // Structured execve(argv) — no shell, no word-splitting. The stream's first event is
-  // `opened` (connect your stdio tunnel); the terminal event is `exited`/`error`.
   rpc Exec(ExecRequest) returns (stream CommandEvent);
-
-  // Like Exec, but the far side allocates a PTY and runs argv (or the login shell)
-  // under it; the tunnel carries the PTY master stream.
   rpc Shell(ShellRequest) returns (stream CommandEvent);
-
-  // Change a running shell's PTY window size (the SIGWINCH path).
   rpc Resize(ResizeRequest) returns (ResizeResponse);
-
-  // Local-forward: accept on the client side, tunnel each accepted connection to a
-  // target the daemon side dials. One `opened` event per accepted connection.
   rpc Forward(ForwardRequest) returns (stream TunnelEvent);
-
-  // Reverse-forward: bind a listener on the daemon side, tunnel each accepted
-  // connection to a target the client side dials.
   rpc Bind(BindRequest) returns (stream TunnelEvent);
-
-  // Bridge two byte addresses over the link, socat-style; each address is opened by
-  // whichever end can reach it.
   rpc Socat(SocatRequest) returns (stream TunnelEvent);
-
-  // Tear down a tunnel (and the process/listener it owns) by id — the explicit,
-  // graceful path; reactive kernel-TCP teardown is the real reaper.
   rpc Drop(DropRequest) returns (DropResponse);
-
-  // Snapshot the active tunnel table.
   rpc List(ListRequest) returns (ListResponse);
 }
 
-// ---- handshake ----
-
 message HelloRequest {
-  string implementation = 1;     // free-form, e.g. "pdbd" (reference), "gopdb"
-  uint32 wire_version = 2;        // pdbd.v1 contract revision this peer speaks
-  repeated string features = 3;   // optional capability tokens: "pty", "socat", "bind", …
+  string implementation = 1;
+  uint32 wire_version = 2;
+  repeated string features = 3;
 }
 
 message HelloResponse {
@@ -68,34 +29,26 @@ message HelloResponse {
   repeated string features = 3;
 }
 
-// ---- tunnels ----
-
 enum TunnelKind {
   TUNNEL_KIND_UNSPECIFIED = 0;
-  TUNNEL_KIND_EXEC = 1;    // exec stdio (the std-stream trio, framed on the tunnel)
-  TUNNEL_KIND_SHELL = 2;   // a PTY master stream
-  TUNNEL_KIND_FORWARD = 3; // one forwarded TCP connection
-  TUNNEL_KIND_BIND = 4;    // one reverse-forwarded TCP connection
-  TUNNEL_KIND_SOCAT = 5;   // a socat-style bridge
+  TUNNEL_KIND_EXEC = 1;
+  TUNNEL_KIND_SHELL = 2;
+  TUNNEL_KIND_FORWARD = 3;
+  TUNNEL_KIND_BIND = 4;
+  TUNNEL_KIND_SOCAT = 5;
 }
 
-// What the recipient does with its end of the tunnel. It opens the socket itself —
-// no fd is passed across a boundary, which keeps every boundary portable.
 enum TunnelAction {
   TUNNEL_ACTION_UNSPECIFIED = 0;
-  TUNNEL_ACTION_CONNECT = 1; // dial `endpoint`
-  TUNNEL_ACTION_ACCEPT = 2;  // accept one connection at `endpoint`
+  TUNNEL_ACTION_CONNECT = 1;
+  TUNNEL_ACTION_ACCEPT = 2;
 }
 
-// An address on the PPP network (the IPCP-assigned space), or a real-network target
-// one end reaches for a forward/bind.
 message Endpoint {
   string host = 1;
   uint32 port = 2;
 }
 
-// Coordinates for one tunnel the recipient owns: it opens its own socket per `action`
-// at `endpoint`; `id` ties control events and `Drop` to this connection.
 message Tunnel {
   uint64 id = 1;
   TunnelKind kind = 2;
@@ -103,21 +56,19 @@ message Tunnel {
   Endpoint endpoint = 4;
 }
 
-// ---- commands ----
-
 message ExecRequest {
-  repeated string argv = 1;      // argv[0] is the program
-  repeated EnvVar env = 2;
-  string cwd = 3;
-  bool clear_env = 4;             // start from an empty environment instead of inheriting
-}
-
-message ShellRequest {
-  repeated string argv = 1;      // empty => the target's login shell
+  repeated string argv = 1;
   repeated EnvVar env = 2;
   string cwd = 3;
   bool clear_env = 4;
-  PtySize pty = 5;                // initial window size
+}
+
+message ShellRequest {
+  repeated string argv = 1;
+  repeated EnvVar env = 2;
+  string cwd = 3;
+  bool clear_env = 4;
+  PtySize pty = 5;
 }
 
 message EnvVar {
@@ -131,46 +82,44 @@ message PtySize {
 }
 
 message ResizeRequest {
-  uint64 tunnel_id = 1;           // the shell tunnel to resize
+  uint64 tunnel_id = 1;
   PtySize pty = 2;
 }
 
 message ResizeResponse {}
 
-// Lifecycle of one exec/shell command.
 message CommandEvent {
   oneof event {
-    Tunnel opened = 1;  // connect your stdio/PTY tunnel here
-    Exited exited = 2;  // terminal: the process ended
-    Error error = 3;    // terminal: the command could not run
+    Tunnel opened = 1;
+    Exited exited = 2;
+    Error error = 3;
   }
 }
 
 message Exited {
-  int32 code = 1;    // exit status; meaningful when `signal` == 0
-  int32 signal = 2;  // terminating signal, or 0 if it exited normally
+  int32 code = 1;
+  int32 signal = 2;
 }
 
 message ForwardRequest {
-  Endpoint listen = 1; // client-side bind address
-  Endpoint target = 2; // address the daemon side dials per accepted connection
+  Endpoint listen = 1;
+  Endpoint target = 2;
 }
 
 message BindRequest {
-  Endpoint listen = 1; // daemon-side bind address
-  Endpoint target = 2; // address the client side dials per accepted connection
+  Endpoint listen = 1;
+  Endpoint target = 2;
 }
 
 message SocatRequest {
-  string left = 1;   // socat-style address opened by this end
-  string right = 2;  // socat-style address opened by the far end
+  string left = 1;
+  string right = 2;
 }
 
-// Lifecycle of a forward/bind/socat: one event per connection on the listener.
 message TunnelEvent {
   oneof event {
-    Tunnel opened = 1;        // a new connection — own its tunnel
-    TunnelClosed closed = 2;  // that connection ended
+    Tunnel opened = 1;
+    TunnelClosed closed = 2;
     Error error = 3;
   }
 }
@@ -199,6 +148,6 @@ message TunnelInfo {
 }
 
 message Error {
-  uint32 code = 1;    // stable machine-readable code
-  string message = 2; // human-readable detail
+  uint32 code = 1;
+  string message = 2;
 }

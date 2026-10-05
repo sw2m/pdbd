@@ -239,7 +239,22 @@ Two protocols satisfy "international standard + built-in mux + first-party imple
 
 ### The contract is a versioned schema
 
-The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`) defining the service — `Exec`/`Shell`/`Forward`/`Bind`/`List`/`Drop`, message types, streaming semantics. Every implementation codegens from it; it is a **published interface contract consumers depend on at a version**, not a transient file.
+The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`): one `ControlService` every implementation codegens from — a **published interface contract consumers depend on at a version**, not a transient file. The package is the major version (`pdbd.v1`); within it the schema evolves only compatibly (append fields, never renumber or repurpose), which `buf breaking` enforces in CI.
+
+**The surface.** Nine RPCs on `ControlService`:
+
+- **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
+- **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
+- **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
+- **`Forward`** / **`Bind`** / **`Socat`** — open a tunnelling listener; each returns a **stream of tunnel events**. `Forward` binds on the client side and dials a target from the daemon side; `Bind` is the reverse (bind daemon-side, dial from the client side); `Socat` bridges two socat-style addresses, each opened by whichever end can reach it.
+- **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
+
+**The event protocol.** The streaming RPCs carry a *lifecycle*, not bulk (bulk rides the tunnel):
+
+- a **command stream** (`Exec`/`Shell`) emits `opened` **first** — connect that command's stdio/PTY tunnel — then exactly **one terminal** event: `exited` (an exit `code`, meaningful when the terminating `signal` is `0`) or `error`.
+- a **tunnel stream** (`Forward`/`Bind`/`Socat`) emits one `opened` **per accepted connection** (own its tunnel) and a `closed` when each connection ends.
+
+The schema file carries no prose — all of the above is its documentation.
 
 ### Two standardized layers, stacked
 
