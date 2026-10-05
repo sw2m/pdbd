@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package pdbd.v1;
+
+import "pdbd/v1/common.proto";
+
+enum TunnelKind {
+  TUNNEL_KIND_UNSPECIFIED = 0;
+  TUNNEL_KIND_EXEC = 1;
+  TUNNEL_KIND_SHELL = 2;
+  TUNNEL_KIND_FORWARD = 3;
+  TUNNEL_KIND_BIND = 4;
+  TUNNEL_KIND_SOCAT = 5;
+}
+
+enum TunnelAction {
+  TUNNEL_ACTION_UNSPECIFIED = 0;
+  TUNNEL_ACTION_CONNECT = 1;
+  TUNNEL_ACTION_ACCEPT = 2;
+}
+
+message Tunnel {
+  uint64 id = 1;
+  TunnelKind kind = 2;
+  TunnelAction action = 3;
+  Endpoint endpoint = 4;
+}
+
+message TunnelClosed {
+  uint64 id = 1;
+  string reason = 2;
+}
+
+message TunnelInfo {
+  uint64 id = 1;
+  TunnelKind kind = 2;
+  Endpoint endpoint = 3;
+}
+
+message TunnelEvent {
+  oneof event {
+    Tunnel opened = 1;
+    TunnelClosed closed = 2;
+    Error error = 3;
+  }
+}

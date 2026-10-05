@@ -254,7 +254,7 @@ The artifact that makes cross-language real is a **published, versioned `pdbd.pr
 - a **command stream** (`Exec`/`Shell`) emits `opened` **first** — connect that command's stdio/PTY tunnel — then exactly **one terminal** event: `exited` (an exit `code`, meaningful when the terminating `signal` is `0`) or `error`.
 - a **tunnel stream** (`Forward`/`Bind`/`Socat`) emits one `opened` **per accepted connection** (own its tunnel) and a `closed` when each connection ends.
 
-The schema file carries no prose — all of the above is its documentation.
+The `pdbd.v1` module is split by concern across `service` / `command` / `forward` / `tunnel` / `common` `.proto` files (all one package); the files carry no prose — all of the above is their documentation.
 
 ### Two standardized layers, stacked
 

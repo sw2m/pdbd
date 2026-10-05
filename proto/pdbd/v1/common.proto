@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package pdbd.v1;
+
+message Endpoint {
+  string host = 1;
+  uint32 port = 2;
+}
+
+message Error {
+  uint32 code = 1;
+  string message = 2;
+}

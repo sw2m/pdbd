@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package pdbd.v1;
+
+import "pdbd/v1/common.proto";
+
+message ForwardRequest {
+  Endpoint listen = 1;
+  Endpoint target = 2;
+}
+
+message BindRequest {
+  Endpoint listen = 1;
+  Endpoint target = 2;
+}
+
+message SocatRequest {
+  string left = 1;
+  string right = 2;
+}
