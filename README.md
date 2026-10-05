@@ -21,7 +21,7 @@ They solve the *same* problem — *run a process on the far side of a byte chann
 
 `pdbd` collapses that into **one binary over "everything is a socket"**:
 
-- **Any transport.** Serial, `vsock`, unix socket, TCP, a PTY, stdio, a websocket, or *any program's stdio* — selected with a [socat](https://www.redhat.com/en/blog/getting-started-socat)-style address.
+- **Any transport.** Serial, UDP, `vsock`, unix socket, TCP, a PTY, stdio, a websocket, or *any program's stdio* — selected with a [socat](https://www.redhat.com/en/blog/getting-started-socat)-style address.
 - **Reliable even when the transport isn't.** The transport is assumed hostile and lossy *by construction* — a transport may be a noisy physical UART, a Serial-over-LAN link, or any channel that drops bytes, and "it happens to be a reliable `vsock` today" is never an assumption we're allowed to make. `pdbd` runs **PPP in userspace** to turn any dumb pipe into a real IP link, and lets the **kernel's TCP** carry reliability on top.
 - **`execve`, not shell.** Structured `execve(argv[])` with stdio tunneled and a real exit code; a PTY *only* when you ask for `shell`. This is what makes it safe for automation and able to drive serial/console-only hosts the big tools can't.
 
@@ -44,7 +44,7 @@ flowchart TB
         TUN["TUN device (kernel L3 interface)"]
     end
     subgraph wire["L1 — transport (assumed UNRELIABLE, pluggable)"]
-        T["serial · vsock · unix · tcp · pty · stdio · ws · exec"]
+        T["serial · udp · vsock · unix · tcp · pty · stdio · ws · wss · webtransport · exec"]
     end
 
     L7 <-->|kernel sockets| L34
@@ -70,12 +70,15 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 --socket FILE:/dev/ttyS0,b115200,raw      # a physical UART / Serial-over-LAN device
 --socket UNIX-CONNECT:/run/vm/guest.sock  # a VM host-end chardev socket
 --socket VSOCK-CONNECT:3:9000             # vsock (cid:port)
---socket WS-LISTEN:0.0.0.0:8080           # websocket
+--socket UDP-CONNECT:host:9000            # a lossy datagram pipe (the archetype L1)
+--socket WS-LISTEN:0.0.0.0:8080           # websocket (insecure)
+--socket WSS-CONNECT:host:443             # websocket-secure (TLS) — see Crypto
+--socket WEBTRANSPORT-CONNECT:host:443    # WebTransport (secure, over QUIC/UDP) — see Crypto
 --socket EXEC:'ssh jump nc target 23'     # ride the link over ANY program's stdio
 --socket STDIO                            # ride stdio
 ```
 
-Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix, `tokio-serial`, `tokio-vsock`, `ws_stream_tungstenite`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe.
+Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
 
 ### L2 — PPP, in userspace
 
@@ -100,17 +103,16 @@ Because L2 is PPP terminating into a kernel IP interface, the link is itself a *
 `pdbd` is, above the link, an RPC/debug agent. Commands: `exec`, `shell`, `forward`, `bind`, `socat`, `drop`, `list`.
 
 - **`exec` vs `shell`.** `exec` is a structured `execve(argv[])` with stdio tunneled and a real exit code — *no shell, no PTY* (the automation-friendly primitive, like `adb exec-out`). `shell` allocates a PTY (`adb shell` / `ssh -t`). Each invocation is a *fresh, isolated process*, which is what eliminates the dirty-state problem a single shared console would have.
-- **One control channel, one TCP tunnel per command.** The control channel is a single connection carrying lightweight RPCs (start / drop / list). Each command gets its **own** TCP tunnel — a separate kernel TCP connection — *not* multiplexed streams on one connection. On a lossy link this deliberately avoids HTTP/2-style cross-stream head-of-line blocking (the QUIC-vs-HTTP/2 lesson): a stalled tunnel stalls only itself.
+- **Control plane vs data plane — two different multiplexers.** The **control channel** carries lightweight RPCs (start / drop / list / events); its many concurrent logical streams are multiplexed by the **RPC framework itself** (see *Control plane*), never hand-rolled. Each command's **bulk** gets its **own** TCP tunnel — a separate kernel TCP connection, multiplexed by the **kernel** (4-tuple), *not* streams on one connection. Splitting the two is deliberate: bulk on per-connection kernel TCP avoids the HTTP/2-style cross-stream head-of-line blocking (the QUIC-vs-HTTP/2 lesson) that would couple unrelated tunnels on a lossy link, while the tiny control messages lose nothing to the RPC lib's stream mux.
 
 ### Process model
 
-`pdbd` is **multiprocess**, modeled on `sshd`/`adbd`:
+The two ends have **different** process constraints:
 
-- a **control-plane core** owns the single control channel and the link;
-- **each debug tunnel is serviced concurrently and in isolation** — the daemon fans out per-tunnel work across worker processes (`sshd`'s process-per-connection; `adbd`'s per-stream model), so one tunnel can never stall or corrupt another, and a crashing tunnel can't take the core down;
-- **`exec`/`shell` run as child processes** — a real `execve` per invocation, which is the isolation that makes every command fresh-state (no shared-shell carryover).
+- **`pdb` (client-side) requires multiprocess.** Each invocation is a distinct OS process, `central` is a separate singleton, and a `forward`/`bind` gets its own spun-up **`pdb worker`** process (the client/worker/central split is detailed under *Topology*); they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
+- **`pdbd` (daemon-side) is multiworker and does not require multiprocess.** Its hard requirement is a **connection owner per tunnel** (something holds the socket fd and drives it) plus **`execve` children**. The `execve` children do run as separate processes (`execve` replaces the image); the *connection owners* need not be — they may be `async` tasks, threads, or processes. Process-per-tunnel is a **choice for crash/exploit isolation** (a faulting tunnel can't corrupt the core — `sshd`-privsep's rationale), not an architectural requirement. An alternative-language `pdbd` may run a single-process worker pool — and if it instead runs a *multiprocess* pool, that core↔worker boundary becomes public wire (see *Control plane*).
 
-Concurrency within a process is `async` (tokio); isolation *between* tunnels is a process boundary. The split is deliberate: the core stays small and long-lived, while the volatile per-connection work lives in disposable workers.
+Common to both ends: a small, long-lived **control-plane core** owns the link and the control channel, while volatile per-connection work lives in disposable workers (`sshd`'s process-per-connection, `adbd`'s per-stream model). Concurrency within a worker is `async` (tokio); isolation *between* tunnels is whatever boundary the impl chose.
 
 ---
 
@@ -121,47 +123,62 @@ Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" (o
 ```mermaid
 flowchart LR
     subgraph client["client-side"]
-        E1["pdb (ephemeral)"]
-        E2["pdb (ephemeral)"]
-        C["<b>pdb central</b> — concept, not a command<br/>singleton link-owner<br/>exits when tunnel table → 0"]
-        E1 -->|local IPC| C
-        E2 -->|local IPC| C
+        PC["pdb client"]
+        PW["pdb worker"]
+        CC["pdb central"]
+        PC -->|local IPC| CC
+        PW -->|local IPC| CC
     end
     subgraph daemon["daemon-side — always-on"]
-        D["<b>pdbd</b><br/>persistent; idles waiting for a peer"]
+        DC["pdbd central"]
+        DW1["pdbd worker"]
+        DW2["pdbd worker"]
+        DW1 -->|local IPC| DC
+        DW2 -->|local IPC| DC
     end
-    C <==>|"PPP link over the L1 pipe<br/>(assumed unreliable)"| D
+    CC <==>|"PPP link — control channel + every tunnel"| DC
 ```
 
-- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. It is the permanent endpoint.
-- **`pdb`** — the client, in **two modes**. *`pdb central` is a concept/role, never a command you type:*
-  - **ephemeral** — the per-command invocations you actually run (`pdb exec …`, `pdb forward …`).
-  - **central** — a **singleton** client-side process that owns the PPP link. It exists so the expensive, fragile link is established *once* and amortized, never rebuilt per command.
+The heavy line is the one **PPP link between the two centrals**, and it carries **everything** — the control channel *and* every data tunnel, each a separate kernel-TCP connection the kernel demuxes by 4-tuple. **Ownership and transport are different things.** The **centrals** own the link and *transport* every tunnel (each end's kernel routes tunnel packets out its **TUN**, and the central's `ppproto` pump carries them over the link) — but a central never holds a tunnel's socket. The **connection owners** do: a **`pdb client`** for its `exec`/`shell`, a **`pdb worker`** for a `forward`/`bind`, a **`pdbd worker`** on the daemon end. So a tunnel's bytes *flow through* the centrals' PPP pipe while being *owned* at the edges. `central`/`worker`/`client` are **roles**, never commands you type.
 
-**Orchestration.** You only ever invoke an *ephemeral* `pdb`. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches to it. Every ephemeral shares that single central. There is no `pdb central` command; central is spawned, discovered, and reaped implicitly.
+- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. The permanent endpoint; its **workers** own the daemon end of every tunnel.
+- **`pdb`** — the client, in **three roles**:
+  - **client** — the per-command invocation you actually run (`pdb exec …`, `pdb forward …`): command-and-control plus `exec`/`shell` stdio, owning its own `exec`/`shell` tunnel. Dies with the command.
+  - **worker** — spun up by central to **own a `forward`/`bind`** on the client end, mirroring a `pdbd` worker. Outlives the `client` that asked for it; lives as long as the tunnel.
+  - **central** — a **singleton** that owns the PPP link + control channel and **transports** every tunnel over it, so the expensive, fragile link is established *once* and amortized. Holds no tunnel socket itself.
 
-**IPC.** ephemeral ↔ central speak over a **local IPC socket** (a unix domain socket). central owns the one PPP link and the control channel to `pdbd`, and **multiplexes every ephemeral's requests onto it**; an ephemeral's `exec`/`shell` stdio streams ephemeral ↔ central ↔ tunnel ↔ `pdbd`. The ephemeral is a thin local client; central is where the link, the control channel, and the tunnel table live.
+**Orchestration.** You only ever invoke a `pdb` **client**. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches. A `forward`/`bind` client asks central to **spin up a `pdb worker`** to own the tunnel, then the client may exit; an `exec`/`shell` client owns its tunnel itself. Every client and worker shares the one central. There is no `pdb central`/`pdb worker` command — both are spawned, discovered, and reaped implicitly.
 
-**Lifecycle.** central's lifetime is **refcounted to the tunnel table — not to the number of ephemerals.** It exits when the active-tunnel count drops to zero, which brings the link down. So a standing `forward`/`bind` (a tunnel *owned by central*) keeps central alive after the ephemeral that launched it has exited, while an `exec`/`shell` tunnel dies with its ephemeral. (An idle-linger grace before exit is an option, to keep a warm link across bursts of activity.)
+**IPC & transport.** A `pdb` client/worker ↔ central speak over a **local IPC socket** (UDS) for control. central owns the PPP link + the control channel to `pdbd` and **transports** every tunnel over the link — but it is **not a socket-owning relay**: a tunnel is a kernel-TCP connection whose *endpoints* are owned by the client/worker and the `pdbd` worker, while its *packets* ride central's TUN→PPP pump. So central moves the bytes (as IP over PPP) without ever holding the tunnel's socket or seeing it as an application stream. central is where the link, the control channel, and the tunnel table live; the owners hold the fds. The three control hops and the wire standard they share are detailed under *Control plane*.
+
+**Lifecycle.** central's lifetime is **refcounted to the tunnel table — not to the number of clients.** It exits when the active-tunnel count drops to zero, which brings the link down. A standing `forward`/`bind` is owned by a **`pdb worker`** that outlives the `client` which launched it, so it keeps the tunnel table non-empty and central alive; an `exec`/`shell` tunnel dies with its `client`. (An idle-linger grace before exit is an option, to keep a warm link across bursts of activity.)
 
 ### Tunnel ownership
 
-**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP. The difference is not a layer; it's **which process holds the endpoint socket:**
+**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP over the one PPP link. Two distinct questions, often conflated: **who owns a tunnel's socket**, and **who transports its packets.**
 
 ```mermaid
-flowchart TB
-    C["pdb central"]
-    D["pdbd"]
-    C <===>|"control channel — one TCP conn"| D
-    C <===>|"tunnel: exec — pid = ephemeral"| D
-    C <===>|"tunnel: forward — pid = central"| D
-    G["some app"] <-. "general-purpose PPP network (TCP/UDP)<br/>kernel-forwarded, NO pdbd socket" .-> R["some remote"]
+flowchart LR
+    PC["pdb client"]
+    PW["pdb worker"]
+    CC["pdb central"]
+    DC["pdbd central"]
+    DW["pdbd worker"]
+    GC["some app (client-side)"]
+    GD["some app (daemon-side)"]
+    PC -. "exec/shell TCP ↕ kernel TUN" .-> CC
+    PW -. "forward/bind TCP ↕ kernel TUN" .-> CC
+    CC <==>|"PPP link — transports every tunnel"| DC
+    DC -. "TCP ↕ kernel TUN" .-> DW
+    GC -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> CC
+    GD -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> DC
 ```
 
-- A **debug tunnel** is a connection `pdbd` holds the socket fd for (it `accept`ed or `connect`ed it, tagged it a tunnel-id). `pdbd` tracks exactly these.
-- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdbd` socket** — it never enters `pdbd`'s table. It shows up only in the *kernel's* view (`ss` / `conntrack`).
+- **Ownership (the edges).** Every debug tunnel is a kernel-TCP connection with a connection owner at each end, each holding the *fd* and doing the I/O: a **`pdb client`** for its `exec`/`shell`, a **`pdb worker`** for a `forward`/`bind`, and a **`pdbd worker`** on the daemon end. The owner **opens its socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` itself. Nothing passes an fd across a boundary, so every boundary stays portable and language-neutral (a cross-language/cross-host worker can't receive a Unix `SCM_RIGHTS` descriptor). **fd-passing** (`SCM_RIGHTS`) survives only as an **optional same-host optimization**, never part of the wire contract.
+- **Transport (the middle).** The **centrals own no tunnel socket** — they move the packets. Each owner's kernel routes its tunnel traffic out the **TUN**; the central's `ppproto` pump carries it over the PPP link to the peer central, whose TUN delivers it to the peer owner. So the centrals *transport* every tunnel (and the control channel) without ever holding a tunnel fd or seeing it as an application stream. Each central also keeps the **tunnel table** (control + refcount) — accounting, not ownership.
+- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdb`/`pdbd` socket** at all — it never enters a tunnel table, rides the same PPP link, and shows up only in the *kernel's* view (`ss` / `conntrack`). **Both** ends have a TUN, so the PPP network is symmetric: an app on *either* host — client-side or daemon-side — can put ordinary traffic on the link, not just `pdbd`'s tunnels.
 
-Ownership needs no packet inspection: it's just "which fds does `pdbd` hold." The kernel does the TCP for everything regardless.
+Ownership needs no packet inspection — it's just which process holds the fd; transport needs none either — the kernel routes it to the TUN. The kernel does the TCP for everything regardless.
 
 ### Cleanup — reactive first, `drop` as a convenience
 
@@ -191,6 +208,54 @@ Two native mechanisms do the heavy lifting: **LCP echo** detects the dead/half-o
 
 ---
 
+## Control plane — RPC, muxing & interoperability
+
+The data plane is multiplexed by the **kernel** (per-tunnel 4-tuple) and `ppproto` (frames on the pipe) — settled, and no userspace muxer is pulled for it. What genuinely needs multiplexing is the **control plane**, which is **three segments**:
+
+1. **pdb client / pdb worker → pdb central** — local IPC (UDS)
+2. **pdb central → pdbd central** — over the PPP link (kernel TCP over the TUN)
+3. **pdbd central → pdbd conn-worker** — local IPC (UDS), *present only when the daemon runs a multiprocess worker pool*
+
+Each carries many small concurrent logical streams (start-exec, tunnel-opened, exit-status, list, drop, keepalive). None of it is hand-rolled: the multiplexer is the **RPC framework's own**.
+
+### The interop requirement — a universal wire, not a Rust API
+
+`pdbd`/`pdb` are a *reference* implementation. The wire must be a **standardized, language-neutral protocol with a published schema**, so independent reimplementations — `gopdbd`/`gopdb`, `jpdbd`/`jpdb`, `cpdbd`/`cpdb` — are **plug-and-play with each other and with this one**. A `cpdb` ephemeral controlling a `gopdb` central talking to a `jpdbd` central driving a Rust `pdbd` conn-worker must *just work*. That rules out any language-private RPC (e.g. a Rust-serde framing): the contract is the wire, and the wire is a standard.
+
+This makes **segment 3 a public interface, conditionally**: a daemon that runs a multiprocess worker pool **must** speak the standard across it (so a `jpdbd` central and a Rust conn-worker interoperate); a single-process daemon has no such wire and legitimately opts out. The clean guarantee is **one standard service, with central and pdbd-central as routers that forward it** — then the worker boundary speaks the identical service for free.
+
+### The choice
+
+Two protocols satisfy "international standard + built-in mux + first-party implementations in every target language":
+
+| Protocol | Wire | Mux | Multi-language |
+| --- | --- | --- | --- |
+| **gRPC** *(recommended)* | HTTP/2 + protobuf (CNCF) | **HTTP/2 streams — RFC 9113** | grpc-go, grpc-java, grpc C/C++ core, Python, C#, … — first-party; interop is its whole purpose |
+| **Cap'n Proto RPC** *(alternative)* | Cap'n Proto wire + `rpc.capnp` | question/answer-id mux + promise pipelining (in-spec) | C++, Rust, Go, Java, Python |
+
+**gRPC is the recommendation** — cross-language interop is the solved, boring case, and its mux (HTTP/2) is itself an IETF RFC. Cap'n Proto is the credible alternative (promise pipelining cuts round-trips on a high-latency serial link, and it is lighter than HTTP/2), with thinner multi-language RPC-layer maturity. A Rust-only RPC (`tarpc` et al.) is **disqualified** by the interop requirement, whatever its ergonomics.
+
+> This is why gRPC/`tonic` is *not* in the rejected pile for the control plane. The HTTP/2 head-of-line concern applies only to carrying **tunnel bulk** — many high-throughput streams on one connection — which is exactly what the per-tunnel kernel-TCP design keeps *off* the RPC. Tiny control messages lose nothing to HTTP/2.
+
+### The contract is a versioned schema
+
+The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`) defining the service — `Exec`/`Shell`/`Forward`/`Bind`/`List`/`Drop`, message types, streaming semantics. Every implementation codegens from it; it is a **published interface contract consumers depend on at a version**, not a transient file.
+
+### Two standardized layers, stacked
+
+The "control channel" is really two already-international standards on top of each other:
+
+1. **PPP link control** — LCP/IPCP (`ppproto`), **RFC 1661 / 1332**: establishes the link, negotiates addresses, carries liveness.
+2. **Application RPC** — gRPC + `pdbd.proto`, over kernel TCP, which exists only *after* IPCP brings up IP (so the RPC always rides a reliable stream).
+
+The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/TCP → RFC-9113 HTTP/2 → protobuf. A reimplementer has a spec for every layer.
+
+### Why the data plane needs no muxer at all
+
+A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so each tunnel is just another kernel socket, demuxed by 4-tuple. The only scenario a data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a mux buys nothing the kernel does not already give.
+
+---
+
 ## Bootstrap & the control channel
 
 - `pdbd` is already running. `pdb central` comes up, brings up the PPP link, and **learns `pdbd`'s control address from its own IPCP** — no fixed address required, no out-of-band discovery.
@@ -201,18 +266,187 @@ Two native mechanisms do the heavy lifting: **LCP echo** detects the dead/half-o
 
 ## Crypto
 
-**No crypto on trusted channels** (local serial / vsock / unix socket) — on a trusted point-to-point pipe it is pure overhead. Crypto/auth is a **pluggable transport-layer concern**: absent on trusted pipes, and expected (e.g. mutual-TLS) for networked transports. `pdbd` is therefore *not* a drop-in `ssh`-over-hostile-network replacement until that slot is filled; out of the box it unifies **trusted-channel** remote exec.
+`pdbd` grows **no general-purpose crypto layer**. Its stance is *approximately* **socat's** — select a secured transport, pass its options through, hold no security *policy* — with one deliberate departure: socat exposes **OpenSSL as a generic wrap** over any address, and `pdbd` has no such generic TLS wrap. The TLS it *does* ship is **bound inside the built-in `WSS`/`WEBTRANSPORT` transports** (rustls, feature-gated); wrapping an *arbitrary* L1 in TLS is composed externally (below). (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
+
+So the only question is **which secured transports are built in vs composed externally**, and it reduces to **one criterion**:
+
+> **Build in a secure transport iff an L3-and-below "substrate explosion," though technically possible, would be *unreasonable* for it — so its substrate stays stable in practice. The lower-overhead protocols an explosion actually favors stay external.**
+
+The test is **L3-and-below**, not L4 — everyone can assume TLS→TCP and QUIC→UDP; the question is what sits *under* that. And it is **economic, not categorical**: an exploded substrate is *possible* for all four (TLS, QUIC, WSS, WT), but only *reasonable* for some.
+
+- **WSS / WebTransport → built in.** You *could* run WSS over an exotic L1 — it isn't forbidden — but it would be an unreasonable stack. WSS is built for **conventional routed web traffic**: HTTP upgrade + framing + masking, *plus* TLS — and that overhead only earns its keep when routers and firewalls sit between the ends. Strip that context (a point-to-point serial line, a vsock) and the web machinery buys nothing: raw OpenSSL gives the *same* TLS with **less** overhead, raw QUIC likewise. So nobody off the conventional web reaches for WSS/WT — even the odd low-latency case (Chrome driving CDP over WebSocket) stays on routed OSI TCP. The substrate doesn't explode because **the protocol stops making sense the moment it would**, which is what makes it safe to assume.
+- **TLS and QUIC → external.** They are substrate-flexible *and* they are exactly what an explosion favors — lower overhead, no router assumption. TLS is *already* exercised polymorphically (over TCP, unix, vsock, serial, tunnels); QUIC isn't dominated by exotic substrates today, but nothing stops it following TLS — and when traffic *does* leave the routed web, raw TLS / raw QUIC streams are precisely where it lands. So there is no stable substrate to assume; both stay external — which is also a *feature*: it encourages users to compose their own secured L1 (SSH, openssl-over-serial/vsock, plain TLS-over-TCP, a QUIC tunnel) rather than privileging one.
+
+**WebTransport is included for the same reason as WSS.** It carries the same web-oriented overhead, so an exploded-substrate deployment would drop it for raw QUIC exactly as it drops WSS for raw TLS — its substrate stays stable by the same economics. Raw QUIC has no such overhead to shed, so it is where an explosion lands: external, not built in.
+
+Secure transports are **feature-gated** — `serial`/`udp`/`unix`/`tcp`/`stdio`/`exec` are always in; `wss`/`webtransport` are opt-in `cargo` features, so the lean trusted-channel core never has to carry a TLS/QUIC dependency tree.
+
+### Built-in — Websocket-secure (`WSS`)
+
+Primary secure transport. TLS + cert verification come from the WS stack (`tokio-tungstenite` + `rustls`); pdbd just selects it as an L1:
+
+```bash
+pdbd --socket WSS-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
+pdb  --socket WSS-CONNECT:gateway.example:443  exec -- uname -a
+```
+
+(PPP/kernel-TCP over a TCP-based WSS is TCP-in-TCP — the standard caveat for any TCP-based L1; see *L1*.)
+
+### Built-in — WebTransport (`WEBTRANSPORT`)
+
+The secure transport for a QUIC-capable network (needs UDP reachability; `wtransport` on `quinn`). A **datagram** session is the default exposure — encrypted, NAT-traversing UDP, the lossy pipe pdbd is built for, with no reliability doubled under kernel TCP:
+
+```bash
+pdbd --socket WEBTRANSPORT-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
+pdb  --socket WEBTRANSPORT-CONNECT:gateway.example:443  exec -- uname -a
+```
+
+### External — compose your own secured L1
+
+Everything else secures *outside* the binary, handed to pdbd through the `EXEC:` escape hatch (or a forwarded local port) — pdbd carries no TLS/SSH/QUIC code. Three ready tools:
+
+**OpenSSL** — a plain TLS pipe via `socat` or the `openssl` binary:
+
+```bash
+# socat OPENSSL
+pdbd --socket EXEC:'socat - OPENSSL-LISTEN:4433,reuseaddr,cert=server.pem,key=server.key,verify=1'
+pdb  --socket EXEC:'socat - OPENSSL:gateway.example:4433,verify=1'  exec -- uname -a
+# openssl s_server / s_client
+pdbd --socket EXEC:'openssl s_server -quiet -accept 4433 -cert server.pem -key server.key'
+pdb  --socket EXEC:'openssl s_client -quiet -connect gateway.example:4433'  exec -- uname -a
+```
+
+**SSH** — stdio, port-forward, reverse-forward, or SOCKS5:
+
+```bash
+# stdio (ssh -W is the clean form; or exec pdbd on the far side)
+pdb  --socket EXEC:'ssh -W dbhost:4000 jump'           exec -- uname -a
+pdb  --socket EXEC:'ssh host pdbd --stdio'             exec -- uname -a
+# local forward (-L): forward a port, then ride plain TCP to it
+ssh -fN -L 7000:dbhost:4000 jump
+pdb  --socket TCP:127.0.0.1:7000                       exec -- uname -a
+# reverse forward (-R): run on the daemon host; pdb then dials 127.0.0.1:7000 client-side
+ssh -fN -R 7000:localhost:4000 client-host
+# SOCKS5 (-D): proxy, then a SOCKS5-capable dial
+ssh -fN -D 1080 jump
+pdb  --socket EXEC:'ncat --proxy 127.0.0.1:1080 --proxy-type socks5 dbhost 4000'  exec -- uname -a
+```
+
+**QUIC** — a raw QUIC pipe via [`quicat`](https://github.com/pas2k/quicat), the socat-shaped QUIC utility (stdio both ends, so it reads like the `ssh -W` / `openssl s_client` cases):
+
+```bash
+pdbd --socket EXEC:'quicat quic-passive-listen://0.0.0.0:4433 stdio'
+pdb  --socket EXEC:'quicat stdio quic-active-connect://gateway.example:4433'  exec -- uname -a
+```
+
+> `quicat` is **experimental** (single QUIC session at a time, lightly maintained) — shown as the clean *pattern* (QUIC stream → stdio → pdbd), not a production pick. Note `openssl s_client -quic` is **not** a substitute: OpenSSL's QUIC is HTTP/3-oriented (ALPN-mandated), not a raw byte pipe. For real traffic prefer a maintained QUIC tunnel (e.g. `ombrac`, TCP/UDP-over-QUIC) exposing a local port pdbd rides.
+
+### Baseline — insecure, over a trusted channel
+
+On a trusted point-to-point pipe (local serial, `vsock`, unix socket) crypto is pure overhead and is simply omitted — the canonical `pdbd` deployment:
+
+```bash
+pdbd --socket FILE:/dev/ttyS0,b115200,raw
+pdb  --socket FILE:/dev/ttyUSB0,b115200,raw  exec -- uname -a
+```
+
+So: `pdbd` secures a WAN hop with built-in **WSS / WebTransport**, secures an arbitrary pipe with **external OpenSSL / SSH / QUIC via `EXEC:`**, and runs **bare on a trusted channel** — never growing a general-purpose crypto layer.
 
 ---
 
 ## Prior art
 
-- [`ppproto`](https://docs.rs/ppproto) — sans-IO userspace PPP in Rust (embedded; our starting point for L2).
-- [Fuchsia PPP](https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/src/connectivity/ppp) — PPP in Rust over serial (LCP/IPCP/IPv6CP); a fuller reference.
-- [`websocat`](https://docs.rs/websocat) — socat-style address specifiers in Rust; the dialect reference for L1 addresses.
-- `u-root`'s `cpu` — transport-flexible remote exec, plan9-inspired; closest in spirit.
-- `pppd` — the C reference for driving kernel PPP (GPLv2; we reimplement the grammar/behavior, never vendor the code, so `pdbd` stays permissively licensed).
-- `adb`, `ssh`, `qemu-guest-agent`, `docker exec` — the tools this unifies.
+No single tool does what `pdbd` does — **transport-agnostic remote exec *and* a general IP path over the same arbitrary byte pipe** — but each half is well-trodden. Surveyed across languages (not just the C/Rust systems world) so we steal the right grammar rather than reinvent it.
+
+**PPP, in userspace** — the L2 we need:
+
+- [`ppproto`](https://docs.rs/ppproto) (Rust) — `no-std`, no-alloc, sans-IO PPP implementing RFC 1661 (LCP) + RFC 1332 (IPCP), tested against `pppd`. **Our starting point for L2** — sans-IO is exactly the shape that lets us feed it any transport.
+- [Fuchsia PPP](https://fuchsia.googlesource.com/fuchsia/+/refs/heads/main/src/connectivity/ppp) (Rust) — PPP over serial with LCP/IPCP/IPv6CP; a fuller reference implementation.
+- [`zouppp`](https://github.com/hujun-open/zouppp) (Go) — userspace PPP/PPPoE client with its own LCP/IPCP/IPv6CP state machines; the cleanest cross-language cross-check for our control-protocol logic.
+- [`pppd`](https://github.com/ppp-project/ppp) (C) — the canonical reference for driving *kernel* PPP (GPLv2; we reimplement the grammar/behavior, never vendor the code, so `pdbd` stays permissively licensed).
+
+**Userspace IP — the road not taken.** We terminate IP in the *kernel* via a TUN device (real sockets, kernel TCP reliability). The alternative — a userspace TCP/IP stack — is proven but heavier: [gVisor `netstack`](https://github.com/google/gvisor) (Go) and [`smoltcp`](https://docs.rs/smoltcp) (Rust). Recorded as the explicit fork in the design, not an oversight.
+
+**Transport-agnostic remote exec / RPC** — the L7 we need:
+
+- [`u-root`'s `cpu`](https://github.com/u-root/cpu) (Go) — plan9-`cpu`-inspired remote exec that carries namespaces over a flexible transport; **closest in spirit** to the exec half.
+- [`gokrazy/breakglass`](https://github.com/gokrazy/breakglass) (Go) — inject a static binary into an otherwise-immutable appliance and get an interactive debug shell; the "break glass into a sealed image" use-case, which is exactly ours.
+- [`eRPC` / EmbeddedRPC](https://github.com/EmbeddedRPC/erpc) (C/C++) — RPC explicitly decoupled from transport (serial, TCP, USB, RPMsg); the strongest prior art for *one RPC surface over many byte pipes*.
+- [`citizenshell`](https://github.com/meuter/citizenshell) (Python) — one shell API over telnet / ssh / serial / adb; the clearest statement of the **unification** goal `pdbd` chases, from the scripting world.
+- [Apache MINA SSHD](https://github.com/apache/mina-sshd) (Java) — a full SSH client+server *library* (not a CLI); the reference for SSH-as-embeddable-protocol rather than a daemon.
+
+**L1 address grammar:**
+
+- [`websocat`](https://docs.rs/websocat) / `socat` — socat-style address specifiers; the dialect reference for `pdbd`'s `--socket` L1 addresses (grammar *reimplemented*, never copied from GPL `socat`).
+
+**Control-plane wire & mux standards** — what the interop requirement draws on:
+
+- **gRPC** (HTTP/2 + protobuf, CNCF) / **Cap'n Proto RPC** — the two language-neutral RPC standards with built-in stream multiplexing and first-party implementations across Go/Java/C++/Python/C#/Rust; the interop contract (see *Control plane*).
+- **HTTP/2 — RFC 9113** / **QUIC** ([`quinn`](https://docs.rs/quinn)) — the mux + connection-migration reference designs. QUIC-as-the-core-transport was weighed and set aside: it bundles mux + reliability + crypto that `pdbd` already gets from the kernel + PPP, and (like TLS) it is substrate-flexible, so it stays an **external** secured L1 (a QUIC tunnel / `quicat` via `EXEC:`), never a built-in. Its migration design is still the comparison point for our PPP recovery (below). WebTransport — QUIC wearing an OSI-bound web architecture — *is* built in; raw QUIC is not (see *Crypto*).
+- [`yamux`](https://docs.rs/yamux) (libp2p) — a mature userspace stream multiplexer; the thing we **don't** pull, because the kernel IP layer makes it unnecessary.
+
+**Multiplexing daemon & privilege separation** — the process-model prior art:
+
+- **`adb`** — one binary is client *and* server, binds `localhost:5037`, **auto-starts the server if absent**, refcounts, and is "one giant multiplexing loop." The direct model for `pdb central`'s singleton / auto-spawn / refcount lifecycle.
+- **OpenSSH privilege separation** — a privileged monitor + unprivileged, disposable per-connection children with a narrow op-set across the boundary; the model for the core-vs-worker split.
+
+**Roaming / recovery from a dead peer:**
+
+- **Mosh / SSP** — stateless UDP roaming (highest-seq authentic packet re-targets the peer; ≤3 s heartbeat; survives IP/NAT change). The comparison point for our LCP-echo + RCR-in-Opened recovery — Mosh does it at L4 with sequence numbers; we do it at L2 with PPP while kernel TCP tunnels ride on top.
+- **QUIC connection migration** — connection-IDs route across a changed 5-tuple; the same recovery goal solved at the transport layer (and UDP-bound, as above).
+
+**Port-forward / tunnel fleet** — the `forward`/`bind` prior art:
+
+- [`russh`](https://docs.rs/russh) (Rust) — exposes `direct-tcpip`/`forward-tcpip` + unix-socket forwarding; the embeddable-SSH reference for the forwarding primitives.
+- **rathole** (Rust, 14 k★), **bore** (Rust, 11 k★), **chisel** (Go, 17 k★, tunnel-over-HTTP), **frp** (Go, 110 k★) — the NAT-traversal tunnel fleet; prior art for port-forward UX and reverse tunnels (none transport-agnostic the way `pdbd` aims to be).
+
+**The tools this unifies:** `adb`, `ssh`, `qemu-guest-agent`, `docker exec` — each solves one transport or one capability; `pdbd` is the single endpoint that spans them.
+
+---
+
+## Libraries
+
+Candidate Rust dependencies, by layer — versions verified against crates.io on 2026-10-04.
+
+**L2 — PPP:**
+
+- [`ppproto`](https://crates.io/crates/ppproto) `0.2.1` — sans-IO PPP state machine (LCP + IPCP). Primary L2 engine. HDLC framing + FCS are internal to it; a standalone [`hdlc`](https://crates.io/crates/hdlc) `0.4.1` is the fallback only if we drive framing ourselves.
+
+**L3 — TUN device:**
+
+- [`tun-rs`](https://crates.io/crates/tun-rs) `2.8.11` — cross-platform TUN/TAP, async-capable; broadest device support. Preferred.
+- [`tun`](https://crates.io/crates/tun) `0.8.14` / [`tokio-tun`](https://crates.io/crates/tokio-tun) `0.15.2` — leaner Linux-first alternatives if we don't need the portability surface.
+
+**L1 — transports (pluggable):**
+
+- Serial: [`tokio-serial`](https://crates.io/crates/tokio-serial) `5.5.0` (async, over [`mio-serial`](https://crates.io/crates/mio-serial) `5.0.7` / [`serialport`](https://crates.io/crates/serialport) `4.10.1`) — the v0 transport.
+- vsock: [`tokio-vsock`](https://crates.io/crates/tokio-vsock) `0.7.2` — the VM-guest transport.
+- UDP: `tokio`'s `UdpSocket` with a datagram framing — a lossy datagram L1 (no extra crate); the archetypal pipe PPP + kernel-TCP is designed to recover over.
+- WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*). Feature-gated.
+- WebTransport (`webtransport`, built-in secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; built in because its web architecture is OSI-bound (see *Crypto*), a datagram session the default exposure. Needs UDP reachability. Feature-gated.
+
+**Kernel plumbing:**
+
+- [`rtnetlink`](https://crates.io/crates/rtnetlink) `0.23.0` — program routes/addresses on the TUN from the IPCP-negotiated values, without shelling out to `ip`.
+
+**Control plane — RPC (language-neutral; see *Control plane*):**
+
+- [`tonic`](https://crates.io/crates/tonic) `0.14.6` — gRPC/HTTP-2; **recommended** for the three control segments. Its HTTP/2 stream mux *is* the control-plane multiplexer, and the wire is a CNCF standard with first-party implementations in every target language.
+- [`capnp-rpc`](https://crates.io/crates/capnp-rpc) `0.27.0` — Cap'n Proto RPC; the alternative (promise pipelining, lighter than HTTP/2).
+
+**Process model (daemon workers + exec):**
+
+- [`nix`](https://crates.io/crates/nix) `0.31.3` — `fork`/`execve`/`waitpid` and the raw syscalls the worker + exec model needs.
+- PTY (for `shell`): [`portable-pty`](https://crates.io/crates/portable-pty) `0.9.0` (wezterm, cross-platform, mature) or [`pty-process`](https://crates.io/crates/pty-process) `0.5.3` (tokio-native).
+- [`interprocess`](https://crates.io/crates/interprocess) `2.4.4` — async cross-platform local IPC (UDS + named pipes) for the ephemeral↔central socket, if not reusing the RPC lib's own UDS transport.
+- [`sendfd`](https://crates.io/crates/sendfd) `0.4.5` / [`anchovy`](https://crates.io/crates/anchovy) `0.4.1` (async) / [`command-fds`](https://crates.io/crates/command-fds) `0.3.3` — `SCM_RIGHTS` fd-passing, for the **optional same-host** tunnel-handoff optimization only (not the portable default; see *Tunnel ownership*).
+
+**Considered and rejected:**
+
+- [`yamux`](https://crates.io/crates/yamux) `0.14.1` / [`tokio-yamux`](https://crates.io/crates/tokio-yamux) `0.3.20` — userspace stream multiplexer. Unnecessary: the kernel IP layer multiplexes the data plane by 4-tuple, and the RPC framework multiplexes the control plane. We never carry many logical streams over one connection ourselves.
+- **raw QUIC as a built-in transport** — not included. QUIC bundles mux / reliability / crypto `pdbd` already gets from kernel + PPP, and it is substrate-flexible (prone to the same L3 "explosion" as TLS), so it stays **external** — a QUIC tunnel / [`quicat`](https://github.com/pas2k/quicat) via `EXEC:` (see *Crypto*). [`quinn`](https://crates.io/crates/quinn) `0.11.12` still rides in transitively under `wtransport` for WebTransport.
+- `tarpc` — Rust-/serde-private RPC; **disqualified by the interop requirement** (no language-neutral wire a `gopdb`/`jpdb` could target).
+- **gRPC for tunnel *bulk*** — gRPC is recommended for the control plane but rejected for carrying tunnel bulk: many high-throughput streams on one HTTP/2 connection reintroduce the cross-stream head-of-line blocking the per-tunnel kernel-TCP design exists to avoid.
 
 ---
 
@@ -220,7 +454,9 @@ Two native mechanisms do the heavy lifting: **LCP echo** detects the dead/half-o
 
 **v0 (the core):** a daemon + client, userspace-PPP + TUN over a serial transport, the control channel, and `exec` + `forward`.
 
-**Later:** kernel-PPP backend, `vsock`/`ws` transports, multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
+**Later:** kernel-PPP backend, `udp`/`vsock`/`ws` transports, the feature-gated built-in secure transports (`wss`, `webtransport`), multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
+
+**Interoperability (a first-class goal, not an afterthought):** a published, versioned `pdbd.proto` is the cross-language contract. Independent reimplementations — `gopdbd`/`gopdb`, `jpdbd`/`jpdb`, `cpdbd`/`cpdb` — are meant to be **plug-and-play** with this reference impl and each other, mixing freely across the three control segments (see *Control plane*). An alternative daemon may skip a multiprocess worker pool; if it keeps one, that boundary must speak the standard wire.
 
 **Per-deployment:** environment specifics — e.g. the guest kernel's `CONFIG_TUN`, or whatever a mandatory-access-control policy on an enforcing host must grant the daemon so it can create its TUN and program `netfilter` — are a property of each use case, not of `pdbd` itself.
 
