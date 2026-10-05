@@ -1,0 +1,2 @@
+[toolchain]
+channel = "1.88.0" # pinned so the build is reproducible across rig hosts
