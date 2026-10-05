@@ -2,7 +2,7 @@
 
 **A transport-agnostic, inject-and-play debug / RPC bridge — one daemon + one client that give you a reliable, multiplexed control channel, remote `execve`, and port-forwarding over *any* byte pipe, even when the pipe isn't reliable.**
 
-> Status: **design / pre-implementation.** This README is the design spec. Nothing is built yet.
+> Status: **design / pre-implementation.** This README is the design spec; the wire contract (`pdbd.proto`) is defined and gated, but no implementation exists yet.
 
 ---
 
@@ -36,7 +36,7 @@ The central idea: **`pdbd`/`pdb` own L1 (transport) and L2 (link), the kernel ow
 ```mermaid
 flowchart TB
     subgraph app["pdbd / pdb — userspace"]
-        L7["<b>L7 — services</b><br/>exec · shell · forward · bind · socat · drop · list"]
+        L7["<b>L7 — services</b><br/>exec · shell · bridge (socat; forward/bind aliases) · drop · list"]
         L2["<b>L2 — PPP (ppproto, userspace)</b><br/>HDLC framing + FCS · LCP (ACCM, echo) · IPCP"]
     end
     subgraph kern["Linux kernel"]
@@ -78,7 +78,7 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 --socket STDIO                            # ride stdio
 ```
 
-Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
+Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `pdbd` implements this socat-style address dialect **natively** — the inject-and-play goal is **one** binary on the target, never `pdbd` *plus* a `socat` binary. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe — but it runs *whatever program is already there*; it is never a dependency on `socat` being present. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
 
 ### L2 — PPP, in userspace
 
@@ -100,10 +100,10 @@ Because L2 is PPP terminating into a kernel IP interface, the link is itself a *
 
 ### L7 — the services
 
-`pdbd` is, above the link, an RPC/debug agent. Commands: `exec`, `shell`, `forward`, `bind`, `socat`, `drop`, `list`.
+`pdbd` is, above the link, an RPC/debug agent. Commands: `exec`, `shell`, the **bridge** (`socat`, with `forward`/`bind` as aliases within it), `drop`, `list`.
 
 - **`exec` vs `shell`.** `exec` is a structured `execve(argv[])` with stdio tunneled and a real exit code — *no shell, no PTY* (the automation-friendly primitive, like `adb exec-out`). `shell` allocates a PTY (`adb shell` / `ssh -t`). Each invocation is a *fresh, isolated process*, which is what eliminates the dirty-state problem a single shared console would have.
-- **Control plane vs data plane — two different multiplexers.** The **control channel** carries lightweight RPCs (start / drop / list / events); its many concurrent logical streams are multiplexed by the **RPC framework itself** (see *Control plane*), never hand-rolled. Each command's **bulk** gets its **own** TCP tunnel — a separate kernel TCP connection, multiplexed by the **kernel** (4-tuple), *not* streams on one connection. Splitting the two is deliberate: bulk on per-connection kernel TCP avoids the HTTP/2-style cross-stream head-of-line blocking (the QUIC-vs-HTTP/2 lesson) that would couple unrelated tunnels on a lossy link, while the tiny control messages lose nothing to the RPC lib's stream mux.
+- **Control plane vs data plane — different multiplexers.** The **control channel** carries lightweight RPCs (start / drop / list / events); its concurrent logical streams are multiplexed by the **RPC framework itself** (see *Control plane*), never hand-rolled. The **data plane** frames by ssh/socat convention, split by command: an **`exec`/`shell`** stream is *serialized* — its stdio (or PTY master) is one framed stream on its **own** kernel TCP tunnel, with nothing to mux; a **bridge** (`forward`/`socat`) is the single exception — it muxes **all** its flows, TCP *and* UDP, over **one** reliable TCP tunnel (`(flow-id, proto)` per frame), ssh-channel style (see *Why the data plane needs no muxer*). Per-connection kernel tunnels keep unrelated commands off a shared connection (no HTTP/2-style cross-stream head-of-line coupling on a lossy link); the bridge accepts an in-tunnel mux only because UDP must ride a reliable tunnel and one forward is one logical bridge.
 
 ### Process model
 
@@ -241,7 +241,7 @@ Two protocols satisfy "international standard + built-in mux + first-party imple
 
 The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`): one `ControlService` every implementation codegens from — a **published interface contract consumers depend on at a version**, not a transient file. The package is the major version (`pdbd.v1`); within it the schema evolves only compatibly (append fields, never renumber or repurpose), which `buf breaking` enforces in CI.
 
-**The surface.** Nine RPCs on `ControlService`:
+**The surface.** Seven RPCs on `ControlService`:
 
 - **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
 - **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
@@ -372,7 +372,7 @@ pdb  --socket WEBTRANSPORT-CONNECT:gateway.example:443  exec -- uname -a
 
 ### External — compose your own secured L1
 
-Everything else secures *outside* the binary, handed to pdbd through the `EXEC:` escape hatch (or a forwarded local port) — pdbd carries no TLS/SSH/QUIC code. Three ready tools:
+Everything else secures *outside* the binary, handed to pdbd through the `EXEC:` escape hatch (or a forwarded local port) — pdbd carries no TLS/SSH/QUIC code. This runs **where those tools already exist** — typically the **client** side; it is *not* assumed on the injected daemon (single-inject means the target carries only `pdbd`). A daemon-side `pdbd --socket EXEC:'socat …'` below therefore presumes that host happens to have `socat`/`openssl`; where it doesn't, the daemon's secure options are the built-in `WSS`/`WEBTRANSPORT` or a trusted channel. Three ready tools:
 
 **OpenSSL** — a plain TLS pipe via `socat` or the `openssl` binary:
 
@@ -521,7 +521,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Scope
 
-**v0 (the core):** a daemon + client, userspace-PPP + TUN over a serial transport, the control channel, and `exec` + `forward`.
+**v0 (the core):** a daemon + client, userspace-PPP + TUN over a serial transport, the control channel, and `exec` + a `bridge` (a TCP `forward`).
 
 **Later:** kernel-PPP backend, `udp`/`vsock`/`ws` transports, the feature-gated built-in secure transports (`wss`, `webtransport`), multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
 
