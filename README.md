@@ -247,9 +247,9 @@ The artifact that makes cross-language real is a **published, versioned `pdbd.pr
 - **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
 - **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
 - **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is any socat-style address — or the alias **`bind`** (= listen) / **`forward`** (= connect):
-  - **port-forward** (the common case): `pdb client:bind:<proto>:<ip>:<port> daemon:forward:<proto>:<ip>:<port>` (swap the sides for reverse; either order). `bind` and `forward` come as a **pair** — a muxed tunnel has exactly two ends, one ingress + one egress, never two of a kind.
+  - **port-forward** (the common case): `pdb client:bind:<ip>:<port> daemon:forward:<ip>:<port>` (swap the sides for reverse; either order). The alias carries **no proto** — it forwards **both TCP and UDP**; for a single protocol, drop to a raw `TCP-LISTEN:` / `UDP-LISTEN:` address. `bind` and `forward` come as a **pair** — a bridge has exactly two ends, one ingress + one egress, never two of a kind.
   - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any socat address types, for the cases a TCP port-forward can't express.
-  - **One tunnel, muxed.** Endpoints may be **TCP or UDP** (`bind`/`forward` carry a `proto`), and a single bridge **multiplexes all its TCP and UDP flows over one reliable TCP tunnel** — ssh's architecture: a sole **pdb/pdbd worker pair** owns the tunnel and muxes every flow across it (the worker's internal model is implementation-defined, the shared backpressure contract is not — see *Concurrency & flow control*). Raw *lossy* UDP, if ever wanted, crosses natively over the general-purpose PPP network instead.
+  - **One tunnel; muxed on demand.** A bridge rides **one reliable TCP tunnel** owned by a sole **pdb/pdbd worker pair** — ssh's architecture (the worker's internal model is implementation-defined, the shared backpressure contract is not — see *Concurrency & flow control*). A raw `LISTEN` bridges **one connection by default**; append **`,mux`** — pdbd-native, with **`,fork`** as its socat-adoption alias — to **multiplex many connections over the one tunnel** (emulated in the event loop, never a process fork; a socat `max-children` becomes a mux cap). The `bind`/`forward` aliases are always muxed and carry both protocols, so a single port-forward multiplexes all its TCP and UDP flows over that one tunnel. Raw *lossy* UDP, if ever wanted, crosses natively over the general-purpose PPP network instead.
 - **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
 
 **The event protocol.** The streaming RPCs carry a *lifecycle*, not bulk (bulk rides the tunnel):
@@ -272,7 +272,7 @@ The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/T
 
 A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so most tunnels are just another kernel socket, demuxed by 4-tuple. The only scenario a general data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a general mux buys nothing the kernel does not already give.
 
-**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge *does* multiplex, by necessity: its forwarded **UDP** flows must ride a reliable tunnel over the lossy link (raw UDP would just drop), and a single port-forward is one logical bridge carrying both its TCP connections and UDP flows. So a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
+**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge multiplexes **when it carries more than one flow**, by necessity: the `bind`/`forward` aliases forward **both** TCP and UDP, and a `,mux`/`,fork` LISTEN accepts many connections — all riding **one reliable TCP tunnel** over the lossy link (forwarded UDP especially must, since raw UDP would just drop). So such a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. A plain single-connection, single-protocol `LISTEN` carries one flow and needs no frame — a bare stream. Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
 
 ### Concurrency & flow control
 
@@ -318,17 +318,18 @@ pdb list                                                       # show the tunnel
 
 - **`exec` / `shell`** are verbs because they carry argv — everything after `--` is the remote command verbatim (no shell on `exec`; a PTY only on `shell`).
 - **the bridge** is two `<side>:<endpoint>` args, `<side>` ∈ `client | daemon`, `<endpoint>` either an alias or a raw socat address:
-  - **alias** — `bind:<proto>:<ip>:<port>` (listen) or `forward:<proto>:<ip>:<port>` (connect), `<proto>` ∈ `tcp | udp` (always stated). Exactly one `bind` + one `forward` — a muxed tunnel has two ends — in either order:
+  - **alias** — `bind:<ip>:<port>` (listen) or `forward:<ip>:<port>` (connect). No proto: an alias forwards **both TCP and UDP**, and is always muxed. Exactly one `bind` + one `forward` — a bridge has two ends — in either order:
 
     ```
-    pdb client:bind:tcp:0.0.0.0:5432  daemon:forward:tcp:10.0.0.5:5432   # local-forward (swap sides for reverse)
-    pdb client:bind:udp:0.0.0.0:53    daemon:forward:udp:10.0.0.5:53     # UDP works the same; both ride one TCP tunnel
+    pdb client:bind:0.0.0.0:5432  daemon:forward:10.0.0.5:5432   # local-forward, TCP+UDP both (swap sides for reverse)
+    pdb daemon:bind:0.0.0.0:8080  client:forward:127.0.0.1:3000  # reverse — just swap the sides
     ```
 
-  - **raw socat** — any address type, for what a port-forward can't express:
+  - **raw socat** — any address type, for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
 
     ```
-    pdb client:TCP-LISTEN:8080  daemon:EXEC:'/usr/local/bin/sensor'
+    pdb client:TCP-LISTEN:8080      daemon:EXEC:'/usr/local/bin/sensor'  # one connection, bridged, done
+    pdb client:TCP-LISTEN:8080,mux  daemon:TCP:10.0.0.5:80               # ,mux (≡ socat ,fork): many conns, one tunnel
     ```
 
 - **`drop` / `list`** are verbs over the tunnel table; `<id>` is what the bridge printed.
