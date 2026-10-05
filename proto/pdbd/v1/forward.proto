@@ -5,13 +5,15 @@ package pdbd.v1;
 import "pdbd/v1/common.proto";
 
 message ForwardRequest {
-  Endpoint listen = 1;
-  Endpoint target = 2;
+  oneof bind {
+    Endpoint client = 1;
+    Endpoint daemon = 2;
+  }
+  Endpoint target = 3;
 }
 
-message BindRequest {
-  Endpoint listen = 1;
-  Endpoint target = 2;
+message ForwardResponse {
+  uint64 id = 1;
 }
 
 message SocatRequest {

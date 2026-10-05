@@ -15,8 +15,7 @@ service ControlService {
   rpc Exec(ExecRequest) returns (stream CommandEvent);
   rpc Shell(ShellRequest) returns (stream CommandEvent);
   rpc Resize(ResizeRequest) returns (ResizeResponse);
-  rpc Forward(ForwardRequest) returns (stream TunnelEvent);
-  rpc Bind(BindRequest) returns (stream TunnelEvent);
+  rpc Forward(ForwardRequest) returns (ForwardResponse);
   rpc Socat(SocatRequest) returns (stream TunnelEvent);
   rpc Drop(DropRequest) returns (DropResponse);
   rpc List(ListRequest) returns (ListResponse);

@@ -246,13 +246,14 @@ The artifact that makes cross-language real is a **published, versioned `pdbd.pr
 - **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
 - **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
 - **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
-- **`Forward`** / **`Bind`** / **`Socat`** — open a tunnelling listener; each returns a **stream of tunnel events**. `Forward` binds on the client side and dials a target from the daemon side; `Bind` is the reverse (bind daemon-side, dial from the client side); `Socat` bridges two socat-style addresses, each opened by whichever end can reach it.
+- **`Forward`** — set up a port-forward; returns a tunnel **id** to pass to `Drop`. The **binding side is named explicitly** (no implied "local" end): the request's `bind` is a `oneof` naming the end that listens — `client` or `daemon` — and `target` is dialed from the *other* end per accepted connection. So `bind{client} + target` is a local-forward (ssh `-L`) and `bind{daemon} + target` a reverse-forward (ssh `-R`); the direction is in the request, not a convention. (On the CLI: `pdb bind:client:<ip>:<port> forward:daemon:<ip>:<port>`, and vice-versa.) There is **no separate `Bind` RPC** — one `Forward` parameterised by binding side covers both directions. The `bind` `oneof` carries the side by *presence*, so there is no invalid "unspecified" default to reject.
+- **`Socat`** — the general bridge: two socat-style addresses (`left` this end, `right` the far end), each any socat type, bridged over the link. Returns a **stream of tunnel events**; `Forward` is the typed TCP specialisation of it.
 - **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
 
 **The event protocol.** The streaming RPCs carry a *lifecycle*, not bulk (bulk rides the tunnel):
 
 - a **command stream** (`Exec`/`Shell`) emits `opened` **first** — connect that command's stdio/PTY tunnel — then exactly **one terminal** event: `exited` (an exit `code`, meaningful when the terminating `signal` is `0`) or `error`.
-- a **tunnel stream** (`Forward`/`Bind`/`Socat`) emits one `opened` **per accepted connection** (own its tunnel) and a `closed` when each connection ends.
+- a **tunnel stream** (`Socat`) emits one `opened` **per accepted connection** (own its tunnel) and a `closed` when each ends. (`Forward` instead returns its tunnel id directly; its per-connection tunnels surface in `List`.)
 
 The `pdbd.v1` module is split by concern across `service` / `command` / `forward` / `tunnel` / `common` `.proto` files (all one package); the files carry no prose — all of the above is their documentation.
 
