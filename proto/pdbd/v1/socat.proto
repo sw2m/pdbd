@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package pdbd.v1;
+
+message SocatRequest {
+  string client = 1;
+  string daemon = 2;
+}
+
+message SocatResponse {
+  uint64 id = 1;
+}

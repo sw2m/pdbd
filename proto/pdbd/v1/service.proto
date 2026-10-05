@@ -3,11 +3,11 @@ syntax = "proto3";
 // Control-plane wire contract — schema only. All semantics (the RPC surface, the
 // event protocol, request/field meanings, versioning) are documented in the README
 // (§"Control plane"); see also sw2m/pdbd#2. The pdbd.v1 module is split across
-// service / command / forward / tunnel / common .proto files.
+// service / command / socat / tunnel / common .proto files.
 package pdbd.v1;
 
 import "pdbd/v1/command.proto";
-import "pdbd/v1/forward.proto";
+import "pdbd/v1/socat.proto";
 import "pdbd/v1/tunnel.proto";
 
 service ControlService {
@@ -15,8 +15,7 @@ service ControlService {
   rpc Exec(ExecRequest) returns (stream CommandEvent);
   rpc Shell(ShellRequest) returns (stream CommandEvent);
   rpc Resize(ResizeRequest) returns (ResizeResponse);
-  rpc Forward(ForwardRequest) returns (ForwardResponse);
-  rpc Socat(SocatRequest) returns (stream TunnelEvent);
+  rpc Socat(SocatRequest) returns (SocatResponse);
   rpc Drop(DropRequest) returns (DropResponse);
   rpc List(ListRequest) returns (ListResponse);
 }
