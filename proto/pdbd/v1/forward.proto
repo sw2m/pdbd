@@ -6,10 +6,13 @@ import "pdbd/v1/common.proto";
 
 message ForwardRequest {
   oneof bind {
-    Endpoint client = 1;
-    Endpoint daemon = 2;
+    Endpoint bind_client = 1;
+    Endpoint bind_daemon = 2;
   }
-  Endpoint target = 3;
+  oneof forward {
+    Endpoint forward_client = 3;
+    Endpoint forward_daemon = 4;
+  }
 }
 
 message ForwardResponse {
