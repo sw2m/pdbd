@@ -109,7 +109,7 @@ Because L2 is PPP terminating into a kernel IP interface, the link is itself a *
 
 The two ends have **different** process constraints:
 
-- **`pdb` (client-side) requires multiprocess.** Each `pdb exec …` you type is a distinct OS process; `central` is a separate singleton process; they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
+- **`pdb` (client-side) requires multiprocess.** Each invocation is a distinct OS process, `central` is a separate singleton, and a `forward`/`bind` gets its own spun-up **`pdb worker`** process (the client/worker/central split is detailed under *Topology*); they coordinate over local IPC. The invocation model *forces* this — it cannot collapse to one process.
 - **`pdbd` (daemon-side) is multiworker and does not require multiprocess.** Its hard requirement is a **connection owner per tunnel** (something holds the socket fd and drives it) plus **`execve` children**. The `execve` children do run as separate processes (`execve` replaces the image); the *connection owners* need not be — they may be `async` tasks, threads, or processes. Process-per-tunnel is a **choice for crash/exploit isolation** (a faulting tunnel can't corrupt the core — `sshd`-privsep's rationale), not an architectural requirement. An alternative-language `pdbd` may run a single-process worker pool — and if it instead runs a *multiprocess* pool, that core↔worker boundary becomes public wire (see *Control plane*).
 
 Common to both ends: a small, long-lived **control-plane core** owns the link and the control channel, while volatile per-connection work lives in disposable workers (`sshd`'s process-per-connection, `adbd`'s per-stream model). Concurrency within a worker is `async` (tokio); isolation *between* tunnels is whatever boundary the impl chose.
@@ -123,60 +123,60 @@ Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" (o
 ```mermaid
 flowchart LR
     subgraph client["client-side"]
-        E1["pdb (ephemeral)"]
-        E2["pdb (ephemeral)"]
-        CC["pdb (central)"]
-        E1 -->|local IPC| CC
-        E2 -->|local IPC| CC
+        PC["pdb client"]
+        PW["pdb worker"]
+        CC["pdb central"]
+        PC -->|local IPC| CC
+        PW -->|local IPC| CC
     end
     subgraph daemon["daemon-side — always-on"]
-        DC["pdbd (central)"]
-        W1["pdbd (worker)"]
-        W2["pdbd (worker)"]
-        DC -->|local IPC| W1
-        DC -->|local IPC| W2
+        DC["pdbd central"]
+        DW1["pdbd worker"]
+        DW2["pdbd worker"]
+        DW1 -->|local IPC| DC
+        DW2 -->|local IPC| DC
     end
-    CC <==>|control channel| DC
-    E1 <-.->|data tunnel| W1
-    CC <-.->|standing forward| W2
+    CC <==>|"PPP link — control channel + every tunnel"| DC
 ```
 
-Heavy line = the single **control channel** (RPC); dotted = per-command **data tunnels**. **Every one of them is a separate kernel-TCP connection multiplexed over the one PPP link.** The **centrals** own the link and the control channel; the **connection owners** — an ephemeral (or central, for a standing forward) on the client, a worker on the daemon — each hold their own tunnel's socket fd, so bulk data never flows *through* a central. The parenthesised `(central)` is a **role**, never a command you type.
+The heavy line is the one **PPP link between the two centrals**, and it carries **everything** — the control channel *and* every data tunnel, each a separate kernel-TCP connection the kernel demuxes by 4-tuple. **Ownership and transport are different things.** The **centrals** own the link and *transport* every tunnel (each end's kernel routes tunnel packets out its **TUN**, and the central's `ppproto` pump carries them over the link) — but a central never holds a tunnel's socket. The **connection owners** do: a **`pdb client`** for its `exec`/`shell`, a **`pdb worker`** for a `forward`/`bind`, a **`pdbd worker`** on the daemon end. So a tunnel's bytes *flow through* the centrals' PPP pipe while being *owned* at the edges. `central`/`worker`/`client` are **roles**, never commands you type.
 
-- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. The permanent endpoint.
-- **`pdb`** — the client, in **two roles**:
-  - **(ephemeral)** — the per-command invocations you actually run (`pdb exec …`, `pdb forward …`), each the connection owner of its own tunnel.
-  - **(central)** — a **singleton** client-side process that owns the PPP link and the control channel, so the expensive, fragile link is established *once* and amortized, never rebuilt per command.
+- **`pdbd`** — the daemon. **Always on**, daemon-side, idles waiting for a peer. The permanent endpoint; its **workers** own the daemon end of every tunnel.
+- **`pdb`** — the client, in **three roles**:
+  - **client** — the per-command invocation you actually run (`pdb exec …`, `pdb forward …`): command-and-control plus `exec`/`shell` stdio, owning its own `exec`/`shell` tunnel. Dies with the command.
+  - **worker** — spun up by central to **own a `forward`/`bind`** on the client end, mirroring a `pdbd` worker. Outlives the `client` that asked for it; lives as long as the tunnel.
+  - **central** — a **singleton** that owns the PPP link + control channel and **transports** every tunnel over it, so the expensive, fragile link is established *once* and amortized. Holds no tunnel socket itself.
 
-**Orchestration.** You only ever invoke an *ephemeral* `pdb`. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches to it. Every ephemeral shares that single central. There is no `pdb central` command; central is spawned, discovered, and reaped implicitly.
+**Orchestration.** You only ever invoke a `pdb` **client**. On start it finds the running **central**, or — if none exists — **auto-spawns one** (exactly as `adb` auto-starts its background server) and attaches. A `forward`/`bind` client asks central to **spin up a `pdb worker`** to own the tunnel, then the client may exit; an `exec`/`shell` client owns its tunnel itself. Every client and worker shares the one central. There is no `pdb central`/`pdb worker` command — both are spawned, discovered, and reaped implicitly.
 
-**IPC.** ephemeral ↔ central speak over a **local IPC socket** (a unix domain socket). central owns the one PPP link and the control channel to `pdbd`; it is an **RPC router, not a byte relay** — it forwards each ephemeral's control calls onto the link and keeps the tunnel table, but stays *out* of the bulk data path. An ephemeral's own tunnel socket is owned by the ephemeral (see *Tunnel ownership*), so `exec`/`shell` bytes flow ephemeral ↔ `pdbd`-worker directly over kernel TCP, never through central. The ephemeral is a thin local client; central is where the link, the control channel, and the tunnel table live. The three control hops and the wire standard they share are detailed under *Control plane*.
+**IPC & transport.** A `pdb` client/worker ↔ central speak over a **local IPC socket** (UDS) for control. central owns the PPP link + the control channel to `pdbd` and **transports** every tunnel over the link — but it is **not a socket-owning relay**: a tunnel is a kernel-TCP connection whose *endpoints* are owned by the client/worker and the `pdbd` worker, while its *packets* ride central's TUN→PPP pump. So central moves the bytes (as IP over PPP) without ever holding the tunnel's socket or seeing it as an application stream. central is where the link, the control channel, and the tunnel table live; the owners hold the fds. The three control hops and the wire standard they share are detailed under *Control plane*.
 
-**Lifecycle.** central's lifetime is **refcounted to the tunnel table — not to the number of ephemerals.** It exits when the active-tunnel count drops to zero, which brings the link down. So a standing `forward`/`bind` (a tunnel *owned by central*) keeps central alive after the ephemeral that launched it has exited, while an `exec`/`shell` tunnel dies with its ephemeral. (An idle-linger grace before exit is an option, to keep a warm link across bursts of activity.)
+**Lifecycle.** central's lifetime is **refcounted to the tunnel table — not to the number of clients.** It exits when the active-tunnel count drops to zero, which brings the link down. A standing `forward`/`bind` is owned by a **`pdb worker`** that outlives the `client` which launched it, so it keeps the tunnel table non-empty and central alive; an `exec`/`shell` tunnel dies with its `client`. (An idle-linger grace before exit is an option, to keep a warm link across bursts of activity.)
 
 ### Tunnel ownership
 
-**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP. The difference is not a layer; it's **which process holds each endpoint socket.** Ownership is symmetric: every tunnel has a **connection owner at each end**, and the centrals stay out of the data path.
+**All** TCP — `pdbd`'s debug tunnels *and* other traffic on the general-purpose PPP network — rides the kernel's TCP/IP over the one PPP link. Two distinct questions, often conflated: **who owns a tunnel's socket**, and **who transports its packets.**
 
 ```mermaid
-flowchart TB
-    CC["pdb (central)"]
-    DC["pdbd (central)"]
-    E["pdb (ephemeral)"]
-    W1["pdbd (worker)"]
-    W2["pdbd (worker)"]
-    CC <==>|control channel| DC
-    E <-->|"tunnel: exec — owners: ephemeral ↔ worker"| W1
-    CC <-->|"tunnel: forward — owners: central ↔ worker"| W2
-    G["some app"] <-. "general-purpose PPP network — kernel-forwarded, no pdbd socket" .-> R["some remote"]
+flowchart LR
+    PC["pdb client"]
+    PW["pdb worker"]
+    CC["pdb central"]
+    DC["pdbd central"]
+    DW["pdbd worker"]
+    G["some app"]
+    PC -. "exec/shell TCP ↕ kernel TUN" .-> CC
+    PW -. "forward/bind TCP ↕ kernel TUN" .-> CC
+    CC <==>|"PPP link — transports every tunnel"| DC
+    DC -. "TCP ↕ kernel TUN" .-> DW
+    G -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> CC
 ```
 
-- A **debug tunnel** has a tunnel-id and a connection owner at each end: the daemon-side **worker** that `accept`ed/`connect`ed it, and a client-side owner — the **ephemeral** for an `exec`/`shell` tunnel, or **central** for a standing `forward`/`bind`. Each central keeps the *tunnel table* (for control + refcount); the owner holds the *fd*.
-- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdbd` socket** — it never enters a tunnel table. It shows up only in the *kernel's* view (`ss` / `conntrack`).
+- **Ownership (the edges).** Every debug tunnel is a kernel-TCP connection with a connection owner at each end, each holding the *fd* and doing the I/O: a **`pdb client`** for its `exec`/`shell`, a **`pdb worker`** for a `forward`/`bind`, and a **`pdbd worker`** on the daemon end. The owner **opens its socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` itself. Nothing passes an fd across a boundary, so every boundary stays portable and language-neutral (a cross-language/cross-host worker can't receive a Unix `SCM_RIGHTS` descriptor). **fd-passing** (`SCM_RIGHTS`) survives only as an **optional same-host optimization**, never part of the wire contract.
+- **Transport (the middle).** The **centrals own no tunnel socket** — they move the packets. Each owner's kernel routes its tunnel traffic out the **TUN**; the central's `ppproto` pump carries it over the PPP link to the peer central, whose TUN delivers it to the peer owner. So the centrals *transport* every tunnel (and the control channel) without ever holding a tunnel fd or seeing it as an application stream. Each central also keeps the **tunnel table** (control + refcount) — accounting, not ownership.
+- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdb`/`pdbd` socket** at all — it never enters a tunnel table, rides the same PPP link, and shows up only in the *kernel's* view (`ss` / `conntrack`).
 
-Ownership needs no packet inspection: it's just which process holds the fd. The kernel does the TCP for everything regardless.
-
-**Who holds the fd, and how it gets there.** The owning worker (a `pdbd` conn-worker, or a client-side ephemeral for its own `exec`) **opens its tunnel socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` and holds the fd itself. Nothing passes an fd across a boundary, which keeps every boundary portable and language-neutral: a cross-language or cross-host worker cannot receive a Unix `SCM_RIGHTS` descriptor. **fd-passing** (`SCM_RIGHTS`) is kept only as an **optional same-host optimization** — when central already holds a listening socket and both ends are co-located Unix processes — and is never part of the wire contract.
+Ownership needs no packet inspection — it's just which process holds the fd; transport needs none either — the kernel routes it to the TUN. The kernel does the TCP for everything regardless.
 
 ### Cleanup — reactive first, `drop` as a convenience
 
@@ -210,7 +210,7 @@ Two native mechanisms do the heavy lifting: **LCP echo** detects the dead/half-o
 
 The data plane is multiplexed by the **kernel** (per-tunnel 4-tuple) and `ppproto` (frames on the pipe) — settled, and no userspace muxer is pulled for it. What genuinely needs multiplexing is the **control plane**, which is **three segments**:
 
-1. **pdb ephemeral → pdb central** — local IPC (UDS)
+1. **pdb client / pdb worker → pdb central** — local IPC (UDS)
 2. **pdb central → pdbd central** — over the PPP link (kernel TCP over the TUN)
 3. **pdbd central → pdbd conn-worker** — local IPC (UDS), *present only when the daemon runs a multiprocess worker pool*
 
