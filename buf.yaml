@@ -1,0 +1,15 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # Deliberate: Exec/Shell share CommandEvent and Forward/Bind/Socat share TunnelEvent —
+    # identical lifecycles, intentionally one event type each. Per-RPC response wrappers
+    # would add a pointless nesting layer, so the uniqueness + response-name rules are waived.
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

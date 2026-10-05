@@ -239,7 +239,25 @@ Two protocols satisfy "international standard + built-in mux + first-party imple
 
 ### The contract is a versioned schema
 
-The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`) defining the service — `Exec`/`Shell`/`Forward`/`Bind`/`List`/`Drop`, message types, streaming semantics. Every implementation codegens from it; it is a **published interface contract consumers depend on at a version**, not a transient file.
+The artifact that makes cross-language real is a **published, versioned `pdbd.proto`** (or `.capnp`): one `ControlService` every implementation codegens from — a **published interface contract consumers depend on at a version**, not a transient file. The package is the major version (`pdbd.v1`); within it the schema evolves only compatibly (append fields, never renumber or repurpose), which `buf breaking` enforces in CI.
+
+**The surface.** Nine RPCs on `ControlService`:
+
+- **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
+- **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
+- **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
+- **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is any socat-style address — or the alias **`bind`** (= listen) / **`forward`** (= connect):
+  - **port-forward** (the common case): `pdb client:bind:<proto>:<ip>:<port> daemon:forward:<proto>:<ip>:<port>` (swap the sides for reverse; either order). `bind` and `forward` come as a **pair** — a muxed tunnel has exactly two ends, one ingress + one egress, never two of a kind.
+  - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any socat address types, for the cases a TCP port-forward can't express.
+  - **One tunnel, muxed.** Endpoints may be **TCP or UDP** (`bind`/`forward` carry a `proto`), and a single bridge **multiplexes all its TCP and UDP flows over one reliable TCP tunnel** — ssh's architecture: a sole **pdb/pdbd worker pair** owns the tunnel and muxes every flow across it (that worker's internal model — event loop / threads / processes — is deferred, and will matter). Raw *lossy* UDP, if ever wanted, crosses natively over the general-purpose PPP network instead.
+- **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
+
+**The event protocol.** The streaming RPCs carry a *lifecycle*, not bulk (bulk rides the tunnel):
+
+- a **command stream** (`Exec`/`Shell`) emits `opened` **first** — connect that command's stdio/PTY tunnel — then exactly **one terminal** event: `exited` (an exit `code`, meaningful when the terminating `signal` is `0`) or `error`.
+- the **bridge** (`Socat`) does **not** stream — it returns its tunnel **id** once, and the many TCP/UDP flows it muxes over that one tunnel surface in `List`, not as events.
+
+The `pdbd.v1` module is split by concern across `service` / `command` / `socat` / `tunnel` / `common` `.proto` files (all one package); the files carry no prose — all of the above is their documentation.
 
 ### Two standardized layers, stacked
 
@@ -252,7 +270,9 @@ The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/T
 
 ### Why the data plane needs no muxer at all
 
-A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so each tunnel is just another kernel socket, demuxed by 4-tuple. The only scenario a data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a mux buys nothing the kernel does not already give.
+A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so most tunnels are just another kernel socket, demuxed by 4-tuple. The only scenario a general data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a general mux buys nothing the kernel does not already give.
+
+**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge *does* multiplex, by necessity: its forwarded **UDP** flows must ride a reliable tunnel over the lossy link (raw UDP would just drop), and a single port-forward is one logical bridge carrying both its TCP connections and UDP flows. So a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
 
 ---
 
