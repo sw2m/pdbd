@@ -276,6 +276,55 @@ A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to
 
 ---
 
+## The `pdb` / `pdbd` CLI
+
+The *Control plane* above is the RPC surface; this is how a human drives it. The daemon binds a transport and waits; the client runs one command over the link.
+
+```
+# daemon — bind an L1 transport, idle until a peer attaches
+pdbd --socket <L1>
+
+# client — run a command. --socket/--ip/--port apply only to the invocation
+#          that establishes or attaches the link; a running central already
+#          holds it, so later commands omit them.
+pdb [--socket <L1>] [--ip <ppp-ip>] [--port <n>] <command>
+```
+
+**Link flags** (link-establishing invocation only):
+- `--socket <L1>` — the L1 transport, a socat-style address: `FILE:/dev/ttyS0,b115200,raw`, `TCP:host:port`, `VSOCK-CONNECT:cid:port`, `WSS-CONNECT:host:443`, `EXEC:'ssh host …'`, `STDIO`, …
+- `--ip <ppp-ip>` / `--port <n>` — the control-channel address on the PPP link; optional, IPCP-negotiated when omitted.
+
+**Commands:**
+
+```
+pdb exec  [--cwd DIR] [--env K=V]… [--clear-env] -- argv…      # structured execve; stdio tunneled, real exit code
+pdb shell [--cwd DIR] [--env K=V]… [--clear-env] [-- argv…]    # PTY; empty argv ⇒ login shell
+pdb <side>:<endpoint>  <side>:<endpoint>                       # the bridge (forward / socat) → prints a tunnel id
+pdb drop <id>                                                  # tear a tunnel down
+pdb list                                                       # show the tunnel table
+```
+
+- **`exec` / `shell`** are verbs because they carry argv — everything after `--` is the remote command verbatim (no shell on `exec`; a PTY only on `shell`).
+- **the bridge** is two `<side>:<endpoint>` args, `<side>` ∈ `client | daemon`, `<endpoint>` either an alias or a raw socat address:
+  - **alias** — `bind:<proto>:<ip>:<port>` (listen) or `forward:<proto>:<ip>:<port>` (connect), `<proto>` ∈ `tcp | udp` (always stated). Exactly one `bind` + one `forward` — a muxed tunnel has two ends — in either order:
+
+    ```
+    pdb client:bind:tcp:0.0.0.0:5432  daemon:forward:tcp:10.0.0.5:5432   # local-forward (swap sides for reverse)
+    pdb client:bind:udp:0.0.0.0:53    daemon:forward:udp:10.0.0.5:53     # UDP works the same; both ride one TCP tunnel
+    ```
+
+  - **raw socat** — any address type, for what a port-forward can't express:
+
+    ```
+    pdb client:TCP-LISTEN:8080  daemon:EXEC:'/usr/local/bin/sensor'
+    ```
+
+- **`drop` / `list`** are verbs over the tunnel table; `<id>` is what the bridge printed.
+
+**Parsing rule.** The first non-flag token is either a bare **verb** (`exec`/`shell`/`drop`/`list`) or a **`<side>:…` bridge endpoint** (it begins `client:` or `daemon:`). The leading `client:`/`daemon:` is unambiguous, so verbs and bridge args never collide — forwarding needs no verb of its own.
+
+---
+
 ## Bootstrap & the control channel
 
 - `pdbd` is already running. `pdb central` comes up, brings up the PPP link, and **learns `pdbd`'s control address from its own IPCP** — no fixed address required, no out-of-band discovery.
