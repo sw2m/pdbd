@@ -164,17 +164,19 @@ flowchart LR
     CC["pdb central"]
     DC["pdbd central"]
     DW["pdbd worker"]
-    G["some app"]
+    GC["some app (client-side)"]
+    GD["some app (daemon-side)"]
     PC -. "exec/shell TCP ↕ kernel TUN" .-> CC
     PW -. "forward/bind TCP ↕ kernel TUN" .-> CC
     CC <==>|"PPP link — transports every tunnel"| DC
     DC -. "TCP ↕ kernel TUN" .-> DW
-    G -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> CC
+    GC -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> CC
+    GD -. "general-purpose IP — kernel-forwarded, no pdb/pdbd socket" .-> DC
 ```
 
 - **Ownership (the edges).** Every debug tunnel is a kernel-TCP connection with a connection owner at each end, each holding the *fd* and doing the I/O: a **`pdb client`** for its `exec`/`shell`, a **`pdb worker`** for a `forward`/`bind`, and a **`pdbd worker`** on the daemon end. The owner **opens its socket from creation** — directed over RPC ("accept/connect tunnel-id *X*"), it does the `accept`/`connect` itself. Nothing passes an fd across a boundary, so every boundary stays portable and language-neutral (a cross-language/cross-host worker can't receive a Unix `SCM_RIGHTS` descriptor). **fd-passing** (`SCM_RIGHTS`) survives only as an **optional same-host optimization**, never part of the wire contract.
 - **Transport (the middle).** The **centrals own no tunnel socket** — they move the packets. Each owner's kernel routes its tunnel traffic out the **TUN**; the central's `ppproto` pump carries it over the PPP link to the peer central, whose TUN delivers it to the peer owner. So the centrals *transport* every tunnel (and the control channel) without ever holding a tunnel fd or seeing it as an application stream. Each central also keeps the **tunnel table** (control + refcount) — accounting, not ownership.
-- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdb`/`pdbd` socket** at all — it never enters a tunnel table, rides the same PPP link, and shows up only in the *kernel's* view (`ss` / `conntrack`).
+- **General-purpose PPP-network** traffic is kernel-forwarded IP with **no `pdb`/`pdbd` socket** at all — it never enters a tunnel table, rides the same PPP link, and shows up only in the *kernel's* view (`ss` / `conntrack`). **Both** ends have a TUN, so the PPP network is symmetric: an app on *either* host — client-side or daemon-side — can put ordinary traffic on the link, not just `pdbd`'s tunnels.
 
 Ownership needs no packet inspection — it's just which process holds the fd; transport needs none either — the kernel routes it to the TUN. The kernel does the TCP for everything regardless.
 
@@ -264,7 +266,7 @@ A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to
 
 ## Crypto
 
-`pdbd` grows **no crypto layer of its own**. Its stance is exactly **socat's** — select a secured transport, pass its options through, hold no security *policy*. (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
+`pdbd` grows **no crypto layer of its own**. Its stance is *approximately* **socat's** — select a secured transport, pass its options through, hold no security *policy* — with one deliberate departure: socat carries OpenSSL **internally**, `pdbd` does not. TLS is composed *externally* (below), so pdbd ships no TLS stack of its own. (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
 
 So the only question is **which secured transports are built in vs composed externally**, and it reduces to **one criterion**:
 
@@ -275,7 +277,7 @@ The test is **L3-and-below**, not L4 — everyone can assume TLS→TCP and QUIC�
 - **WSS / WebTransport → built in.** You *could* run WSS over an exotic L1 — it isn't forbidden — but it would be an unreasonable stack. WSS is built for **conventional routed web traffic**: HTTP upgrade + framing + masking, *plus* TLS — and that overhead only earns its keep when routers and firewalls sit between the ends. Strip that context (a point-to-point serial line, a vsock) and the web machinery buys nothing: raw OpenSSL gives the *same* TLS with **less** overhead, raw QUIC likewise. So nobody off the conventional web reaches for WSS/WT — even the odd low-latency case (Chrome driving CDP over WebSocket) stays on routed OSI TCP. The substrate doesn't explode because **the protocol stops making sense the moment it would**, which is what makes it safe to assume.
 - **TLS and QUIC → external.** They are substrate-flexible *and* they are exactly what an explosion favors — lower overhead, no router assumption. TLS is *already* exercised polymorphically (over TCP, unix, vsock, serial, tunnels); QUIC isn't dominated by exotic substrates today, but nothing stops it following TLS — and when traffic *does* leave the routed web, raw TLS / raw QUIC streams are precisely where it lands. So there is no stable substrate to assume; both stay external — which is also a *feature*: it encourages users to compose their own secured L1 (SSH, openssl-over-serial/vsock, plain TLS-over-TCP, a QUIC tunnel) rather than privileging one.
 
-**WebTransport is built in even though it rides QUIC** — because the test is the *protocol's economics*, not its transport. WT carries the same web-oriented overhead as WSS, so an exploded-substrate deployment would drop it for raw QUIC just as it drops WSS for raw TLS; its substrate stays stable for the same reason. Raw QUIC carries no such overhead to shed, so it's the thing explosion lands on. WT ≠ QUIC for this decision.
+**WebTransport is included for the same reason as WSS.** It carries the same web-oriented overhead, so an exploded-substrate deployment would drop it for raw QUIC exactly as it drops WSS for raw TLS — its substrate stays stable by the same economics. Raw QUIC has no such overhead to shed, so it is where an explosion lands: external, not built in.
 
 Secure transports are **feature-gated** — `serial`/`udp`/`unix`/`tcp`/`stdio`/`exec` are always in; `wss`/`webtransport` are opt-in `cargo` features, so the lean trusted-channel core never has to carry a TLS/QUIC dependency tree.
 
