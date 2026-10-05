@@ -21,7 +21,7 @@ They solve the *same* problem — *run a process on the far side of a byte chann
 
 `pdbd` collapses that into **one binary over "everything is a socket"**:
 
-- **Any transport.** Serial, `vsock`, unix socket, TCP, a PTY, stdio, a websocket, or *any program's stdio* — selected with a [socat](https://www.redhat.com/en/blog/getting-started-socat)-style address.
+- **Any transport.** Serial, UDP, `vsock`, unix socket, TCP, a PTY, stdio, a websocket, or *any program's stdio* — selected with a [socat](https://www.redhat.com/en/blog/getting-started-socat)-style address.
 - **Reliable even when the transport isn't.** The transport is assumed hostile and lossy *by construction* — a transport may be a noisy physical UART, a Serial-over-LAN link, or any channel that drops bytes, and "it happens to be a reliable `vsock` today" is never an assumption we're allowed to make. `pdbd` runs **PPP in userspace** to turn any dumb pipe into a real IP link, and lets the **kernel's TCP** carry reliability on top.
 - **`execve`, not shell.** Structured `execve(argv[])` with stdio tunneled and a real exit code; a PTY *only* when you ask for `shell`. This is what makes it safe for automation and able to drive serial/console-only hosts the big tools can't.
 
@@ -44,7 +44,7 @@ flowchart TB
         TUN["TUN device (kernel L3 interface)"]
     end
     subgraph wire["L1 — transport (assumed UNRELIABLE, pluggable)"]
-        T["serial · vsock · unix · tcp · pty · stdio · ws · exec"]
+        T["serial · udp · vsock · unix · tcp · pty · stdio · ws · wss · webtransport · exec"]
     end
 
     L7 <-->|kernel sockets| L34
@@ -70,13 +70,15 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 --socket FILE:/dev/ttyS0,b115200,raw      # a physical UART / Serial-over-LAN device
 --socket UNIX-CONNECT:/run/vm/guest.sock  # a VM host-end chardev socket
 --socket VSOCK-CONNECT:3:9000             # vsock (cid:port)
+--socket UDP-CONNECT:host:9000            # a lossy datagram pipe (the archetype L1)
 --socket WS-LISTEN:0.0.0.0:8080           # websocket (insecure)
 --socket WSS-CONNECT:host:443             # websocket-secure (TLS) — see Crypto
+--socket WEBTRANSPORT-CONNECT:host:443    # WebTransport (secure, over QUIC/UDP) — see Crypto
 --socket EXEC:'ssh jump nc target 23'     # ride the link over ANY program's stdio
 --socket STDIO                            # ride stdio
 ```
 
-Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe. `WSS` (and, situationally, `WEBTRANSPORT`) are the *secure* transports (see *Crypto*) — the only crypto-bearing L1 backends built in, because they mandate a complete, self-contained layering.
+Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): they are the two that can be built in safely, because their web architecture binds them to the full routed OSI stack. Other secured pipes (TLS, SSH, raw QUIC) are substrate-flexible, so they compose *externally* via `EXEC:`.
 
 ### L2 — PPP, in userspace
 
@@ -262,45 +264,80 @@ A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to
 
 ## Crypto
 
-`pdbd` has **no crypto layer of its own**, by design. Security is either a **built-in secure *transport*** — one with a complete, self-contained layering the tool can own end-to-end — or **external wrapping** of an insecure transport. It is never a pdbd-implemented "encrypt my arbitrary L1" feature.
+`pdbd` grows **no crypto layer of its own**. Its stance is exactly **socat's** — select a secured transport, pass its options through, hold no security *policy*. (The earlier "we're a trusted-channel debug daemon, so skip crypto" premise fell away once plug-and-play pulled in serious **general-administration / IaC** use, where a secured hop is a normal requirement — so carrying security is in scope; *owning* it is not.)
 
-**Why the line falls between WSS and OpenSSL.** A built-in crypto-bearing transport has to be *fully specified*, so the tool knows exactly what it plugs into. **Websocket-secure mandates its whole stack** — WebSocket (L7) over TLS over TCP (L4) — a complete, standard, self-contained secure byte-stream with a defined handshake. **OpenSSL/TLS generically does not** — it is a general-purpose secure socket, usually over TCP but bound to no particular lower layer, with open-ended cert/cipher/verify policy. Owning that inside pdbd means owning all of that policy surface, and it has no single obvious shape. So **WSS (and, situationally, WebTransport) are built in; everything else secures externally.**
+So the only question is **which secured transports are built in vs composed externally**, and it reduces to **one criterion**:
+
+> **Build in a secure transport iff its architecture binds it to the full routed OSI stack (L1–L4), so an L3-and-below "substrate explosion" is implausible. Substrate-flexible protocols stay external.**
+
+The test is **L3-and-below**, not L4 — everyone can assume TLS→TCP and QUIC→UDP; the unassumable layer is what sits *under* that:
+
+- **WSS / WebTransport are OSI-bound by design → built in.** They are WAN protocols — HTTP-framed, high-latency-tolerant, *built assuming routing equipment between the ends*. Running WSS over a raw serial line is architecturally nonsensical; even the odd low-latency deployments (Chrome driving CDP over WebSocket on loopback) stay on OSI TCP. There is no plausible WSS-over-exotic-L1 explosion, so the substrate is safe to assume.
+- **TLS and QUIC are substrate-flexible → external.** TLS is *already* exercised polymorphically (over TCP, unix, vsock, serial, tunnels) — no dominant pipe to assume. QUIC isn't dominated by exotic substrates *today*, but nothing guarantees it won't follow TLS, so we don't stake a built-in on it. External is also a *feature*: it encourages users to compose their own secured L1 (SSH, openssl-over-serial/vsock, plain TLS-over-TCP, a QUIC tunnel) rather than privileging one.
+
+**WebTransport is built in even though it rides QUIC** — because the test is the *protocol's architecture*, not its transport. WT is a web / HTTP-3 protocol (OSI-bound by design) that merely *uses* QUIC underneath; raw QUIC carries no such binding. WT ≠ QUIC for this decision.
+
+Secure transports are **feature-gated** — `serial`/`udp`/`unix`/`tcp`/`stdio`/`exec` are always in; `wss`/`webtransport` are opt-in `cargo` features, so the lean trusted-channel core never has to carry a TLS/QUIC dependency tree.
 
 ### Built-in — Websocket-secure (`WSS`)
 
-The primary secure transport. TLS + cert verification come from the WS stack (`tokio-tungstenite` + `rustls`); pdbd just selects it as an L1:
+Primary secure transport. TLS + cert verification come from the WS stack (`tokio-tungstenite` + `rustls`); pdbd just selects it as an L1:
 
 ```bash
-# daemon
 pdbd --socket WSS-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
-# client
 pdb  --socket WSS-CONNECT:gateway.example:443  exec -- uname -a
 ```
 
-(Running pdbd's PPP/kernel-TCP over a TCP-based WSS is TCP-in-TCP — the standard caveat for any TCP-based L1, accepted for the uniform IP-link model; see *L1*.)
+(PPP/kernel-TCP over a TCP-based WSS is TCP-in-TCP — the standard caveat for any TCP-based L1; see *L1*.)
 
-### Built-in — WebTransport (`WEBTRANSPORT`, situational)
+### Built-in — WebTransport (`WEBTRANSPORT`)
 
-WebTransport rides HTTP/3 = QUIC = **UDP**, so it needs UDP reachability and a younger Rust stack (`wtransport` on `quinn`). It is the secure transport for a QUIC-capable network, **not** a universal baseline — offered alongside WSS, never in place of it:
+The secure transport for a QUIC-capable network (needs UDP reachability; `wtransport` on `quinn`). A **datagram** session is the default exposure — encrypted, NAT-traversing UDP, the lossy pipe pdbd is built for, with no reliability doubled under kernel TCP:
 
 ```bash
 pdbd --socket WEBTRANSPORT-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key
 pdb  --socket WEBTRANSPORT-CONNECT:gateway.example:443  exec -- uname -a
 ```
 
-### External — secure with OpenSSL (not built in)
+### External — compose your own secured L1
 
-For a plain TLS pipe, wrap the transport with the `EXEC:` escape hatch — `socat` or the `openssl` binary terminates TLS and hands pdbd a plaintext stdio pipe, so pdbd carries **no TLS code**:
+Everything else secures *outside* the binary, handed to pdbd through the `EXEC:` escape hatch (or a forwarded local port) — pdbd carries no TLS/SSH/QUIC code. Three ready tools:
+
+**OpenSSL** — a plain TLS pipe via `socat` or the `openssl` binary:
 
 ```bash
-# via socat OPENSSL
+# socat OPENSSL
 pdbd --socket EXEC:'socat - OPENSSL-LISTEN:4433,reuseaddr,cert=server.pem,key=server.key,verify=1'
 pdb  --socket EXEC:'socat - OPENSSL:gateway.example:4433,verify=1'  exec -- uname -a
-
-# via the openssl binary (s_server / s_client)
+# openssl s_server / s_client
 pdbd --socket EXEC:'openssl s_server -quiet -accept 4433 -cert server.pem -key server.key'
 pdb  --socket EXEC:'openssl s_client -quiet -connect gateway.example:4433'  exec -- uname -a
 ```
+
+**SSH** — stdio, port-forward, reverse-forward, or SOCKS5:
+
+```bash
+# stdio (ssh -W is the clean form; or exec pdbd on the far side)
+pdb  --socket EXEC:'ssh -W dbhost:4000 jump'           exec -- uname -a
+pdb  --socket EXEC:'ssh host pdbd --stdio'             exec -- uname -a
+# local forward (-L): forward a port, then ride plain TCP to it
+ssh -fN -L 7000:dbhost:4000 jump
+pdb  --socket TCP:127.0.0.1:7000                       exec -- uname -a
+# reverse forward (-R): run on the daemon host; pdb then dials 127.0.0.1:7000 client-side
+ssh -fN -R 7000:localhost:4000 client-host
+# SOCKS5 (-D): proxy, then a SOCKS5-capable dial
+ssh -fN -D 1080 jump
+pdb  --socket EXEC:'ncat --proxy 127.0.0.1:1080 --proxy-type socks5 dbhost 4000'  exec -- uname -a
+```
+
+**QUIC** — a raw QUIC pipe via [`quicat`](https://github.com/pas2k/quicat), the socat-shaped QUIC utility (stdio both ends, so it reads like the `ssh -W` / `openssl s_client` cases):
+
+```bash
+pdbd --socket EXEC:'quicat quic-passive-listen://0.0.0.0:4433 stdio'
+pdb  --socket EXEC:'quicat stdio quic-active-connect://gateway.example:4433'  exec -- uname -a
+```
+
+> `quicat` is **experimental** (single QUIC session at a time, lightly maintained) — shown as the clean *pattern* (QUIC stream → stdio → pdbd), not a production pick. Note `openssl s_client -quic` is **not** a substitute: OpenSSL's QUIC is HTTP/3-oriented (ALPN-mandated), not a raw byte pipe. For real traffic prefer a maintained QUIC tunnel (e.g. `ombrac`, TCP/UDP-over-QUIC) exposing a local port pdbd rides.
 
 ### Baseline — insecure, over a trusted channel
 
@@ -311,7 +348,7 @@ pdbd --socket FILE:/dev/ttyS0,b115200,raw
 pdb  --socket FILE:/dev/ttyUSB0,b115200,raw  exec -- uname -a
 ```
 
-So out of the box `pdbd` secures a WAN hop with **WSS / WebTransport**, secures an arbitrary pipe with **external OpenSSL via `EXEC:`**, and runs **bare on a trusted channel** — without ever growing a general-purpose crypto layer.
+So: `pdbd` secures a WAN hop with built-in **WSS / WebTransport**, secures an arbitrary pipe with **external OpenSSL / SSH / QUIC via `EXEC:`**, and runs **bare on a trusted channel** — never growing a general-purpose crypto layer.
 
 ---
 
@@ -343,7 +380,7 @@ No single tool does what `pdbd` does — **transport-agnostic remote exec *and* 
 **Control-plane wire & mux standards** — what the interop requirement draws on:
 
 - **gRPC** (HTTP/2 + protobuf, CNCF) / **Cap'n Proto RPC** — the two language-neutral RPC standards with built-in stream multiplexing and first-party implementations across Go/Java/C++/Python/C#/Rust; the interop contract (see *Control plane*).
-- **HTTP/2 — RFC 9113** / **QUIC** ([`quinn`](https://docs.rs/quinn)) — the mux + connection-migration reference designs. QUIC is the honest alternative to the whole PPP-over-pipe stack (mux + migration + reliability, in userspace over UDP); **rejected** because it requires a UDP datagram substrate and `pdbd`'s premise is an *arbitrary, possibly non-IP byte pipe* (serial, pty, a command's stdio) — you can run PPP over `EXEC:'ssh …'`, you cannot run QUIC over it.
+- **HTTP/2 — RFC 9113** / **QUIC** ([`quinn`](https://docs.rs/quinn)) — the mux + connection-migration reference designs. QUIC-as-the-core-transport was weighed and set aside: it bundles mux + reliability + crypto that `pdbd` already gets from the kernel + PPP, and (like TLS) it is substrate-flexible, so it stays an **external** secured L1 (a QUIC tunnel / `quicat` via `EXEC:`), never a built-in. Its migration design is still the comparison point for our PPP recovery (below). WebTransport — QUIC wearing an OSI-bound web architecture — *is* built in; raw QUIC is not (see *Crypto*).
 - [`yamux`](https://docs.rs/yamux) (libp2p) — a mature userspace stream multiplexer; the thing we **don't** pull, because the kernel IP layer makes it unnecessary.
 
 **Multiplexing daemon & privilege separation** — the process-model prior art:
@@ -382,8 +419,9 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 - Serial: [`tokio-serial`](https://crates.io/crates/tokio-serial) `5.5.0` (async, over [`mio-serial`](https://crates.io/crates/mio-serial) `5.0.7` / [`serialport`](https://crates.io/crates/serialport) `4.10.1`) — the v0 transport.
 - vsock: [`tokio-vsock`](https://crates.io/crates/tokio-vsock) `0.7.2` — the VM-guest transport.
-- WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*).
-- WebTransport (`webtransport`, situational secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; needs a UDP substrate, so it is offered alongside `wss`, not as a baseline.
+- UDP: `tokio`'s `UdpSocket` with a datagram framing — a lossy datagram L1 (no extra crate); the archetypal pipe PPP + kernel-TCP is designed to recover over.
+- WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*). Feature-gated.
+- WebTransport (`webtransport`, built-in secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; built in because its web architecture is OSI-bound (see *Crypto*), a datagram session the default exposure. Needs UDP reachability. Feature-gated.
 
 **Kernel plumbing:**
 
@@ -404,7 +442,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 **Considered and rejected:**
 
 - [`yamux`](https://crates.io/crates/yamux) `0.14.1` / [`tokio-yamux`](https://crates.io/crates/tokio-yamux) `0.3.20` — userspace stream multiplexer. Unnecessary: the kernel IP layer multiplexes the data plane by 4-tuple, and the RPC framework multiplexes the control plane. We never carry many logical streams over one connection ourselves.
-- [`quinn`](https://crates.io/crates/quinn) `0.11.12` (QUIC) — bundles mux + migration + reliability, but requires a UDP datagram substrate; incompatible with `pdbd`'s arbitrary-byte-pipe premise (serial, pty, `EXEC:` stdio).
+- **raw QUIC as a built-in transport** — not included. QUIC bundles mux / reliability / crypto `pdbd` already gets from kernel + PPP, and it is substrate-flexible (prone to the same L3 "explosion" as TLS), so it stays **external** — a QUIC tunnel / [`quicat`](https://github.com/pas2k/quicat) via `EXEC:` (see *Crypto*). [`quinn`](https://crates.io/crates/quinn) `0.11.12` still rides in transitively under `wtransport` for WebTransport.
 - `tarpc` — Rust-/serde-private RPC; **disqualified by the interop requirement** (no language-neutral wire a `gopdb`/`jpdb` could target).
 - **gRPC for tunnel *bulk*** — gRPC is recommended for the control plane but rejected for carrying tunnel bulk: many high-throughput streams on one HTTP/2 connection reintroduce the cross-stream head-of-line blocking the per-tunnel kernel-TCP design exists to avoid.
 
@@ -414,7 +452,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 **v0 (the core):** a daemon + client, userspace-PPP + TUN over a serial transport, the control channel, and `exec` + `forward`.
 
-**Later:** kernel-PPP backend, `vsock`/`ws` transports, multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
+**Later:** kernel-PPP backend, `udp`/`vsock`/`ws` transports, the feature-gated built-in secure transports (`wss`, `webtransport`), multi-IP zones on the general-purpose PPP network, pluggable auth — and the broader `ssh`/`adb`/`docker`-unification arc.
 
 **Interoperability (a first-class goal, not an afterthought):** a published, versioned `pdbd.proto` is the cross-language contract. Independent reimplementations — `gopdbd`/`gopdb`, `jpdbd`/`jpdb`, `cpdbd`/`cpdb` — are meant to be **plug-and-play** with this reference impl and each other, mixing freely across the three control segments (see *Control plane*). An alternative daemon may skip a multiprocess worker pool; if it keeps one, that boundary must speak the standard wire.
 
