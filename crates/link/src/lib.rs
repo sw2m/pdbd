@@ -10,6 +10,8 @@
 //! addresses statically from config rather than from IPCP (the effectful shell).
 
 use std::io;
+use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ppproto::pppos::{PPPoS, PPPoSAction};
@@ -17,6 +19,7 @@ use ppproto::Config;
 pub use ppproto::Phase;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
+use tun_rs::DeviceBuilder;
 
 /// The result of advancing the link one step.
 #[derive(Debug)]
@@ -171,6 +174,57 @@ where
         inbox.drain(..c);
     }
     Ok(())
+}
+
+/// Create a point-to-point kernel TUN (local ↔ peer, statically addressed) and
+/// run the link over `transport`, bridging IP packets between the TUN and the peer.
+///
+/// Privileged: creating a TUN needs `CAP_NET_ADMIN`. Addresses are static (from
+/// config), not from IPCP — ppproto cannot assign one (see the module note).
+pub async fn run_tun<T>(
+    transport: T,
+    local: Ipv4Addr,
+    peer: Ipv4Addr,
+    name: Option<&str>,
+    phase: watch::Sender<Phase>,
+) -> io::Result<()>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut builder = DeviceBuilder::new().ipv4(local, 32u8, Some(peer));
+    if let Some(n) = name {
+        builder = builder.name(n);
+    }
+    let dev = Arc::new(builder.build_async()?);
+
+    // recv/send take &self, so the two directions share the device.
+    let (to_tun_tx, mut to_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+    let (from_tun_tx, from_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+
+    let dev_rx = dev.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        loop {
+            match dev_rx.recv(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if from_tun_tx.send(buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let dev_tx = dev.clone();
+    tokio::spawn(async move {
+        while let Some(pkt) = to_tun_rx.recv().await {
+            if dev_tx.send(&pkt).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await
 }
 
 #[cfg(test)]
