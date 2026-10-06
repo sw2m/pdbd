@@ -27,4 +27,4 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — the clean-runner ideal was traded for speed, so component reuse means build pollution is possible"
-      - run: nix develop -c lefthook run ci --all-files
+      - run: nix develop -c lefthook run ci

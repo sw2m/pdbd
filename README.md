@@ -554,22 +554,13 @@ and you run the same thing locally — so "passes locally" means "passes in CI".
 nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
 ```
 
-**The shape.** The stage hooks — `quality` (fmt · clippy · buf lint · buf format),
-`build`, `test`, and the reserved `vuln` / `governance` homes — hold no commands;
-they *recurse* into per-tool leaf files (`lefthook.cargo.yml`, `lefthook.buf.yml`,
-`lefthook.link.yml`), selected with `env: LEFTHOOK_CONFIG`. The file is the
-namespace, so the leaves stay single words (`fmt`, `build`, `lint`, `ping`). `ci`
-recurses into every stage. Run one stage with `lefthook run quality` (etc.).
-
-The **privileged link test** (`ping` — TUN + pppd + netns, needs root) is tagged
-`privileged` and wired into `test`, so `lefthook run ci` includes it. Only contexts
-that lack root/TUN skip it, with `LEFTHOOK_EXCLUDE=privileged` — the **local git
-hooks'** job (a dev machine), not the full CI's:
+The checks are lefthook hooks: `lefthook run ci` runs the whole suite, or run one
+(e.g. `lefthook run quality`). One of them — the **link datapath test** — needs
+root (TUN + pppd + netns), so the local git hooks skip it while CI runs it:
 
 ```
-lefthook run ci                                    # the whole suite, link test included
-LEFTHOOK_EXCLUDE=privileged lefthook run ci        # skip the link test (what pre-push does)
-LEFTHOOK_CONFIG=lefthook.link.yml lefthook run ping   # just the link test (N=10; N_OVERRIDE to change)
+lefthook run ci                               # the whole suite
+LEFTHOOK_EXCLUDE=privileged lefthook run ci   # skip the privileged link test (pre-push does this)
 ```
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
