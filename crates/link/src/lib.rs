@@ -9,9 +9,14 @@
 //! one, so a pdbd↔pdbd link reaches `Open` with 0.0.0.0; pdbd programs the TUN
 //! addresses statically from config rather than from IPCP (the effectful shell).
 
+use std::io;
+use std::time::Duration;
+
 use ppproto::pppos::{PPPoS, PPPoSAction};
 use ppproto::Config;
 pub use ppproto::Phase;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, watch};
 
 /// The result of advancing the link one step.
 #[derive(Debug)]
@@ -85,12 +90,95 @@ impl Default for Link {
     }
 }
 
+/// Run the link over a byte transport: drive PPP to `Open`, then shuttle IP
+/// packets between the peer and the TUN side.
+///
+/// `from_tun` carries IP packets read from the local TUN (to send to the peer);
+/// `to_tun` receives IP packets arriving from the peer (to write to the TUN);
+/// `phase` publishes the current PPP phase.
+pub async fn run<T>(
+    mut link: Link,
+    transport: T,
+    mut from_tun: mpsc::Receiver<Vec<u8>>,
+    to_tun: mpsc::Sender<Vec<u8>>,
+    phase: watch::Sender<Phase>,
+) -> io::Result<()>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut rd, mut wr) = tokio::io::split(transport);
+    let mut rbuf = [0u8; 2048];
+    let mut inbox: Vec<u8> = Vec::new();
+
+    link.open();
+    // ppproto has no timers (that is #12-B); a light poll cadence drives
+    // negotiation forward between I/O events on a clean link.
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+
+    process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
+    loop {
+        tokio::select! {
+            r = rd.read(&mut rbuf) => {
+                let n = r?;
+                if n == 0 {
+                    return Ok(()); // transport closed
+                }
+                inbox.extend_from_slice(&rbuf[..n]);
+                process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
+            }
+            Some(pkt) = from_tun.recv() => {
+                let bytes = link.send_ip(&pkt);
+                wr.write_all(&bytes).await?;
+            }
+            _ = tick.tick() => {
+                process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
+            }
+        }
+    }
+}
+
+// Drain outputs (poll until Idle), then consume one frame's worth of the inbox;
+// repeat. Mirrors ppproto's one-frame-per-poll contract (poll and consume must
+// interleave, not drain-all-then-feed-all).
+async fn process<W>(
+    link: &mut Link,
+    inbox: &mut Vec<u8>,
+    wr: &mut W,
+    to_tun: &mpsc::Sender<Vec<u8>>,
+    phase: &watch::Sender<Phase>,
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        loop {
+            match link.poll() {
+                Action::Tx(bytes) => wr.write_all(&bytes).await?,
+                Action::Ip(pkt) => {
+                    let _ = to_tun.send(pkt).await;
+                }
+                Action::Idle => break,
+            }
+        }
+        phase.send_replace(link.phase());
+        if inbox.is_empty() {
+            break;
+        }
+        let c = link.consume(inbox.as_slice());
+        if c == 0 {
+            break; // a frame is pending; the next poll drains it, next process() retries
+        }
+        inbox.drain(..c);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{timeout, Duration};
 
-    // One poll + one consume, interleaved — ppproto processes one frame per poll,
-    // so poll and consume must alternate (not drain-all-then-feed-all).
+    // One poll + one consume, interleaved — ppproto processes one frame per poll.
     fn tick(l: &mut Link, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
         if let Action::Tx(bytes) = l.poll() {
             outbox.extend_from_slice(&bytes);
@@ -125,5 +213,45 @@ mod tests {
             a.phase(),
             b.phase()
         );
+    }
+
+    // #12 — the async pump brings two links up over a duplex transport and
+    // shuttles an IP packet from one TUN side to the other.
+    #[tokio::test]
+    async fn pump_brings_link_up_and_passes_ip() {
+        let (a_io, b_io) = tokio::io::duplex(4096);
+        let (a_from_tx, a_from_rx) = mpsc::channel::<Vec<u8>>(8);
+        let (a_to_tx, _a_to_rx) = mpsc::channel::<Vec<u8>>(8);
+        let (_b_from_tx, b_from_rx) = mpsc::channel::<Vec<u8>>(8);
+        let (b_to_tx, mut b_to_rx) = mpsc::channel::<Vec<u8>>(8);
+        let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
+        let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
+
+        tokio::spawn(run(Link::new(), a_io, a_from_rx, a_to_tx, a_ph_tx));
+        tokio::spawn(run(Link::new(), b_io, b_from_rx, b_to_tx, b_ph_tx));
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if *a_ph.borrow_and_update() == Phase::Open
+                    && *b_ph.borrow_and_update() == Phase::Open
+                {
+                    return;
+                }
+                tokio::select! {
+                    _ = a_ph.changed() => {}
+                    _ = b_ph.changed() => {}
+                }
+            }
+        })
+        .await
+        .expect("links did not reach Open");
+
+        let pkt = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8];
+        a_from_tx.send(pkt.clone()).await.unwrap();
+        let got = timeout(Duration::from_secs(2), b_to_rx.recv())
+            .await
+            .expect("no packet delivered")
+            .expect("channel closed");
+        assert_eq!(got, pkt);
     }
 }
