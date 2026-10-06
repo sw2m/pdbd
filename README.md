@@ -563,18 +563,14 @@ recurses into every stage. Run one stage with `lefthook run quality` (etc.).
 
 The **privileged link test** (`ping` — TUN + pppd + netns, needs root) is tagged
 `privileged` and wired into `test`, so `lefthook run ci` includes it. Only contexts
-that lack root/TUN skip it, with `LEFTHOOK_EXCLUDE=privileged` — that is the **local
-git hooks'** job, not CI's (CI runs on a runner that *has* root):
+that lack root/TUN skip it, with `LEFTHOOK_EXCLUDE=privileged` — the **local git
+hooks'** job (a dev machine), not the full CI's:
 
 ```
 lefthook run ci                                    # the whole suite, link test included
 LEFTHOOK_EXCLUDE=privileged lefthook run ci        # skip the link test (what pre-push does)
 LEFTHOOK_CONFIG=lefthook.link.yml lefthook run ping   # just the link test (N=10; N_OVERRIDE to change)
 ```
-
-CI runs the full `lefthook run ci` on `ubuntu-latest` — nothing excluded. A cached
-`/nix` store is allowed as a speed deviation from the clean-runner ideal, but the run
-**warns** when it reuses a prior store, so possible build pollution stays visible.
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
