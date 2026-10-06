@@ -1,0 +1,8 @@
+# buf leaves — run under `LEFTHOOK_CONFIG=lefthook.buf.yml`. buf-breaking stays
+# absent until the pdbd.v1 contract freezes — #21.
+lint:
+  commands:
+    lint: { run: buf lint }
+format:
+  commands:
+    format: { run: buf format --diff --exit-code }

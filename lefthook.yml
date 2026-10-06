@@ -1,22 +1,55 @@
-# buf breaking is deliberately absent until the pdbd.v1 contract freezes — #21.
-ci:
-  parallel: false # the cargo commands share the target lock
-  commands:
-    fmt:
-      run: cargo fmt --check
-    clippy:
-      run: cargo clippy --all-targets -- -D warnings
-    build:
-      run: cargo build --locked
-    buf-lint:
-      run: buf lint
-    buf-format:
-      run: buf format --diff --exit-code
+# One CI definition, recursion-structured. The stage hooks (quality, build, test,
+# vuln, governance) and the `ci` meta hold NO commands of their own — they recurse
+# into other hooks. The leaf commands live in per-tool split files
+# (lefthook.cargo.yml, lefthook.buf.yml, lefthook.link.yml), so every hook name
+# stays a single word and the file is the namespace. buf-breaking stays absent
+# until the pdbd.v1 contract freezes — #21.
 
-# Privileged link tests — need root (TUN + pppd + netns), so NOT part of the
-# unprivileged `ci` group. Invoke manually or from a privileged runner:
-# `lefthook run link` (deps come from the flake devShell).
-link:
+# --- stages: recurse into the per-tool leaves ---
+quality:
+  piped: true
   commands:
-    ping:
-      run: N=10 crates/link/harness/ping.sh
+    fmt:    { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run fmt }
+    clippy: { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run clippy }
+    lint:   { env: { LEFTHOOK_CONFIG: lefthook.buf.yml },   run: lefthook run lint }
+    format: { env: { LEFTHOOK_CONFIG: lefthook.buf.yml },   run: lefthook run format }
+
+build:
+  commands:
+    cargo: { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run build }
+
+test:
+  piped: true # build the artifacts the checks need before running them
+  commands:
+    build: { run: lefthook run build }
+    unit:  { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run test }
+    ping:  { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.link.yml }, run: lefthook run ping }
+
+vuln:
+  # Home reserved — dependency/vuln scanning (cargo-audit / cargo-deny) lands here.
+  commands:
+    stub: { run: 'echo "vuln: no scanners wired yet (home reserved)"' }
+
+governance:
+  # Home reserved — policy/governance checks land here if a need arises.
+  commands:
+    stub: { run: 'echo "governance: reserved"' }
+
+# --- meta: the whole suite, in order ---
+ci:
+  piped: true
+  commands:
+    quality:    { run: lefthook run quality }
+    build:      { run: lefthook run build }
+    test:       { run: lefthook run test }
+    vuln:       { run: lefthook run vuln }
+    governance: { run: lefthook run governance }
+
+# --- local git hooks (installed per-clone via the README podman recipe) ---
+pre-commit:
+  commands:
+    quality: { run: lefthook run quality }
+pre-push:
+  commands:
+    # the full suite minus the privileged link test — that runs on the privileged CI lane
+    ci: { env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }

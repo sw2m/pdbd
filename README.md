@@ -550,13 +550,31 @@ CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) a
 `lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
 and you run the same thing locally — so "passes locally" means "passes in CI".
 
-Run the checks any time:
-
 ```
 nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
 ```
 
-How you provide that Nix environment is **up to you** — the repo doesn't assume a setup.
+**The shape.** The stage hooks — `quality` (fmt · clippy · buf lint · buf format),
+`build`, `test`, and the reserved `vuln` / `governance` homes — hold no commands;
+they *recurse* into per-tool leaf files (`lefthook.cargo.yml`, `lefthook.buf.yml`,
+`lefthook.link.yml`), selected with `env: LEFTHOOK_CONFIG`. The file is the
+namespace, so the leaves stay single words (`fmt`, `build`, `lint`, `ping`). `ci`
+recurses into every stage. Run one stage with `lefthook run quality` (etc.).
+
+The **privileged link test** (`ping` — TUN + pppd + netns, needs root) is tagged
+`privileged` and wired into `test`. Unprivileged contexts skip it with
+`LEFTHOOK_EXCLUDE=privileged`; its own lane runs it directly:
+
+```
+LEFTHOOK_EXCLUDE=privileged lefthook run ci        # everything but the link test
+LEFTHOOK_CONFIG=lefthook.link.yml lefthook run ping   # just the link test (N=10; N_OVERRIDE to change)
+```
+
+CI mirrors exactly this as two lanes (`checks` + `link`). A cached `/nix` store is
+allowed as a speed deviation from the clean-runner ideal, but the run **warns** when
+it reuses a prior store, so possible build pollution stays visible.
+
+How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
 
 - **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
@@ -572,9 +590,13 @@ Two that work:
     nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
   ```
 
-To run the checks automatically before each commit, wire a pre-commit hook that invokes
-`lefthook run ci` through whichever setup you chose (`lefthook install`, or a `core.hooksPath`
-script) — that's a local preference, so it's kept out of the repo.
+**Git hooks (optional, local-only).** To run the checks on every commit/push, point the
+hooks at that same container so no host Nix or lefthook is assumed — write `.git/hooks/pre-commit`
+and `.git/hooks/pre-push` as a one-liner that wraps the podman command above but ends in
+`… develop "path:$PWD" -c lefthook run pre-commit` (and `… pre-push` respectively). `pre-commit`
+runs `quality`; `pre-push` runs the full `ci` minus the privileged link test. Worktrees share
+the common `.git/hooks`, so this installs once per clone — and it's a local preference, kept out
+of the repo.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 
