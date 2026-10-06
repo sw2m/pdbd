@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Privileged ping E2E for the pdbd link (#12-A): bring up `run_tun` (the `linkup`
+# Privileged ping test for the pdbd link (#12-A): bring up `run_tun` (the `linkup`
 # example, in a network namespace) against the reference `pppd` over a socat PTY
-# pair, N times, and ping across the link. Proves the clean-link datapath:
-# serial ↔ ppproto ↔ kernel TUN ↔ ping, interoperating with the reference impl.
+# pair, N times, and ping across the link. Proves the clean-link datapath end to
+# end: serial ↔ ppproto ↔ kernel TUN ↔ ping, interoperating with the reference impl.
 #
 # Requires: cargo + a Rust toolchain, socat, pppd, and sudo (TUN + pppd need root).
-# Linux only. Not run in plain CI (privileged); run it manually: N=10 ./ping-e2e.sh
+# Linux only. Not in plain CI (privileged); run via `lefthook run link`, or directly.
 set -uo pipefail
 N="${N:-10}"
 ROOT=$(git rev-parse --show-toplevel)
