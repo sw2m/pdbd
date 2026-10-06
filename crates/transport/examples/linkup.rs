@@ -3,9 +3,9 @@
 
 use std::net::Ipv4Addr;
 
-use transport::{run_tun, Phase};
 use tokio::sync::watch;
 use tokio_serial::SerialPortBuilderExt;
+use transport::{run_tun, Phase};
 
 #[tokio::main]
 async fn main() {
