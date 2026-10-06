@@ -1,17 +1,15 @@
 use std::path::{Path, PathBuf};
 
-// Pure-Rust codegen: protox compiles the .proto set to a FileDescriptorSet (no
-// external protoc), which tonic-prost-build turns into the prost + tonic types.
-// buf remains the proto governance gate (lint/breaking) — see harness/ci/check-proto.sh.
+// protoc-free codegen (protox → tonic-prost-build), so only the Cargo toolchain is
+// needed to build. buf stays the proto governance gate — see harness/ci/check-proto.sh.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?)
         .join("..")
         .join("..")
         .join("proto");
 
-    // Discover every .proto under the module root rather than hand-listing them, so
-    // adding one never silently drops out of codegen; emit a per-file rerun trigger
-    // (a directory rerun-if-changed does not reliably catch nested edits).
+    // Walk for the .proto set instead of hand-listing it (a new proto can't silently
+    // drop out), with a per-file rerun (a directory trigger misses nested edits).
     let mut protos = Vec::new();
     collect_protos(&root, &mut protos)?;
     protos.sort();

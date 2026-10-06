@@ -8,6 +8,3 @@ repository.workspace = true
 [[bin]]
 name = "pdb"
 path = "src/main.rs"
-
-[dependencies]
-pdbd-proto = { path = "../proto" }
