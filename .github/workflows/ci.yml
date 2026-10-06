@@ -7,20 +7,12 @@ permissions:
   contents: read
 
 jobs:
-  # Two lanes, same one definition. `checks` is everything except the privileged
-  # link test; `link` is that test alone (TUN + pppd + netns need root). Both run
-  # `nix develop -c lefthook run …`, identical to local.
+  # One lane, the whole suite — `lefthook run ci`, identical to local. CI runs the
+  # privileged link test too (the runner has TUN + netns + sudo), so nothing is
+  # excluded here; the privileged exclusion belongs to local .git/hooks, where a
+  # dev's machine may lack root/TUN (see lefthook.yml `pre-push`).
   ci:
     runs-on: ubuntu-latest
-    name: ${{ matrix.lane }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - lane: checks
-            run: LEFTHOOK_EXCLUDE=privileged nix develop -c lefthook run ci --all-files
-          - lane: link
-            run: LEFTHOOK_CONFIG=lefthook.link.yml nix develop -c lefthook run ping
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
@@ -35,4 +27,4 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — the clean-runner ideal was traded for speed, so component reuse means build pollution is possible"
-      - run: ${{ matrix.run }}
+      - run: nix develop -c lefthook run ci --all-files
