@@ -1,28 +1,27 @@
 # One CI definition, recursion-structured. The stage hooks (quality, build, test,
 # vuln, governance) and the `ci` meta hold NO commands of their own — they recurse
-# into other hooks. The leaf commands live in per-tool split files
-# (lefthook.cargo.yml, lefthook.buf.yml, lefthook.transport.yml), so every hook name
-# stays a single word and the file is the namespace. buf-breaking stays absent
-# until the pdbd.v1 contract freezes — #21.
+# into other hooks. The leaf commands live in per-action split files
+# (lefthook.format.yml, lefthook.lint.yml, lefthook.build.yml, lefthook.test.yml,
+# lefthook.transport.yml): the file is the action, each command the tool. So a
+# single word names every hook, and format/lint each span cargo + buf. buf-breaking
+# stays absent until the pdbd.v1 contract freezes — #21.
 
-# --- stages: recurse into the per-tool leaves ---
+# --- stages: recurse into the per-action leaves ---
 quality:
   piped: true
   commands:
-    fmt:    { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run fmt }
-    clippy: { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run clippy }
-    lint:   { env: { LEFTHOOK_CONFIG: lefthook.buf.yml },   run: lefthook run lint }
-    format: { env: { LEFTHOOK_CONFIG: lefthook.buf.yml },   run: lefthook run format }
+    format: { env: { LEFTHOOK_CONFIG: lefthook.format.yml }, run: lefthook run format }
+    lint:   { env: { LEFTHOOK_CONFIG: lefthook.lint.yml },   run: lefthook run lint }
 
 build:
   commands:
-    cargo: { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run build }
+    cargo: { env: { LEFTHOOK_CONFIG: lefthook.build.yml }, run: lefthook run build }
 
 test:
   piped: true # build the artifacts the checks need before running them
   commands:
     build: { run: lefthook run build }
-    unit:  { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run test }
+    unit:  { env: { LEFTHOOK_CONFIG: lefthook.test.yml }, run: lefthook run test }
     transport: { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.transport.yml }, run: lefthook run loop }
 
 vuln:

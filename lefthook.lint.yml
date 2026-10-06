@@ -1,0 +1,6 @@
+# lint (quality stage) — run under LEFTHOOK_CONFIG=lefthook.lint.yml. buf-breaking
+# stays absent until the pdbd.v1 contract freezes — #21.
+lint:
+  commands:
+    cargo: { run: cargo clippy --all-targets -- -D warnings }
+    buf:   { run: buf lint }

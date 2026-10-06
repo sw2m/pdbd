@@ -1,0 +1,4 @@
+# build (build stage) — run under LEFTHOOK_CONFIG=lefthook.build.yml.
+build:
+  commands:
+    cargo: { run: cargo build --locked }
