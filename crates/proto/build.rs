@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // Pure-Rust codegen: protox compiles the .proto set to a FileDescriptorSet (no
 // external protoc), which tonic-prost-build turns into the prost + tonic types.
@@ -9,21 +9,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("..")
         .join("proto");
 
-    let files = [
-        "pdbd/v1/common.proto",
-        "pdbd/v1/tunnel.proto",
-        "pdbd/v1/command.proto",
-        "pdbd/v1/socat.proto",
-        "pdbd/v1/service.proto",
-    ];
-    let paths: Vec<PathBuf> = files.iter().map(|f| root.join(f)).collect();
+    // Discover every .proto under the module root rather than hand-listing them, so
+    // adding one never silently drops out of codegen; emit a per-file rerun trigger
+    // (a directory rerun-if-changed does not reliably catch nested edits).
+    let mut protos = Vec::new();
+    collect_protos(&root, &mut protos)?;
+    protos.sort();
+    for proto in &protos {
+        println!("cargo:rerun-if-changed={}", proto.display());
+    }
 
-    let fds = protox::compile(&paths, [&root])?;
+    let fds = protox::compile(&protos, [&root])?;
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .compile_fds(fds)?;
+    Ok(())
+}
 
-    println!("cargo:rerun-if-changed={}", root.display());
+fn collect_protos(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_protos(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "proto") {
+            out.push(path);
+        }
+    }
     Ok(())
 }
