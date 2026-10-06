@@ -7,18 +7,11 @@ permissions:
   contents: read
 
 jobs:
-  # One lane, the whole suite — `lefthook run ci`, identical to local. CI runs the
-  # privileged link test too (the runner has TUN + netns + sudo), so nothing is
-  # excluded here; the privileged exclusion belongs to local .git/hooks, where a
-  # dev's machine may lack root/TUN (see lefthook.yml `pre-push`).
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      # A cached /nix store trades the clean-runner ideal for speed. It is allowed,
-      # but the reuse is announced (next step) so possible build pollution stays
-      # visible rather than silent.
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         id: cache
         with:

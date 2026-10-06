@@ -23,7 +23,7 @@ test:
   commands:
     build: { run: lefthook run build }
     unit:  { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run test }
-    ping:  { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.link.yml }, run: lefthook run ping }
+    link:  { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.link.yml }, run: lefthook run loop }
 
 vuln:
   # Home reserved — dependency/vuln scanning (cargo-audit / cargo-deny) lands here.
