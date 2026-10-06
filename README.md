@@ -555,12 +555,12 @@ nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix deve
 ```
 
 The checks are lefthook hooks: `lefthook run ci` runs the whole suite, or run one
-(e.g. `lefthook run quality`). One of them — the **link datapath test** — needs
+(e.g. `lefthook run quality`). One of them — the **transport datapath test** — needs
 root (TUN + pppd + netns), so the local git hooks skip it while CI runs it:
 
 ```
 lefthook run ci                               # the whole suite
-LEFTHOOK_EXCLUDE=privileged lefthook run ci   # skip the privileged link test (pre-push does this)
+LEFTHOOK_EXCLUDE=privileged lefthook run ci   # skip the privileged transport test (pre-push does this)
 ```
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
@@ -583,7 +583,7 @@ Two that work:
 hooks at that same container so no host Nix or lefthook is assumed — write `.git/hooks/pre-commit`
 and `.git/hooks/pre-push` as a one-liner that wraps the podman command above but ends in
 `… develop "path:$PWD" -c lefthook run pre-commit` (and `… pre-push` respectively). `pre-commit`
-runs `quality`; `pre-push` runs the full `ci` minus the privileged link test. Worktrees share
+runs `quality`; `pre-push` runs the full `ci` minus the privileged transport test. Worktrees share
 the common `.git/hooks`, so this installs once per clone — and it's a local preference, kept out
 of the repo.
 

@@ -1,5 +1,7 @@
-//! The pdbd link: RFC 1661/1332 PPP (via `ppproto`) over an L1 byte pipe,
-//! terminated into a kernel TUN so the kernel's IP stack runs on the link.
+//! The pdbd transport: the lower stack that moves bytes — RFC 1661/1332 PPP
+//! (via `ppproto`), the L2 link, over an L1 byte pipe, terminated into a kernel
+//! TUN so the kernel's IP stack runs on the link. (L1 establishment will live
+//! here too; socat-style addressing may be a separate crate.)
 //!
 //! #12-A is the clean-link datapath (serial ↔ ppproto ↔ TUN ↔ ping). Lossy
 //! robustness — the retransmit/timer/keepalive layer ppproto lacks — is #12-B

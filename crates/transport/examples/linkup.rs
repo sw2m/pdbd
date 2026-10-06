@@ -3,7 +3,7 @@
 
 use std::net::Ipv4Addr;
 
-use link::{run_tun, Phase};
+use transport::{run_tun, Phase};
 use tokio::sync::watch;
 use tokio_serial::SerialPortBuilderExt;
 

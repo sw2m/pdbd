@@ -26,8 +26,8 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
-            # privileged link ping test (lefthook.link.yml): a virtual serial
-            # pair, the reference PPP peer, and TUN/route tooling. #12.
+            # privileged transport ping test (lefthook.transport.yml): a virtual
+            # serial pair, the reference PPP peer, and TUN/route tooling. #12.
             pkgs.socat
             pkgs.ppp
             pkgs.iproute2

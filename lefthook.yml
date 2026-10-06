@@ -1,7 +1,7 @@
 # One CI definition, recursion-structured. The stage hooks (quality, build, test,
 # vuln, governance) and the `ci` meta hold NO commands of their own — they recurse
 # into other hooks. The leaf commands live in per-tool split files
-# (lefthook.cargo.yml, lefthook.buf.yml, lefthook.link.yml), so every hook name
+# (lefthook.cargo.yml, lefthook.buf.yml, lefthook.transport.yml), so every hook name
 # stays a single word and the file is the namespace. buf-breaking stays absent
 # until the pdbd.v1 contract freezes — #21.
 
@@ -23,7 +23,7 @@ test:
   commands:
     build: { run: lefthook run build }
     unit:  { env: { LEFTHOOK_CONFIG: lefthook.cargo.yml }, run: lefthook run test }
-    link:  { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.link.yml }, run: lefthook run loop }
+    transport: { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.transport.yml }, run: lefthook run loop }
 
 vuln:
   # Home reserved — dependency/vuln scanning (cargo-audit / cargo-deny) lands here.
@@ -51,5 +51,5 @@ pre-commit:
     quality: { run: lefthook run quality }
 pre-push:
   commands:
-    # the full suite minus the privileged link test — that runs on the privileged CI lane
+    # the full suite minus the privileged transport test — that runs on the privileged CI lane
     ci: { env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }

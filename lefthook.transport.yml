@@ -1,4 +1,4 @@
-# Privileged link datapath test (#12-A). No pipefail — lefthook runs `run` under POSIX sh.
+# Privileged transport datapath test (#12-A). No pipefail — lefthook runs `run` under POSIX sh.
 loop:
   commands:
     loop:
@@ -27,7 +27,7 @@ ping:
         set -eu
         priv() { sudo -n env "PATH=$PATH" "$@"; } # sudo resets PATH; re-inject so nix pppd/ip resolve
         root=$(git rev-parse --show-toplevel)
-        cargo build -q -p link --example linkup
+        cargo build -q -p transport --example linkup
         linkup=$(find "$root/target" -type f -name linkup -path '*debug/examples*' | head -1)
         [ -x "$linkup" ]
         s=""
