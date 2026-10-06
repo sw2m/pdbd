@@ -1,0 +1,17 @@
+[package]
+name = "proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false # internal codegen crate, not for crates.io
+
+[dependencies]
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
+protox.workspace = true

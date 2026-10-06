@@ -1,0 +1,10 @@
+[package]
+name = "pdbd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pdbd"
+path = "src/main.rs"

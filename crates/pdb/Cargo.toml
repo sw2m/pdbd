@@ -1,0 +1,10 @@
+[package]
+name = "pdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pdb"
+path = "src/main.rs"
