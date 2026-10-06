@@ -546,36 +546,35 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one pinned toolchain** defined by the Nix flake and driven by lefthook: the same
-checks run locally and in CI. The flake's dev shell provides the exact rust / buf /
-lefthook, `lefthook.yml` defines the checks, and CI (`.github/workflows/ci.yml`) just runs
-`nix develop -c lefthook run ci` on a GitHub runner — no per-tool marketplace actions.
+CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) and
+`lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
+and you run the same thing locally — so "passes locally" means "passes in CI".
 
-Get that environment locally one of two ways; either wires a pre-commit hook that runs the
-checks in the pinned env.
-
-**Straight — Nix on the host** (you have Nix with flakes):
+Run the checks any time:
 
 ```
-nix develop                          # the pinned shell: rust, buf, lefthook
-./scripts/install-hooks.sh straight  # wire the pre-commit hook
+nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
 ```
 
-**Containerized — rootless Podman** (nothing touches the host; the store lives in a named
-volume):
+How you provide that Nix environment is **up to you** — the repo doesn't assume a setup.
+Two that work:
 
-```
-./scripts/install-hooks.sh podman
+- **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
+- **Containerized** — if you'd rather keep Nix off your host, run it in a container (e.g.
+  rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume).
+  One wrinkle: a git *worktree* keeps its metadata outside the working dir, so mount the git
+  common-dir too if you want git usable inside the container:
 
-# open the pinned tool shell directly:
-podman run --rm -it -v "$PWD":/work -w /work -v pdbd-nix:/nix \
-  docker.io/nixos/nix \
-  nix --extra-experimental-features 'nix-command flakes' develop "path:/work"
-```
+  ```
+  podman run --rm -it \
+    -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
+    -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
+  ```
 
-The hook is written to `.githooks/` (gitignored — it is machine-specific) and
-`core.hooksPath` is pointed there. Run the checks any time with `lefthook run ci` from the
-shell, or skip the hook for one commit with `LEFTHOOK=0 git commit …`.
+To run the checks automatically before each commit, wire a pre-commit hook that invokes
+`lefthook run ci` through whichever setup you chose (`lefthook install`, or a `core.hooksPath`
+script) — that's a local preference, so it's kept out of the repo.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 
