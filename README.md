@@ -544,6 +544,42 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ---
 
+## Local development
+
+CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) and
+`lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
+and you run the same thing locally — so "passes locally" means "passes in CI".
+
+Run the checks any time:
+
+```
+nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
+```
+
+How you provide that Nix environment is **up to you** — the repo doesn't assume a setup.
+Two that work:
+
+- **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
+- **Containerized** — if you'd rather keep Nix off your host, run it in a container (e.g.
+  rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume).
+  One wrinkle: a git *worktree* keeps its metadata outside the working dir, so mount the git
+  common-dir too if you want git usable inside the container:
+
+  ```
+  podman run --rm -it \
+    -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
+    -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
+  ```
+
+To run the checks automatically before each commit, wire a pre-commit hook that invokes
+`lefthook run ci` through whichever setup you chose (`lefthook install`, or a `core.hooksPath`
+script) — that's a local preference, so it's kept out of the repo.
+
+`buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
+
+---
+
 ## License
 
 **MIT** — see [LICENSE](LICENSE). The socat-style address grammar is *reimplemented*, never copied from GPL socat (an interface/grammar isn't copyrightable; the implementation is).
