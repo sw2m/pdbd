@@ -12,3 +12,11 @@ ci:
       run: buf lint
     buf-format:
       run: buf format --diff --exit-code
+
+# Privileged end-to-end checks — NOT part of `ci` (they need root: TUN + pppd +
+# netns), so they are not run by the unprivileged CI job. Invoke manually or from
+# a privileged runner: `lefthook run e2e` (deps come from the flake devShell).
+e2e:
+  commands:
+    ppp-link:
+      run: N=10 crates/link/harness/ping-e2e.sh

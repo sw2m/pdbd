@@ -26,6 +26,11 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
+            # link ping E2E (privileged, `lefthook run e2e`): a virtual serial
+            # pair, the reference PPP peer, and TUN/route tooling. #12.
+            pkgs.socat
+            pkgs.ppp
+            pkgs.iproute2
           ];
         };
       });
