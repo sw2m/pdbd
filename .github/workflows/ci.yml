@@ -2,8 +2,10 @@ name: ci
 
 on:
   pull_request:
-    # `ready_for_review` so a draft marked ready triggers CI; drafts are skipped below.
-    types: [opened, synchronize, reopened, ready_for_review]
+    # No `opened`: a non-draft open would race draft-guard and fire CI once before it
+    # re-drafts. CI runs when a draft is marked ready (ready_for_review) or on a push
+    # (synchronize). Drafts are skipped below regardless.
+    types: [synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
