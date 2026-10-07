@@ -80,7 +80,7 @@ impl Link {
     }
 
     /// Frame an IP packet (from the TUN) for transmission over L1.
-    pub fn send_ip(&mut self, pkt: &[u8]) -> Vec<u8> {
+    pub fn send(&mut self, pkt: &[u8]) -> Vec<u8> {
         let n = self
             .ppp
             .send(pkt, &mut self.tx)
@@ -132,7 +132,7 @@ where
                 process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
             }
             Some(pkt) = from_tun.recv() => {
-                let bytes = link.send_ip(&pkt);
+                let bytes = link.send(&pkt);
                 wr.write_all(&bytes).await?;
             }
             _ = tick.tick() => {
@@ -178,55 +178,60 @@ where
     Ok(())
 }
 
-/// Create a point-to-point kernel TUN (local ↔ peer, statically addressed) and
-/// run the link over `transport`, bridging IP packets between the TUN and the peer.
-///
-/// Privileged: creating a TUN needs `CAP_NET_ADMIN`. Addresses are static (from
-/// config), not from IPCP — ppproto cannot assign one (see the module note).
-pub async fn run_tun<T>(
-    transport: T,
-    local: Ipv4Addr,
-    peer: Ipv4Addr,
-    name: Option<&str>,
-    phase: watch::Sender<Phase>,
-) -> io::Result<()>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut builder = DeviceBuilder::new().ipv4(local, 32u8, Some(peer));
-    if let Some(n) = name {
-        builder = builder.name(n);
-    }
-    let dev = Arc::new(builder.build_async()?);
+/// Kernel-TUN integration: create a point-to-point TUN and run the link over it.
+pub mod tun {
+    use super::*;
 
-    // recv/send take &self, so the two directions share the device.
-    let (to_tun_tx, mut to_tun_rx) = mpsc::channel::<Vec<u8>>(64);
-    let (from_tun_tx, from_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+    /// Create a point-to-point kernel TUN (local ↔ peer, statically addressed) and
+    /// run the link over `transport`, bridging IP packets between the TUN and the peer.
+    ///
+    /// Privileged: creating a TUN needs `CAP_NET_ADMIN`. Addresses are static (from
+    /// config), not from IPCP — ppproto cannot assign one (see the module note).
+    pub async fn run<T>(
+        transport: T,
+        local: Ipv4Addr,
+        peer: Ipv4Addr,
+        name: Option<&str>,
+        phase: watch::Sender<Phase>,
+    ) -> io::Result<()>
+    where
+        T: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut builder = DeviceBuilder::new().ipv4(local, 32u8, Some(peer));
+        if let Some(n) = name {
+            builder = builder.name(n);
+        }
+        let dev = Arc::new(builder.build_async()?);
 
-    let dev_rx = dev.clone();
-    tokio::spawn(async move {
-        let mut buf = [0u8; 2048];
-        loop {
-            match dev_rx.recv(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if from_tun_tx.send(buf[..n].to_vec()).await.is_err() {
-                        break;
+        // recv/send take &self, so the two directions share the device.
+        let (to_tun_tx, mut to_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (from_tun_tx, from_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+
+        let dev_rx = dev.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            loop {
+                match dev_rx.recv(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if from_tun_tx.send(buf[..n].to_vec()).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
-    let dev_tx = dev.clone();
-    tokio::spawn(async move {
-        while let Some(pkt) = to_tun_rx.recv().await {
-            if dev_tx.send(&pkt).await.is_err() {
-                break;
+        });
+        let dev_tx = dev.clone();
+        tokio::spawn(async move {
+            while let Some(pkt) = to_tun_rx.recv().await {
+                if dev_tx.send(&pkt).await.is_err() {
+                    break;
+                }
             }
-        }
-    });
+        });
 
-    run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await
+        super::run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await
+    }
 }
 
 #[cfg(test)]

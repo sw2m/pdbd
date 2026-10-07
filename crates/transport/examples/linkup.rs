@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 
 use tokio::sync::watch;
 use tokio_serial::SerialPortBuilderExt;
-use transport::{run_tun, Phase};
+use transport::{tun, Phase};
 
 #[tokio::main]
 async fn main() {
@@ -26,7 +26,7 @@ async fn main() {
         }
     });
 
-    run_tun(transport, local, peer, name.as_deref(), ph_tx)
+    tun::run(transport, local, peer, name.as_deref(), ph_tx)
         .await
-        .expect("run_tun");
+        .expect("tun::run");
 }

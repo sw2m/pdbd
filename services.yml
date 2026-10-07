@@ -1,6 +1,4 @@
-# CI background services (process-compose) — see README "Local development".
-# sudo resets PATH, so the privileged daemons run `sudo env PATH=$PATH …` to reach
-# the nix-provided pppd/ip rather than a host copy.
+# sudo resets PATH, so the privileged daemons use `sudo env PATH=$PATH` for the nix pppd/ip.
 processes:
   socat:
     command: "socat PTY,link=/tmp/pdbd-a,raw,echo=0 PTY,link=/tmp/pdbd-b,raw,echo=0"
