@@ -1,67 +1,61 @@
 # Privileged transport datapath test (#12-A, test stage) — merged into lefthook.yml
-# via extends. Decomposed into hooks: `transport` (build + loop) drives it; `attempt`
-# is one link-up-and-ping, self-cleaning via a trap that calls the reusable
-# `teardown` hook; `teardown` kills the procs and removes the netns (run it by hand
-# to clear a wedged state). `{priv}` wraps sudo so the nix-provided pppd/ip resolve
-# (sudo resets PATH). No pipefail — lefthook runs `run` under POSIX sh.
-templates:
-  priv: sudo -n env "PATH=$PATH"
-
+# via extends. The socat/pppd/linkup daemons run under the process-compose
+# scheduler (services.yml), which the `ci` wrapper boots as lefthook's sibling so
+# they outlive a job; this test drives them as a client (`services process
+# start/stop`). The netns is a kernel resource the scheduler does not own, so it is
+# created/removed here. No pipefail — lefthook runs `run` under POSIX sh. Run only
+# through `ci` (e.g. `ci test`), never bare `lefthook run transport`: the scheduler
+# must already be up.
 transport:
   jobs:
-    - { name: build, run: cargo build -q -p transport --example linkup }
+    - name: build
+      run: |
+        set -eu
+        cargo build -q -p transport --example linkup
+        find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1 > /tmp/pdbd-linkup
+        [ -s /tmp/pdbd-linkup ]
     - name: loop
       env:
         N: 10 # from-scratch sample floor; override with N_OVERRIDE
       run: |
         set -eu
         N=${N_OVERRIDE:-$N}
-        lefthook run teardown >/dev/null 2>&1 # clean slate from any crashed prior run
+        teardown() {
+          services process stop linkup >/dev/null 2>&1 || true
+          services process stop pppd   >/dev/null 2>&1 || true
+          services process stop socat  >/dev/null 2>&1 || true
+          sudo -n ip netns del pdbd 2>/dev/null || true
+        }
+        attempt() {
+          teardown # start this attempt from a clean slate
+          sudo -n ip netns add pdbd
+          services process start socat >/dev/null 2>&1
+          i=0
+          while [ "$i" -lt 10 ]; do
+            [ -e /tmp/pdbd-a ] && [ -e /tmp/pdbd-b ] && break
+            sleep 0.3; i=$((i + 1))
+          done
+          services process start pppd >/dev/null 2>&1
+          sleep 2
+          services process start linkup >/dev/null 2>&1
+          up=no
+          for _ in $(seq 1 15); do
+            if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
+            sleep 1
+          done
+          [ "$up" = yes ] || return 1
+          ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 || return 1
+        }
+        teardown # clear any crashed prior state
         pass=0
         for n in $(seq 1 "$N"); do
-          if lefthook run attempt >/dev/null 2>&1; then
+          if attempt; then
             pass=$((pass + 1))
             echo "run $n: PASS"
           else
             echo "run $n: FAIL"
           fi
+          teardown # tear this attempt down so the next starts clean
         done
         echo "PING: $pass/$N PASS"
         [ "$pass" = "$N" ]
-
-attempt:
-  jobs:
-    - name: attempt
-      run: |
-        set -eu
-        trap 'rc=$?; lefthook run teardown >/dev/null 2>&1; exit $rc' EXIT
-        root=$(git rev-parse --show-toplevel)
-        linkup=$(find "$root/target" -type f -name linkup -path '*debug/examples*' | head -1)
-        [ -x "$linkup" ]
-        rm -f /tmp/ppp_link_a /tmp/ppp_link_b
-        socat PTY,link=/tmp/ppp_link_a,raw,echo=0 PTY,link=/tmp/ppp_link_b,raw,echo=0 &
-        sleep 0.5
-        a=$(readlink -f /tmp/ppp_link_a); b=$(readlink -f /tmp/ppp_link_b)
-        # pppd first (it retransmits, so it is listening); then pdbd's linkup.
-        {priv} pppd "$b" 115200 noauth local nodetach nocrtscts novj noccp \
-          lcp-echo-interval 0 10.0.0.2:10.0.0.1 >/dev/null 2>&1 &
-        sleep 2
-        {priv} ip netns add pdbd
-        {priv} ip netns exec pdbd "$linkup" "$a" 10.0.0.1 10.0.0.2 pdbd0 >/dev/null 2>&1 &
-        up=no
-        for _ in $(seq 1 15); do
-          if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
-          sleep 1
-        done
-        [ "$up" = yes ]
-        ping -c3 -W2 10.0.0.1 >/dev/null 2>&1
-
-teardown:
-  jobs:
-    - name: procs
-      run: |
-        pkill -x socat 2>/dev/null || true
-        {priv} pkill -x linkup 2>/dev/null || true
-        {priv} pkill -x pppd 2>/dev/null || true
-    - name: netns
-      run: "{priv} ip netns del pdbd 2>/dev/null || true"

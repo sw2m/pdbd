@@ -546,22 +546,29 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) and
-`lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
-and you run the same thing locally — so "passes locally" means "passes in CI".
+CI is **one definition**: a Nix flake pins the toolchain + a small service
+scheduler, and `lefthook.yml` defines the checks. The entrypoint is the flake's
+`ci` command, and GitHub Actions runs the same thing — so "passes locally" means
+"passes in CI":
 
 ```
-nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
+nix develop -c ci          # the whole suite (what GitHub Actions runs)
+nix develop -c ci test     # a single hook
 ```
 
-The checks are lefthook hooks: `lefthook run ci` runs the whole suite, or run one
-(e.g. `lefthook run quality`). One of them — the **transport datapath test** — needs
-root (TUN + pppd + netns), so the local git hooks skip it while CI runs it:
+**Why `ci`, not bare `lefthook`.** Some checks need background *services* (the
+transport datapath test needs socat + pppd). lefthook reaps a job's child processes
+at the job boundary, so a service can't span jobs if a job spawns it. `ci` therefore
+boots a `process-compose` scheduler as lefthook's **sibling** (outside its reap
+tree), and checks drive services as clients through the `services` wrapper
+(`services process start/stop`); `ci` reaps the scheduler (`services down`) on exit.
+Checks that need no services just ignore it.
 
-```
-lefthook run ci                               # the whole suite
-LEFTHOOK_EXCLUDE=privileged lefthook run ci   # skip the privileged transport test (pre-push does this)
-```
+The checks are lefthook hooks: `ci` runs the `ci` hook (whole suite); `lefthook run
+quality` (etc.) runs one directly. The **transport datapath test** needs root (TUN +
+pppd + netns) *and* the scheduler, so run it through `ci` (e.g. `ci test`), never bare
+`lefthook run transport`. Contexts without root/TUN skip it with
+`LEFTHOOK_EXCLUDE=privileged` — the local git hooks' job, not CI's.
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
@@ -582,8 +589,9 @@ Two that work:
 **Git hooks (optional, local-only).** To run the checks on every commit/push, point the
 hooks at that same container so no host Nix or lefthook is assumed — write `.git/hooks/pre-commit`
 and `.git/hooks/pre-push` as a one-liner that wraps the podman command above but ends in
-`… develop "path:$PWD" -c lefthook run pre-commit` (and `… pre-push` respectively). `pre-commit`
-runs `quality`; `pre-push` runs the full `ci` minus the privileged transport test. Worktrees share
+`… develop "path:$PWD" -c ci pre-commit` (and `… ci pre-push` respectively) — `ci` so the
+scheduler is bracketed the same way. `pre-commit` runs `quality`; `pre-push` runs the full
+`ci` minus the privileged transport test. Worktrees share
 the common `.git/hooks`, so this installs once per clone — and it's a local preference, kept out
 of the repo.
 
