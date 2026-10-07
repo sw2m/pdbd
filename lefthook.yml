@@ -1,9 +1,4 @@
-# One CI definition, segmented across per-action files merged with `extends`
-# (lefthook's config include — no per-stage LEFTHOOK_CONFIG switching). Each hook
-# holds `jobs`; a job is a command or a `group`. Stages compose the action hooks by
-# recursion (`lefthook run <action>`). The `build` stage is the `build` action
-# itself (lefthook.build.yml), so it has no stanza here. buf-breaking stays absent
-# until the pdbd.v1 contract freezes — #21.
+# CI checks, run through the flake `ci` entrypoint — see README "Local development".
 extends:
   - ./lefthook.format.yml
   - ./lefthook.lint.yml
@@ -42,5 +37,4 @@ pre-commit:
     - { name: quality, run: lefthook run quality }
 pre-push:
   jobs:
-    # the full suite minus the privileged transport test — that runs on the privileged CI lane
     - { name: ci, env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }

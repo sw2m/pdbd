@@ -1,14 +1,6 @@
-# CI background services (process-compose), driven via the flake's `services`
-# wrapper. The scheduler comes up idle (`services up` → --keep-project, everything
-# `disabled`); a check starts/stops what it needs with `services process start/stop`
-# and the scheduler is reaped once by `services down`. This is the transport
-# datapath test's daemon stack (#12-A); other checks needing background services
-# add their own entries here.
-#
-# sudo resets PATH, so the privileged daemons are `sudo env PATH=$PATH …` (the
-# nix-provided pppd/ip, not a host copy). Ordering/readiness is sequenced by the
-# caller (lefthook.transport.yml) — process-compose's depends_on only applies to
-# `up`, not on-demand `process start`.
+# CI background services (process-compose) — see README "Local development".
+# sudo resets PATH, so the privileged daemons run `sudo env PATH=$PATH …` to reach
+# the nix-provided pppd/ip rather than a host copy.
 processes:
   socat:
     command: "socat PTY,link=/tmp/pdbd-a,raw,echo=0 PTY,link=/tmp/pdbd-b,raw,echo=0"

@@ -1,5 +1,4 @@
-# lint (quality stage) — merged into lefthook.yml via extends. buf-breaking stays
-# absent until the pdbd.v1 contract freezes — #21.
+# buf-breaking stays absent until the pdbd.v1 contract freezes — #21.
 lint:
   jobs:
     - { name: cargo, run: cargo clippy --all-targets -- -D warnings }

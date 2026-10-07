@@ -1,11 +1,5 @@
-# Privileged transport datapath test (#12-A, test stage) — merged into lefthook.yml
-# via extends. The socat/pppd/linkup daemons run under the process-compose
-# scheduler (services.yml), which the `ci` wrapper boots as lefthook's sibling so
-# they outlive a job; this test drives them as a client (`services process
-# start/stop`). The netns is a kernel resource the scheduler does not own, so it is
-# created/removed here. No pipefail — lefthook runs `run` under POSIX sh. Run only
-# through `ci` (e.g. `ci test`), never bare `lefthook run transport`: the scheduler
-# must already be up.
+# Transport datapath test (#12-A). Run through `ci` (the scheduler must be up),
+# not bare `lefthook run transport`. No pipefail — lefthook runs `run` under POSIX sh.
 transport:
   jobs:
     - name: build
@@ -27,7 +21,7 @@ transport:
           sudo -n ip netns del pdbd 2>/dev/null || true
         }
         attempt() {
-          teardown # start this attempt from a clean slate
+          teardown
           sudo -n ip netns add pdbd
           services process start socat >/dev/null 2>&1
           i=0
@@ -46,7 +40,7 @@ transport:
           [ "$up" = yes ] || return 1
           ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 || return 1
         }
-        teardown # clear any crashed prior state
+        teardown
         pass=0
         for n in $(seq 1 "$N"); do
           if attempt; then
@@ -55,7 +49,7 @@ transport:
           else
             echo "run $n: FAIL"
           fi
-          teardown # tear this attempt down so the next starts clean
+          teardown
         done
         echo "PING: $pass/$N PASS"
         [ "$pass" = "$N" ]

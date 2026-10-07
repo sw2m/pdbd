@@ -1,4 +1,3 @@
-# build (build stage) — merged into lefthook.yml via extends.
 build:
   jobs:
     - { name: cargo, run: cargo build --locked }

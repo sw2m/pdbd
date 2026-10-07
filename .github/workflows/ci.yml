@@ -20,6 +20,5 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — the clean-runner ideal was traded for speed, so component reuse means build pollution is possible"
-        # `ci` boots the service scheduler as lefthook's sibling, runs the `ci`
-        # hook, and reaps the scheduler on exit (see flake.nix).
+        # `ci` brackets lefthook with the service scheduler — see flake.nix.
       - run: nix develop -c ci
