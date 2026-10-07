@@ -41,8 +41,8 @@ attempt:
         {priv} pppd "$b" 115200 noauth local nodetach nocrtscts novj noccp \
           lcp-echo-interval 0 10.0.0.2:10.0.0.1 >/dev/null 2>&1 &
         sleep 2
-        {priv} ip netns add nsL
-        {priv} ip netns exec nsL "$linkup" "$a" 10.0.0.1 10.0.0.2 pdbd0 >/dev/null 2>&1 &
+        {priv} ip netns add pdbd
+        {priv} ip netns exec pdbd "$linkup" "$a" 10.0.0.1 10.0.0.2 pdbd0 >/dev/null 2>&1 &
         up=no
         for _ in $(seq 1 15); do
           if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
@@ -59,4 +59,4 @@ teardown:
         {priv} pkill -x linkup 2>/dev/null || true
         {priv} pkill -x pppd 2>/dev/null || true
     - name: netns
-      run: "{priv} ip netns del nsL 2>/dev/null || true"
+      run: "{priv} ip netns del pdbd 2>/dev/null || true"
