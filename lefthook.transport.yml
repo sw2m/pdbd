@@ -1,6 +1,7 @@
 # Transport datapath test (#12-A). Run through `ci` (the scheduler must be up),
 # not bare `lefthook run transport`. No pipefail — lefthook runs `run` under POSIX sh.
 transport:
+  piped: true
   jobs:
     - name: build
       run: |
@@ -14,42 +15,50 @@ transport:
       run: |
         set -eu
         N=${N_OVERRIDE:-$N}
-        teardown() {
-          services process stop linkup >/dev/null 2>&1 || true
-          services process stop pppd   >/dev/null 2>&1 || true
-          services process stop socat  >/dev/null 2>&1 || true
-          sudo -n ip netns del pdbd 2>/dev/null || true
-        }
-        attempt() {
-          teardown
-          sudo -n ip netns add pdbd
-          services process start socat >/dev/null 2>&1
-          i=0
-          while [ "$i" -lt 10 ]; do
-            [ -e /tmp/pdbd-a ] && [ -e /tmp/pdbd-b ] && break
-            sleep 0.3; i=$((i + 1))
-          done
-          services process start pppd >/dev/null 2>&1
-          sleep 2
-          services process start linkup >/dev/null 2>&1
-          up=no
-          for _ in $(seq 1 15); do
-            if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
-            sleep 1
-          done
-          [ "$up" = yes ] || return 1
-          ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 || return 1
-        }
-        teardown
         pass=0
         for n in $(seq 1 "$N"); do
-          if attempt; then
+          if lefthook run attempt >/dev/null 2>&1; then
             pass=$((pass + 1))
             echo "run $n: PASS"
           else
             echo "run $n: FAIL"
           fi
-          teardown
         done
+        lefthook run teardown >/dev/null 2>&1 || true
         echo "PING: $pass/$N PASS"
         [ "$pass" = "$N" ]
+
+# one attempt, decomposed per daemon — the scheduler holds each daemon across jobs
+attempt:
+  piped: true
+  jobs:
+    - { name: clean, run: lefthook run teardown }
+    - name: socat
+      run: |
+        set -eu
+        services process start socat
+        for _ in $(seq 1 10); do [ -e /tmp/pdbd-a ] && [ -e /tmp/pdbd-b ] && exit 0; sleep 0.3; done
+        exit 1
+    - name: pppd
+      run: |
+        set -eu
+        services process start pppd
+        for _ in $(seq 1 10); do [ -e /sys/class/net/ppp0 ] && exit 0; sleep 0.5; done
+        exit 1
+    - name: linkup
+      run: |
+        set -eu
+        sudo -n ip netns add pdbd
+        services process start linkup
+        for _ in $(seq 1 15); do ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2 && exit 0; sleep 1; done
+        exit 1
+    - { name: ping, run: ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 }
+
+teardown:
+  jobs:
+    - name: teardown
+      run: |
+        services process stop linkup >/dev/null 2>&1 || true
+        services process stop pppd   >/dev/null 2>&1 || true
+        services process stop socat  >/dev/null 2>&1 || true
+        sudo -n ip netns del pdbd 2>/dev/null || true
