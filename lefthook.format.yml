@@ -1,5 +1,5 @@
-# format check (quality stage) — run under LEFTHOOK_CONFIG=lefthook.format.yml.
+# format (quality stage) — merged into lefthook.yml via extends.
 format:
-  commands:
-    cargo: { run: cargo fmt --check }
-    buf:   { run: buf format --diff --exit-code }
+  jobs:
+    - { name: cargo, run: cargo fmt --check }
+    - { name: buf, run: buf format --diff --exit-code }

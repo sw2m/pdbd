@@ -1,54 +1,46 @@
-# One CI definition, recursion-structured. The stage hooks (quality, build, test,
-# vuln, governance) and the `ci` meta hold NO commands of their own — they recurse
-# into other hooks. The leaf commands live in per-action split files
-# (lefthook.format.yml, lefthook.lint.yml, lefthook.build.yml, lefthook.test.yml,
-# lefthook.transport.yml): the file is the action, each command the tool. So a
-# single word names every hook, and format/lint each span cargo + buf. buf-breaking
-# stays absent until the pdbd.v1 contract freezes — #21.
+# One CI definition, segmented across per-action files merged with `extends`
+# (lefthook's config include — no per-stage LEFTHOOK_CONFIG switching). Each hook
+# holds `jobs`; a job is a command or a `group`. Stages compose the action hooks by
+# recursion (`lefthook run <action>`). The `build` stage is the `build` action
+# itself (lefthook.build.yml), so it has no stanza here. buf-breaking stays absent
+# until the pdbd.v1 contract freezes — #21.
+extends:
+  - ./lefthook.format.yml
+  - ./lefthook.lint.yml
+  - ./lefthook.build.yml
+  - ./lefthook.unit.yml
+  - ./lefthook.transport.yml
 
-# --- stages: recurse into the per-action leaves ---
 quality:
-  piped: true
-  commands:
-    format: { env: { LEFTHOOK_CONFIG: lefthook.format.yml }, run: lefthook run format }
-    lint:   { env: { LEFTHOOK_CONFIG: lefthook.lint.yml },   run: lefthook run lint }
-
-build:
-  commands:
-    cargo: { env: { LEFTHOOK_CONFIG: lefthook.build.yml }, run: lefthook run build }
+  jobs:
+    - { name: format, run: lefthook run format }
+    - { name: lint, run: lefthook run lint }
 
 test:
-  piped: true # build the artifacts the checks need before running them
-  commands:
-    build: { run: lefthook run build }
-    unit:  { env: { LEFTHOOK_CONFIG: lefthook.test.yml }, run: lefthook run test }
-    transport: { tags: [privileged], env: { LEFTHOOK_CONFIG: lefthook.transport.yml }, run: lefthook run loop }
+  jobs:
+    - { name: unit, run: lefthook run unit }
+    - { name: transport, tags: [privileged], run: lefthook run transport }
 
 vuln:
-  # Home reserved — dependency/vuln scanning (cargo-audit / cargo-deny) lands here.
-  commands:
-    stub: { run: 'echo "vuln: no scanners wired yet (home reserved)"' }
+  jobs:
+    - { name: stub, run: 'echo "vuln: no scanners wired yet (home reserved)"' }
 
 governance:
-  # Home reserved — policy/governance checks land here if a need arises.
-  commands:
-    stub: { run: 'echo "governance: reserved"' }
+  jobs:
+    - { name: stub, run: 'echo "governance: reserved"' }
 
-# --- meta: the whole suite, in order ---
 ci:
-  piped: true
-  commands:
-    quality:    { run: lefthook run quality }
-    build:      { run: lefthook run build }
-    test:       { run: lefthook run test }
-    vuln:       { run: lefthook run vuln }
-    governance: { run: lefthook run governance }
+  jobs:
+    - { name: quality, run: lefthook run quality }
+    - { name: build, run: lefthook run build }
+    - { name: test, run: lefthook run test }
+    - { name: vuln, run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }
 
-# --- local git hooks (installed per-clone via the README podman recipe) ---
 pre-commit:
-  commands:
-    quality: { run: lefthook run quality }
+  jobs:
+    - { name: quality, run: lefthook run quality }
 pre-push:
-  commands:
+  jobs:
     # the full suite minus the privileged transport test — that runs on the privileged CI lane
-    ci: { env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }
+    - { name: ci, env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }

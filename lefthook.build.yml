@@ -1,4 +1,4 @@
-# build (build stage) — run under LEFTHOOK_CONFIG=lefthook.build.yml.
+# build (build stage) — merged into lefthook.yml via extends.
 build:
-  commands:
-    cargo: { run: cargo build --locked }
+  jobs:
+    - { name: cargo, run: cargo build --locked }

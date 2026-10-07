@@ -1,58 +1,50 @@
-# Privileged transport datapath test (#12-A). No pipefail — lefthook runs `run` under POSIX sh.
-loop:
-  commands:
-    loop:
-      tags: [privileged]
+# Privileged transport datapath test (#12-A, test stage) — merged into lefthook.yml
+# via extends. `{priv}` wraps sudo so the nix-provided pppd/ip resolve (sudo resets
+# PATH). No pipefail — lefthook runs `run` under POSIX sh.
+templates:
+  priv: sudo -n env "PATH=$PATH"
+transport:
+  jobs:
+    - name: loop
       env:
         N: 10 # from-scratch sample floor; override with N_OVERRIDE
       run: |
         set -eu
         N=${N_OVERRIDE:-$N}
-        pass=0
-        for n in $(seq 1 "$N"); do
-          if lefthook run ping >/dev/null 2>&1; then
-            pass=$((pass + 1)); echo "run $n: PASS"
-          else
-            echo "run $n: FAIL"
-          fi
-        done
-        echo "PING: $pass/$N PASS"
-        [ "$pass" = "$N" ]
-
-ping:
-  commands:
-    ping:
-      tags: [privileged]
-      run: |
-        set -eu
-        priv() { sudo -n env "PATH=$PATH" "$@"; } # sudo resets PATH; re-inject so nix pppd/ip resolve
         root=$(git rev-parse --show-toplevel)
         cargo build -q -p transport --example linkup
         linkup=$(find "$root/target" -type f -name linkup -path '*debug/examples*' | head -1)
         [ -x "$linkup" ]
-        s=""
-        cleanup() {
-          [ -n "$s" ] && kill "$s" 2>/dev/null || true
-          priv pkill -x linkup 2>/dev/null || true
-          priv pkill -x pppd 2>/dev/null || true
-          priv ip netns del nsL 2>/dev/null || true
+        teardown() {
+          pkill -x socat 2>/dev/null || true
+          {priv} pkill -x linkup 2>/dev/null || true
+          {priv} pkill -x pppd 2>/dev/null || true
+          {priv} ip netns del nsL 2>/dev/null || true
         }
-        trap cleanup EXIT
-        cleanup # clear any state a crashed prior attempt left behind
-        rm -f /tmp/ppp_link_a /tmp/ppp_link_b
-        socat PTY,link=/tmp/ppp_link_a,raw,echo=0 PTY,link=/tmp/ppp_link_b,raw,echo=0 & s=$!
-        sleep 0.5
-        a=$(readlink -f /tmp/ppp_link_a); b=$(readlink -f /tmp/ppp_link_b)
-        # pppd first (it retransmits, so it is listening); then pdbd's linkup.
-        priv pppd "$b" 115200 noauth local nodetach nocrtscts novj noccp \
-          lcp-echo-interval 0 10.0.0.2:10.0.0.1 >/dev/null 2>&1 &
-        sleep 2
-        priv ip netns add nsL
-        priv ip netns exec nsL "$linkup" "$a" 10.0.0.1 10.0.0.2 pdbd0 >/dev/null 2>&1 &
-        up=no
-        for _ in $(seq 1 15); do
-          if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
-          sleep 1
+        attempt() {
+          rm -f /tmp/ppp_link_a /tmp/ppp_link_b
+          socat PTY,link=/tmp/ppp_link_a,raw,echo=0 PTY,link=/tmp/ppp_link_b,raw,echo=0 &
+          sleep 0.5
+          a=$(readlink -f /tmp/ppp_link_a); b=$(readlink -f /tmp/ppp_link_b)
+          # pppd first (it retransmits, so it is listening); then pdbd's linkup.
+          {priv} pppd "$b" 115200 noauth local nodetach nocrtscts novj noccp \
+            lcp-echo-interval 0 10.0.0.2:10.0.0.1 >/dev/null 2>&1 &
+          sleep 2
+          {priv} ip netns add nsL || return 1
+          {priv} ip netns exec nsL "$linkup" "$a" 10.0.0.1 10.0.0.2 pdbd0 >/dev/null 2>&1 &
+          up=no
+          for _ in $(seq 1 15); do
+            if ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2; then up=yes; break; fi
+            sleep 1
+          done
+          [ "$up" = yes ] || return 1
+          ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 || return 1
+        }
+        teardown # start from a clean slate
+        pass=0
+        for n in $(seq 1 "$N"); do
+          if attempt; then pass=$((pass + 1)); echo "run $n: PASS"; else echo "run $n: FAIL"; fi
+          teardown # tear down this attempt (pass or fail) so the next starts clean
         done
-        [ "$up" = yes ]
-        ping -c3 -W2 10.0.0.1 >/dev/null 2>&1
+        echo "PING: $pass/$N PASS"
+        [ "$pass" = "$N" ]

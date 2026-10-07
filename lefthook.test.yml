@@ -1,4 +1,0 @@
-# unit tests (test stage) — run under LEFTHOOK_CONFIG=lefthook.test.yml.
-test:
-  commands:
-    cargo: { run: cargo test }

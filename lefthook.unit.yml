@@ -1,0 +1,4 @@
+# unit/integration tests (test stage) — merged into lefthook.yml via extends.
+unit:
+  jobs:
+    - { name: cargo, run: cargo test }
