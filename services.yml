@@ -1,11 +1,14 @@
-# sudo resets PATH, so the privileged daemons use `sudo env PATH=$PATH` for the nix pppd/ip.
+# Each privileged daemon resolves its binary to an absolute path as the
+# unprivileged caller ($(command -v …), from the trusted devShell PATH) and
+# sudo-execs that — no PATH crosses sudo and the resolved store paths are
+# read-only. All resources live in the per-run $PDBD_DIR / $PDBD_NS.
 processes:
   socat:
-    command: "socat PTY,link=/tmp/pdbd-a,raw,echo=0 PTY,link=/tmp/pdbd-b,raw,echo=0"
+    command: "socat PTY,link=$PDBD_DIR/a,raw,echo=0 PTY,link=$PDBD_DIR/b,raw,echo=0"
     disabled: true
   pppd:
-    command: "sudo -n env PATH=$PATH pppd $(readlink -f /tmp/pdbd-b) 115200 noauth local nodetach nocrtscts novj noccp lcp-echo-interval 0 10.0.0.2:10.0.0.1"
+    command: "sudo -n $(command -v pppd) $(readlink -f $PDBD_DIR/b) 115200 noauth local nodetach nocrtscts novj noccp lcp-echo-interval 0 unit $PDBD_UNIT 10.0.0.2:10.0.0.1"
     disabled: true
   linkup:
-    command: "sudo -n env PATH=$PATH ip netns exec pdbd $(cat /tmp/pdbd-linkup) $(readlink -f /tmp/pdbd-a) 10.0.0.1 10.0.0.2 pdbd0"
+    command: "sudo -n $(command -v ip) netns exec $PDBD_NS $(cat $PDBD_DIR/linkup) $(readlink -f $PDBD_DIR/a) 10.0.0.1 10.0.0.2 pdbd0"
     disabled: true

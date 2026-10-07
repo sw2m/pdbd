@@ -1,5 +1,6 @@
-# Transport datapath test (#12-A). Run through `ci` (the scheduler must be up),
-# not bare `lefthook run transport`. No pipefail — lefthook runs `run` under POSIX sh.
+# Transport datapath test (#12-A). Run through `ci` (the scheduler must be up,
+# and it exports $PDBD_DIR/$PDBD_NS/$PDBD_UNIT), not bare `lefthook run transport`.
+# No pipefail — lefthook runs `run` under POSIX sh.
 transport:
   piped: true
   jobs:
@@ -7,8 +8,8 @@ transport:
       run: |
         set -eu
         cargo build -q -p transport --example linkup
-        find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1 > /tmp/pdbd-linkup
-        [ -s /tmp/pdbd-linkup ]
+        find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1 > "$PDBD_DIR/linkup"
+        [ -s "$PDBD_DIR/linkup" ]
     - name: loop
       env:
         N: 10 # from-scratch sample floor; override with N_OVERRIDE
@@ -17,11 +18,15 @@ transport:
         N=${N_OVERRIDE:-$N}
         pass=0
         for n in $(seq 1 "$N"); do
-          if lefthook run attempt >/dev/null 2>&1; then
+          log="$PDBD_DIR/attempt.$n.log"
+          if lefthook run attempt >"$log" 2>&1; then
             pass=$((pass + 1))
             echo "run $n: PASS"
           else
             echo "run $n: FAIL"
+            echo "--- attempt $n diagnostics ---"
+            cat "$log"
+            echo "--- end attempt $n ---"
           fi
         done
         lefthook run teardown >/dev/null 2>&1 || true
@@ -37,20 +42,20 @@ attempt:
       run: |
         set -eu
         services process start socat
-        for _ in $(seq 1 10); do [ -e /tmp/pdbd-a ] && [ -e /tmp/pdbd-b ] && exit 0; sleep 0.3; done
+        for _ in $(seq 1 10); do [ -e "$PDBD_DIR/a" ] && [ -e "$PDBD_DIR/b" ] && exit 0; sleep 0.3; done
         exit 1
     - name: pppd
       run: |
         set -eu
         services process start pppd
-        for _ in $(seq 1 10); do [ -e /sys/class/net/ppp0 ] && exit 0; sleep 0.5; done
+        for _ in $(seq 1 10); do [ -e "/sys/class/net/ppp$PDBD_UNIT" ] && exit 0; sleep 0.5; done
         exit 1
     - name: linkup
       run: |
         set -eu
-        sudo -n ip netns add pdbd
+        sudo -n "$(command -v ip)" netns add "$PDBD_NS"
         services process start linkup
-        for _ in $(seq 1 15); do ip -4 addr show ppp0 2>/dev/null | grep -q 10.0.0.2 && exit 0; sleep 1; done
+        for _ in $(seq 1 15); do ip -4 addr show "ppp$PDBD_UNIT" 2>/dev/null | grep -q 10.0.0.2 && exit 0; sleep 1; done
         exit 1
     - { name: ping, run: ping -c3 -W2 10.0.0.1 >/dev/null 2>&1 }
 
@@ -61,4 +66,4 @@ teardown:
         services process stop linkup >/dev/null 2>&1 || true
         services process stop pppd   >/dev/null 2>&1 || true
         services process stop socat  >/dev/null 2>&1 || true
-        sudo -n ip netns del pdbd 2>/dev/null || true
+        sudo -n "$(command -v ip)" netns del "$PDBD_NS" 2>/dev/null || true

@@ -34,6 +34,13 @@ pub enum Action {
     Ip(Vec<u8>),
 }
 
+/// PPP MRU we size buffers and the TUN for; ppproto defaults to 1500.
+const MRU: usize = 1500;
+/// Frame buffer size. Worst-case HDLC byte-stuffing can nearly double a frame
+/// (every byte escaped) on top of protocol/FCS/flag overhead, so a full-MRU IP
+/// packet must still fit once encoded. Sized so it never overflows at the MRU.
+const FRAME: usize = 2 * (MRU + 8) + 8;
+
 /// A PPP link over a byte transport — the sync core that drives `ppproto`.
 /// The async transport I/O and the kernel TUN are the effectful shell around it.
 pub struct Link {
@@ -50,8 +57,8 @@ impl Link {
                 username: b"",
                 password: b"",
             }),
-            tx: vec![0; 2048],
-            rx: vec![0; 2048],
+            tx: vec![0; FRAME],
+            rx: vec![0; FRAME],
         }
     }
 
@@ -79,13 +86,17 @@ impl Link {
         }
     }
 
-    /// Frame an IP packet (from the TUN) for transmission over L1.
-    pub fn send(&mut self, pkt: &[u8]) -> Vec<u8> {
-        let n = self
-            .ppp
-            .send(pkt, &mut self.tx)
-            .expect("tx buffer too small");
-        self.tx[..n].to_vec()
+    /// Frame an IP packet (from the TUN) for transmission over L1. An oversized
+    /// packet (beyond the frame buffer) is an error, not a panic — the caller
+    /// drops it and the link survives.
+    pub fn send(&mut self, pkt: &[u8]) -> io::Result<Vec<u8>> {
+        let n = self.ppp.send(pkt, &mut self.tx).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "IP packet exceeds PPP frame buffer",
+            )
+        })?;
+        Ok(self.tx[..n].to_vec())
     }
 }
 
@@ -132,8 +143,16 @@ where
                 process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
             }
             Some(pkt) = from_tun.recv() => {
-                let bytes = link.send(&pkt);
-                wr.write_all(&bytes).await?;
+                // Nothing rides the link before it reaches Open — drop until then.
+                // (Expected during the brief negotiation window; the kernel's TCP
+                // retransmits. Dropped silently to avoid log noise on bring-up.)
+                if link.phase() != Phase::Open {
+                    continue;
+                }
+                match link.send(&pkt) {
+                    Ok(bytes) => wr.write_all(&bytes).await?,
+                    Err(e) => eprintln!("transport: dropping unsendable packet: {e}"),
+                }
             }
             _ = tick.tick() => {
                 process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
@@ -165,7 +184,16 @@ where
                 Action::Idle => break,
             }
         }
-        phase.send_replace(link.phase());
+        // Only notify on an actual phase change — not every poll tick.
+        phase.send_if_modified(|cur| {
+            let now = link.phase();
+            if *cur != now {
+                *cur = now;
+                true
+            } else {
+                false
+            }
+        });
         if inbox.is_empty() {
             break;
         }
@@ -197,7 +225,9 @@ pub mod tun {
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let mut builder = DeviceBuilder::new().ipv4(local, 32u8, Some(peer));
+        let mut builder = DeviceBuilder::new()
+            .ipv4(local, 32u8, Some(peer))
+            .mtu(MRU as u16);
         if let Some(n) = name {
             builder = builder.name(n);
         }
@@ -208,8 +238,8 @@ pub mod tun {
         let (from_tun_tx, from_tun_rx) = mpsc::channel::<Vec<u8>>(64);
 
         let dev_rx = dev.clone();
-        tokio::spawn(async move {
-            let mut buf = [0u8; 2048];
+        let rx_task = tokio::spawn(async move {
+            let mut buf = [0u8; FRAME];
             loop {
                 match dev_rx.recv(&mut buf).await {
                     Ok(0) | Err(_) => break,
@@ -222,7 +252,7 @@ pub mod tun {
             }
         });
         let dev_tx = dev.clone();
-        tokio::spawn(async move {
+        let tx_task = tokio::spawn(async move {
             while let Some(pkt) = to_tun_rx.recv().await {
                 if dev_tx.send(&pkt).await.is_err() {
                     break;
@@ -230,7 +260,13 @@ pub mod tun {
             }
         });
 
-        super::run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await
+        // The device-read task parks on `recv()` and would otherwise outlive the
+        // pump (it never observes the closed channel) — abort both on teardown so
+        // nothing, and no TUN handle, leaks.
+        let res = super::run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await;
+        rx_task.abort();
+        tx_task.abort();
+        res
     }
 }
 
