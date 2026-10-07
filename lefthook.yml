@@ -1,4 +1,5 @@
 # CI checks, run through the flake `ci` entrypoint — see README "Local development".
+no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
 extends:
   - ./lefthook.format.yml
   - ./lefthook.lint.yml

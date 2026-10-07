@@ -2,12 +2,16 @@ name: ci
 
 on:
   pull_request:
+    # `ready_for_review` so a draft marked ready triggers CI; drafts are skipped below.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
 
 jobs:
   ci:
+    # don't spend CI on a work-in-progress draft — runs once it's marked ready for review
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
