@@ -1,15 +1,11 @@
-//! The pdbd transport: the lower stack that moves bytes — RFC 1661/1332 PPP
-//! (via `ppproto`), the L2 link, over an L1 byte pipe, terminated into a kernel
-//! TUN so the kernel's IP stack runs on the link. (L1 establishment will live
-//! here too; socat-style addressing may be a separate crate.)
+//! PPP (`ppproto`) over an L1 byte pipe, terminated into a kernel TUN. See the
+//! crate README for the layer model.
 //!
-//! #12-A is the clean-link datapath (serial ↔ ppproto ↔ TUN ↔ ping). Lossy
-//! robustness — the retransmit/timer/keepalive layer ppproto lacks — is #12-B
-//! (owner/repo#24, upstream embassy-rs/ppproto#5).
+//! #12-A is the clean-link datapath; the retransmit/timer/keepalive layer
+//! ppproto lacks is #12-B (owner/repo#24, upstream embassy-rs/ppproto#5).
 //!
-//! Addressing note: ppproto's IPCP *accepts* a peer's address but never *assigns*
-//! one, so a pdbd↔pdbd link reaches `Open` with 0.0.0.0; pdbd programs the TUN
-//! addresses statically from config rather than from IPCP (the effectful shell).
+//! ppproto's IPCP accepts a peer address but never assigns one, so the TUN is
+//! addressed statically from config rather than from IPCP.
 
 use std::io;
 use std::net::Ipv4Addr;
@@ -23,14 +19,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, watch};
 use tun_rs::DeviceBuilder;
 
-/// The result of advancing the link one step.
 #[derive(Debug)]
 pub enum Action {
-    /// Nothing to do this turn.
     Idle,
-    /// Bytes to write to the L1 transport.
+    /// Framed bytes to write to L1.
     Tx(Vec<u8>),
-    /// An IP packet received from the peer (to deliver to the TUN).
+    /// A decoded IP packet to deliver to the TUN.
     Ip(Vec<u8>),
 }
 
@@ -41,8 +35,7 @@ const MRU: usize = 1500;
 /// packet must still fit once encoded. Sized so it never overflows at the MRU.
 const FRAME: usize = 2 * (MRU + 8) + 8;
 
-/// A PPP link over a byte transport — the sync core that drives `ppproto`.
-/// The async transport I/O and the kernel TUN are the effectful shell around it.
+/// The sync core driving `ppproto`; the async I/O and TUN are the effectful shell.
 pub struct Link {
     ppp: PPPoS<'static>,
     tx: Vec<u8>,
@@ -62,22 +55,19 @@ impl Link {
         }
     }
 
-    /// Begin negotiation (first LCP Configure-Request is emitted on the next poll).
+    /// Begin negotiation; the first LCP Configure-Request goes out on the next poll.
     pub fn open(&mut self) {
         self.ppp.open().expect("Link::open on a non-fresh link");
     }
 
-    /// Current PPP phase; `Phase::Open` once the link is up.
     pub fn phase(&self) -> Phase {
         self.ppp.status().phase
     }
 
-    /// Feed bytes received from L1; returns how many were consumed.
     pub fn consume(&mut self, data: &[u8]) -> usize {
         self.ppp.consume(data, &mut self.rx)
     }
 
-    /// Advance the machine and return the next action.
     pub fn poll(&mut self) -> Action {
         match self.ppp.poll(&mut self.tx, &mut self.rx) {
             PPPoSAction::None => Action::Idle,
@@ -86,9 +76,8 @@ impl Link {
         }
     }
 
-    /// Frame an IP packet (from the TUN) for transmission over L1. An oversized
-    /// packet (beyond the frame buffer) is an error, not a panic — the caller
-    /// drops it and the link survives.
+    /// Frame an IP packet for L1. Oversized (beyond the frame buffer) is an
+    /// error, not a panic — the caller drops it and the link survives.
     pub fn send(&mut self, pkt: &[u8]) -> io::Result<Vec<u8>> {
         let n = self.ppp.send(pkt, &mut self.tx).map_err(|_| {
             io::Error::new(
@@ -143,9 +132,7 @@ where
                 process(&mut link, &mut inbox, &mut wr, &to_tun, &phase).await?;
             }
             Some(pkt) = from_tun.recv() => {
-                // Nothing rides the link before it reaches Open — drop until then.
-                // (Expected during the brief negotiation window; the kernel's TCP
-                // retransmits. Dropped silently to avoid log noise on bring-up.)
+                // Nothing rides the link before Open; drop silently (kernel TCP retransmits).
                 if link.phase() != Phase::Open {
                     continue;
                 }
@@ -161,9 +148,8 @@ where
     }
 }
 
-// Drain outputs (poll until Idle), then consume one frame's worth of the inbox;
-// repeat. Mirrors ppproto's one-frame-per-poll contract (poll and consume must
-// interleave, not drain-all-then-feed-all).
+// ppproto processes one frame per poll — poll and consume must interleave,
+// not drain-all-then-feed-all.
 async fn process<W>(
     link: &mut Link,
     inbox: &mut Vec<u8>,
@@ -184,7 +170,6 @@ where
                 Action::Idle => break,
             }
         }
-        // Only notify on an actual phase change — not every poll tick.
         phase.send_if_modified(|cur| {
             let now = link.phase();
             if *cur != now {
@@ -206,15 +191,11 @@ where
     Ok(())
 }
 
-/// Kernel-TUN integration: create a point-to-point TUN and run the link over it.
 pub mod tun {
     use super::*;
 
-    /// Create a point-to-point kernel TUN (local ↔ peer, statically addressed) and
-    /// run the link over `transport`, bridging IP packets between the TUN and the peer.
-    ///
-    /// Privileged: creating a TUN needs `CAP_NET_ADMIN`. Addresses are static (from
-    /// config), not from IPCP — ppproto cannot assign one (see the module note).
+    /// Run the link over `transport` on a point-to-point kernel TUN.
+    /// Privileged: creating a TUN needs `CAP_NET_ADMIN`.
     pub async fn run<T>(
         transport: T,
         local: Ipv4Addr,
@@ -260,9 +241,8 @@ pub mod tun {
             }
         });
 
-        // The device-read task parks on `recv()` and would otherwise outlive the
-        // pump (it never observes the closed channel) — abort both on teardown so
-        // nothing, and no TUN handle, leaks.
+        // The device-read task parks on recv() and never sees the closed channel,
+        // so abort both on teardown — no task (and no TUN handle) leaks.
         let res = super::run(Link::new(), transport, from_tun_rx, to_tun_tx, phase).await;
         rx_task.abort();
         tx_task.abort();

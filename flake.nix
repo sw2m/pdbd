@@ -19,10 +19,8 @@
         };
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
 
-        # the process-compose client (socket pre-wired); see README "Local
-        # development" for why the scheduler runs as a lefthook sibling. The
-        # socket lives in $PDBD_DIR — per-invocation under `ci`, per-uid for a
-        # bare call — so concurrent runs never share a scheduler.
+        # process-compose client — see README "Local development". Socket in
+        # $PDBD_DIR (per-invocation under `ci`) so concurrent runs don't share one.
         services = pkgs.writeShellScriptBin "services" ''
           set -eu
           : "''${PDBD_DIR:=/tmp/pdbd-pc-$(id -u)}"
@@ -37,9 +35,8 @@
           exec ${pkgs.process-compose}/bin/process-compose "$@" -U -u "$sock"
         '';
 
-        # the CI entrypoint — see README "Local development". Mints a private,
-        # per-invocation runtime dir (0700) and a run token, exported so the
-        # scheduler, its services, and the datapath test all namespace off them.
+        # CI entrypoint — see README "Local development". The per-invocation 0700
+        # dir + run token are exported so services and the datapath test namespace off them.
         ci = pkgs.writeShellScriptBin "ci" ''
           set -eu
           hook="''${1:-ci}"
