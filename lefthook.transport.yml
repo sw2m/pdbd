@@ -19,7 +19,12 @@ transport:
         lefthook run teardown >/dev/null 2>&1 # clean slate from any crashed prior run
         pass=0
         for n in $(seq 1 "$N"); do
-          if lefthook run attempt >/dev/null 2>&1; then pass=$((pass + 1)); echo "run $n: PASS"; else echo "run $n: FAIL"; fi
+          if lefthook run attempt >/dev/null 2>&1; then
+            pass=$((pass + 1))
+            echo "run $n: PASS"
+          else
+            echo "run $n: FAIL"
+          fi
         done
         echo "PING: $pass/$N PASS"
         [ "$pass" = "$N" ]
