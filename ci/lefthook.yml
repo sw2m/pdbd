@@ -1,7 +1,4 @@
-# CI checks, run through the flake `ci` entrypoint — see README "Local development".
-# This lives in ci/ (not the repo root), so `ci` points lefthook here via
-# LEFTHOOK_CONFIG; bare `lefthook` needs that env set too. The extended paths are
-# repo-root-relative — lefthook resolves `extends` from the root, not this file's dir.
+# CI checks — see README "Local development".
 no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
 extends:
   - ci/lefthook.format.yml
