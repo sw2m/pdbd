@@ -546,35 +546,55 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) and
-`lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
-and you run the same thing locally — so "passes locally" means "passes in CI".
-
-Run the checks any time:
+CI is **one definition**: a Nix flake pins the toolchain, and `lefthook.yml`
+defines the checks. The entrypoint is the flake's `ci` command, and GitHub Actions
+runs the same thing — so "passes locally" means "passes in CI":
 
 ```
-nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
+nix develop -c ci          # the whole suite (what GitHub Actions runs)
+nix develop -c ci test     # a single hook
 ```
 
-How you provide that Nix environment is **up to you** — the repo doesn't assume a setup.
+**Why `ci`, not bare `lefthook`.** The transport datapath test runs its services
+(socat, pppd, linkup, a netns) as **systemd units**. `ci` installs the disposable
+unit templates (into tmpfs — gone on reboot) before running lefthook and removes
+them on exit; the checks then drive instances with `systemctl start/stop
+pdbd-datapath@<slot>`, and systemd enforces the dependency order and readiness.
+Checks that need no services just ignore it.
+
+The checks are lefthook hooks: `ci` runs the `ci` hook (whole suite); `lefthook run
+quality` (etc.) runs one directly. The **transport datapath test** is **Linux-only**
+— it needs systemd and root (TUN + pppd + netns) — so run it through `ci` (e.g. `ci
+test`), never bare `lefthook run transport`. Contexts without systemd/root skip it
+with `LEFTHOOK_EXCLUDE=privileged` — the local git hooks' job, not CI's.
+
+How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
 
 - **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
-- **Containerized** — if you'd rather keep Nix off your host, run it in a container (e.g.
-  rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume).
-  One wrinkle: a git *worktree* keeps its metadata outside the working dir, so mount the git
-  common-dir too if you want git usable inside the container:
+- **Containerized** — the non-datapath checks (`quality`/`build`/`unit`) run in any Nix
+  container (e.g. rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent
+  `/nix` volume); mount the git common-dir too if you want git usable inside, since a
+  *worktree* keeps its metadata outside the working dir:
 
   ```
   podman run --rm -it \
     -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
     -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
-    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c lefthook run quality
   ```
 
-To run the checks automatically before each commit, wire a pre-commit hook that invokes
-`lefthook run ci` through whichever setup you chose (`lefthook install`, or a `core.hooksPath`
-script) — that's a local preference, so it's kept out of the repo.
+  The **datapath test** additionally needs systemd as PID 1 and `CAP_NET_ADMIN`, so for the
+  full `ci` suite use a Linux host, or a systemd-capable privileged container
+  (`podman run --systemd=always` on a systemd base image) — not the rootless `nixos/nix` shell.
+
+**Git hooks (optional, local-only).** To run the checks on every commit/push, point the
+hooks at that same container so no host Nix or lefthook is assumed — write `.git/hooks/pre-commit`
+and `.git/hooks/pre-push` as a one-liner that wraps the podman command above but ends in
+`… develop "path:$PWD" -c ci pre-commit` (and `… ci pre-push` respectively). `pre-commit` runs
+`quality`; `pre-push` runs the full `ci` minus the privileged transport test (so it needs no
+systemd). Worktrees share the common `.git/hooks`, so this installs once per clone — and it's a
+local preference, kept out of the repo.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 

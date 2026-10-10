@@ -2,18 +2,29 @@ name: ci
 
 on:
   pull_request:
+    # No `opened`: a non-draft open would race draft-guard and fire CI once before it
+    # re-drafts. CI runs when a draft is marked ready (ready_for_review) or on a push
+    # (synchronize). Drafts are skipped below regardless.
+    types: [synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
 
 jobs:
   ci:
+    # don't spend CI on a work-in-progress draft — runs once it's marked ready for review
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        id: cache
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      - run: nix develop -c lefthook run ci --all-files
+      - name: warn on reused components
+        if: steps.cache.outputs.hit == 'true'
+        run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — the clean-runner ideal was traded for speed, so component reuse means build pollution is possible"
+        # `ci` brackets lefthook with the service scheduler — see flake.nix.
+      - run: nix develop -c ci

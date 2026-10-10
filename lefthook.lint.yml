@@ -1,0 +1,5 @@
+# buf-breaking stays absent until the pdbd.v1 contract freezes — #21.
+lint:
+  jobs:
+    - { name: cargo, run: cargo clippy --all-targets -- -D warnings }
+    - { name: buf, run: buf lint }
