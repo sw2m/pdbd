@@ -19,7 +19,6 @@
         };
         inherit (pkgs) lib;
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
-        onLinux = pkgs.stdenv.isLinux;
 
         units =
           let
@@ -71,7 +70,7 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
-          ] ++ lib.optionals onLinux [ ci ];
+          ] ++ lib.optionals pkgs.stdenv.isLinux [ ci ]; # datapath harness is systemd-only
         };
       });
 }
