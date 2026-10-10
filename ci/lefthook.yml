@@ -1,0 +1,39 @@
+# CI checks — see README "Local development".
+no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
+extends:
+  - ci/lefthook.format.yml
+  - ci/lefthook.lint.yml
+  - ci/lefthook.build.yml
+  - ci/lefthook.unit.yml
+
+quality:
+  jobs:
+    - { name: format, run: lefthook run format }
+    - { name: lint, run: lefthook run lint }
+
+test:
+  jobs:
+    - { name: unit, run: lefthook run unit }
+
+vuln: # security scanning — wiring tracked in #34
+  jobs:
+    - { name: stub, run: 'echo "vuln: reserved — see #34"' }
+
+governance: # license / policy / SBOM — wiring tracked in #35
+  jobs:
+    - { name: stub, run: 'echo "governance: reserved — see #35"' }
+
+ci:
+  jobs:
+    - { name: quality, run: lefthook run quality }
+    - { name: build, run: lefthook run build }
+    - { name: test, run: lefthook run test }
+    - { name: vuln, run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }
+
+pre-commit:
+  jobs:
+    - { name: quality, run: lefthook run quality }
+pre-push:
+  jobs:
+    - { name: ci, run: lefthook run ci }
