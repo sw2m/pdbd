@@ -1,26 +1,13 @@
 # CI checks, run through the flake `ci` entrypoint — see README "Local development".
 # This lives in ci/ (not the repo root), so `ci` points lefthook here via
-# LEFTHOOK_CONFIG; bare `lefthook` needs that env set too.
+# LEFTHOOK_CONFIG; bare `lefthook` needs that env set too. The extended paths are
+# repo-root-relative — lefthook resolves `extends` from the root, not this file's dir.
 no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
-
-format:
-  jobs:
-    - { name: cargo, run: cargo fmt --check }
-    - { name: buf, run: buf format --diff --exit-code }
-
-# buf-breaking stays absent until the pdbd.v1 contract freezes — #21.
-lint:
-  jobs:
-    - { name: cargo, run: cargo clippy --all-targets -- -D warnings }
-    - { name: buf, run: buf lint }
-
-build:
-  jobs:
-    - { name: cargo, run: cargo build --locked }
-
-unit:
-  jobs:
-    - { name: cargo, run: cargo test --locked }
+extends:
+  - ci/lefthook.format.yml
+  - ci/lefthook.lint.yml
+  - ci/lefthook.build.yml
+  - ci/lefthook.unit.yml
 
 quality:
   jobs:
