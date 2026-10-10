@@ -22,7 +22,7 @@
         onLinux = pkgs.stdenv.isLinux;
 
         # --- systemd unit engine (generic; Linux-only) -----------------------
-        # A test drops *.service / *.target into systemd/ and the engine picks them
+        # A test drops *.service / *.target into ci/systemd/ and the engine picks them
         # up — it names no unit and no binary. The one substitution a unit carries
         # is {{bin}}: the CI toolchain's absolute bin dir. systemd requires an
         # absolute ExecStart, so a unit writes {{bin}}/ip, {{bin}}/pppd, …, and a
@@ -34,10 +34,10 @@
         };
         unitNames = lib.filter
           (n: builtins.match ".*\\.(service|target)" n != null)
-          (builtins.attrNames (builtins.readDir ./systemd));
+          (builtins.attrNames (builtins.readDir ./ci/systemd));
         renderUnit = name: pkgs.writeText "unit"
           (builtins.replaceStrings [ "{{bin}}" ] [ "${ciTools}/bin" ]
-            (builtins.readFile (./systemd + "/${name}")));
+            (builtins.readFile (./ci/systemd + "/${name}")));
         unitDir = pkgs.runCommand "pdbd-units" { } (''
           mkdir -p "$out"
         '' + lib.concatMapStrings (n: ''cp ${renderUnit n} "$out/${n}"'' + "\n") unitNames);
@@ -65,6 +65,8 @@
         ci = pkgs.writeShellScriptBin "ci" ''
           set -eu
           hook="''${1:-ci}"
+          root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
+          export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
           ${installUnits}/bin/pdbd-units-install
           trap '${uninstallUnits}/bin/pdbd-units-uninstall >/dev/null 2>&1 || true' EXIT
           ${pkgs.lefthook}/bin/lefthook run "$hook"

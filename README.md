@@ -555,13 +555,17 @@ nix develop -c ci          # the whole suite (what GitHub Actions runs)
 nix develop -c ci quality  # a single hook
 ```
 
-**The `ci` wrapper.** Some checks need background *services*, managed as **systemd
-units**. `ci` discovers the unit files a test drops in `systemd/`, installs them to
-`/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them
-on exit; checks then drive instances with `systemctl start/stop name@<slot>`. With
-no units present it is a no-op, so `ci` runs anywhere lefthook does. Service-based
-checks are **Linux-only** (systemd); the rest (`quality`/`build`/`unit`) run anywhere
-— including macOS, where `ci` is absent and you invoke `lefthook run <hook>` directly.
+**Where CI lives.** All non-GHA CI is under `ci/`: the lefthook config (`ci/lefthook.yml`)
+and the systemd unit files tests contribute (`ci/systemd/`). `ci` points lefthook at that
+config for you; a bare `lefthook` invocation needs `LEFTHOOK_CONFIG=ci/lefthook.yml`.
+
+**The `ci` wrapper.** Some checks need background *services*, managed as **systemd units**.
+`ci` discovers the unit files a test drops in `ci/systemd/`, installs them to
+`/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them on
+exit; checks then drive instances with `systemctl start/stop name@<slot>`. With no units
+present it is a no-op, so `ci` runs anywhere lefthook does. Service-based checks are
+**Linux-only** (systemd); the rest (`quality`/`build`/`unit`) run anywhere — including
+macOS, where `ci` is absent and you run `LEFTHOOK_CONFIG=ci/lefthook.yml lefthook run <hook>`.
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
@@ -576,7 +580,7 @@ Two that work:
   podman run --rm -it \
     -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
     -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
-    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c lefthook run quality
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c ci quality
   ```
 
   Service-based (systemd) checks additionally need a Linux host or a systemd-capable
@@ -584,7 +588,8 @@ Two that work:
 
 To run the checks before each commit/push, wire git hooks that invoke `ci pre-commit`
 / `ci pre-push` through whichever setup you chose — a local preference, kept out of the
-repo.
+repo. (A hook that calls bare `lefthook` instead must set `LEFTHOOK_CONFIG=ci/lefthook.yml`,
+since the config lives under `ci/`.)
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 
