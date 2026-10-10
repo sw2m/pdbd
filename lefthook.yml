@@ -1,14 +1,39 @@
-# buf breaking is deliberately absent until the pdbd.v1 contract freezes — #21.
+# CI checks, run through the flake `ci` entrypoint — see README "Local development".
+no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
+extends:
+  - ./lefthook.format.yml
+  - ./lefthook.lint.yml
+  - ./lefthook.build.yml
+  - ./lefthook.unit.yml
+
+quality:
+  jobs:
+    - { name: format, run: lefthook run format }
+    - { name: lint, run: lefthook run lint }
+
+test:
+  jobs:
+    - { name: unit, run: lefthook run unit }
+
+vuln:
+  jobs:
+    - { name: stub, run: 'echo "vuln: no scanners wired yet (home reserved)"' }
+
+governance:
+  jobs:
+    - { name: stub, run: 'echo "governance: reserved"' }
+
 ci:
-  parallel: false # the cargo commands share the target lock
-  commands:
-    fmt:
-      run: cargo fmt --check
-    clippy:
-      run: cargo clippy --all-targets -- -D warnings
-    build:
-      run: cargo build --locked
-    buf-lint:
-      run: buf lint
-    buf-format:
-      run: buf format --diff --exit-code
+  jobs:
+    - { name: quality, run: lefthook run quality }
+    - { name: build, run: lefthook run build }
+    - { name: test, run: lefthook run test }
+    - { name: vuln, run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }
+
+pre-commit:
+  jobs:
+    - { name: quality, run: lefthook run quality }
+pre-push:
+  jobs:
+    - { name: ci, run: lefthook run ci }

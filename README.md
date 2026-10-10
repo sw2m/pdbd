@@ -546,35 +546,45 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one definition**: a Nix flake pins the toolchain (rust, buf, lefthook) and
-`lefthook.yml` defines the checks. GitHub Actions just runs `nix develop -c lefthook run ci`,
-and you run the same thing locally — so "passes locally" means "passes in CI".
-
-Run the checks any time:
+CI is **one definition**: a Nix flake pins the toolchain and lefthook defines the
+checks. The entrypoint is the flake's `ci` command, and GitHub Actions runs the
+same thing — so "passes locally" means "passes in CI":
 
 ```
-nix develop -c lefthook run ci      # or `lefthook run ci` from inside `nix develop`
+nix develop -c ci          # the whole suite (what GitHub Actions runs)
+nix develop -c ci quality  # a single hook
 ```
 
-How you provide that Nix environment is **up to you** — the repo doesn't assume a setup.
+**The `ci` wrapper.** Some checks need background *services*, managed as **systemd
+units**. `ci` discovers the unit files a test drops in `units/`, installs them to
+`/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them
+on exit; checks then drive instances with `systemctl start/stop name@<slot>`. With
+no units present it is a no-op, so `ci` runs anywhere lefthook does. Service-based
+checks are **Linux-only** (systemd); the rest (`quality`/`build`/`unit`) run anywhere
+— including macOS, where `ci` is absent and you invoke `lefthook run <hook>` directly.
+
+How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
 
 - **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
-- **Containerized** — if you'd rather keep Nix off your host, run it in a container (e.g.
-  rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume).
-  One wrinkle: a git *worktree* keeps its metadata outside the working dir, so mount the git
-  common-dir too if you want git usable inside the container:
+- **Containerized** — keep Nix off your host with a container (e.g. rootless Podman
+  with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume); mount the
+  git common-dir too if you want git usable inside, since a *worktree* keeps its
+  metadata outside the working dir:
 
   ```
   podman run --rm -it \
     -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
     -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
-    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c lefthook run quality
   ```
 
-To run the checks automatically before each commit, wire a pre-commit hook that invokes
-`lefthook run ci` through whichever setup you chose (`lefthook install`, or a `core.hooksPath`
-script) — that's a local preference, so it's kept out of the repo.
+  Service-based (systemd) checks additionally need a Linux host or a systemd-capable
+  privileged container; the non-service checks run in any Nix environment.
+
+To run the checks before each commit/push, wire git hooks that invoke `ci pre-commit`
+/ `ci pre-push` through whichever setup you chose — a local preference, kept out of the
+repo.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 

@@ -1,0 +1,4 @@
+format:
+  jobs:
+    - { name: cargo, run: cargo fmt --check }
+    - { name: buf, run: buf format --diff --exit-code }
