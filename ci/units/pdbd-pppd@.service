@@ -1,0 +1,8 @@
+[Unit]
+Description=pdbd pppd peer (slot %i)
+Requires=pdbd-socat@%i.service
+After=pdbd-socat@%i.service
+
+[Service]
+ExecStartPre={{sh}} -c 'until [ -e /run/pdbd/%i/b ]; do sleep 0.1; done'
+ExecStart={{pppd}} /run/pdbd/%i/b 115200 noauth local nodetach nocrtscts novj noccp lcp-echo-interval 0 unit %i 10.0.%i.2:10.0.%i.1

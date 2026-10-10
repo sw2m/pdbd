@@ -1,0 +1,7 @@
+[Unit]
+Description=pdbd PTY bridge (slot %i)
+
+[Service]
+RuntimeDirectory=pdbd/%i
+RuntimeDirectoryMode=0700
+ExecStart={{socat}} PTY,link=/run/pdbd/%i/a,raw,echo=0 PTY,link=/run/pdbd/%i/b,raw,echo=0

@@ -1,0 +1,9 @@
+[Unit]
+Description=pdbd linkup TUN (slot %i)
+Requires=pdbd-pppd@%i.service pdbd-netns@%i.service
+After=pdbd-pppd@%i.service pdbd-netns@%i.service
+
+[Service]
+NetworkNamespacePath=/run/netns/pdbd-%i
+EnvironmentFile=/run/pdbd/linkup.env
+ExecStart={{sh}} -c 'exec "$LINKUP" /run/pdbd/%i/a 10.0.%i.1 10.0.%i.2 pdbd0'
