@@ -22,7 +22,7 @@
         onLinux = pkgs.stdenv.isLinux;
 
         # --- systemd unit engine (generic; Linux-only) -----------------------
-        # A test drops *.service / *.target into units/ and the engine picks them
+        # A test drops *.service / *.target into systemd/ and the engine picks them
         # up — it names no unit and no binary. The one substitution a unit carries
         # is {{bin}}: the CI toolchain's absolute bin dir. systemd requires an
         # absolute ExecStart, so a unit writes {{bin}}/ip, {{bin}}/pppd, …, and a
@@ -34,10 +34,10 @@
         };
         unitNames = lib.filter
           (n: builtins.match ".*\\.(service|target)" n != null)
-          (builtins.attrNames (builtins.readDir ./units));
+          (builtins.attrNames (builtins.readDir ./systemd));
         renderUnit = name: pkgs.writeText "unit"
           (builtins.replaceStrings [ "{{bin}}" ] [ "${ciTools}/bin" ]
-            (builtins.readFile (./units + "/${name}")));
+            (builtins.readFile (./systemd + "/${name}")));
         unitDir = pkgs.runCommand "pdbd-units" { } (''
           mkdir -p "$out"
         '' + lib.concatMapStrings (n: ''cp ${renderUnit n} "$out/${n}"'' + "\n") unitNames);

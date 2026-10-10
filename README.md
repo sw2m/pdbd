@@ -556,7 +556,7 @@ nix develop -c ci quality  # a single hook
 ```
 
 **The `ci` wrapper.** Some checks need background *services*, managed as **systemd
-units**. `ci` discovers the unit files a test drops in `units/`, installs them to
+units**. `ci` discovers the unit files a test drops in `systemd/`, installs them to
 `/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them
 on exit; checks then drive instances with `systemctl start/stop name@<slot>`. With
 no units present it is a no-op, so `ci` runs anywhere lefthook does. Service-based
