@@ -20,7 +20,7 @@
         inherit (pkgs) lib;
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
 
-        units =
+        services =
           let
             tools = pkgs.buildEnv {
               name = "pdbd.tools";
@@ -33,7 +33,7 @@
               (builtins.replaceStrings [ "{{bin}}" ] [ "${tools}/bin" ] # absolute — systemd ExecStart requires it
                 (builtins.readFile (./ci/systemd + "/${name}")));
           in
-          pkgs.runCommand "pdbd.units" { } (''
+          pkgs.runCommand "pdbd.services" { } (''
             mkdir -p "$out"
           '' + lib.concatMapStrings (n: ''cp ${render n} "$out/${n}"'' + "\n") names);
 
@@ -42,15 +42,15 @@
           hook="''${1:-ci}"
           root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
           export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
-          have=$(${pkgs.coreutils}/bin/ls -A ${units} 2>/dev/null || true)
+          have=$(${pkgs.coreutils}/bin/ls -A ${services} 2>/dev/null || true)
           reap() {
             [ -n "$have" ] || return 0
-            for u in ${units}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
+            for u in ${services}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
             sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
           }
           trap reap EXIT
           if [ -n "$have" ]; then
-            sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${units}/*
+            sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${services}/*
             sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
           fi
           ${pkgs.lefthook}/bin/lefthook run "$hook"
