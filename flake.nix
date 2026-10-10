@@ -23,7 +23,7 @@
         units =
           let
             tools = pkgs.buildEnv {
-              name = "pdbd.ci.tools";
+              name = "pdbd.tools";
               paths = [ pkgs.coreutils ]; # tests extend this with their own binaries
             };
             names = lib.filter
@@ -32,34 +32,27 @@
             render = name: pkgs.writeText "unit"
               (builtins.replaceStrings [ "{{bin}}" ] [ "${tools}/bin" ] # absolute — systemd ExecStart requires it
                 (builtins.readFile (./ci/systemd + "/${name}")));
-            dir = pkgs.runCommand "pdbd.units" { } (''
-              mkdir -p "$out"
-            '' + lib.concatMapStrings (n: ''cp ${render n} "$out/${n}"'' + "\n") names);
           in
-          {
-            install = pkgs.writeShellScriptBin "pdbd.units.install" ''
-              set -eu
-              [ -n "$(${pkgs.coreutils}/bin/ls -A ${dir} 2>/dev/null)" ] || exit 0 # no-op when no units
-              sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${dir}/*
-              sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
-            '';
-            uninstall = pkgs.writeShellScriptBin "pdbd.units.uninstall" ''
-              set -eu
-              [ -n "$(${pkgs.coreutils}/bin/ls -A ${dir} 2>/dev/null)" ] || exit 0
-              for u in ${dir}/*; do
-                sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true
-              done
-              sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
-            '';
-          };
+          pkgs.runCommand "pdbd.units" { } (''
+            mkdir -p "$out"
+          '' + lib.concatMapStrings (n: ''cp ${render n} "$out/${n}"'' + "\n") names);
 
         ci = pkgs.writeShellScriptBin "ci" ''
           set -eu
           hook="''${1:-ci}"
           root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
           export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
-          ${units.install}/bin/pdbd.units.install
-          trap '${units.uninstall}/bin/pdbd.units.uninstall >/dev/null 2>&1 || true' EXIT
+          have=$(${pkgs.coreutils}/bin/ls -A ${units} 2>/dev/null || true)
+          reap() {
+            [ -n "$have" ] || return 0
+            for u in ${units}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
+            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
+          }
+          trap reap EXIT
+          if [ -n "$have" ]; then
+            sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${units}/*
+            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
+          fi
           ${pkgs.lefthook}/bin/lefthook run "$hook"
         '';
       in {
