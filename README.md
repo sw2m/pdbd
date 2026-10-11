@@ -586,7 +586,7 @@ its repro is asserted. Build and use it:
 
 ```
 podman build -t pdbd-ci .
-podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci nix develop --no-update-lock-file "path:/pdbd" -c lefthook run quality
+podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 ```
 
 **Privilege is gated at run time, not baked into the image.** The image is *capable*
@@ -603,7 +603,7 @@ podman rm -f "$cid"
 ### Git hooks
 
 `pre-commit` and `pre-push` are defined in `ci/lefthook.yml` and **dispatch into the
-image** (`podman run … nix develop -c lefthook run …`, unprivileged) — so the checks always run in
+image** (`podman run … lefthook run …`, unprivileged) — so the checks always run in
 the pinned environment, never against host tool versions. The host needs only `git`,
 `podman`, and a `lefthook` binary (a thin dispatcher that runs no checks itself).
 Install the hooks with `lefthook install`.
