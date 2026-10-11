@@ -1,7 +1,7 @@
 name: draft-guard
 
-# Open PRs as drafts: a PR opened ready-for-review is converted back to draft, so CI
-# doesn't fire on work-in-progress. The author marks it ready explicitly when done.
+# Open PRs as drafts: a PR opened ready-for-review is converted back to draft, so
+# CI doesn't fire on work-in-progress. The author marks it ready when done.
 on:
   pull_request:
     types: [opened]
