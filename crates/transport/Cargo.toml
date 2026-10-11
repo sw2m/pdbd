@@ -1,0 +1,16 @@
+[package]
+name = "transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false # internal crate
+
+[dependencies]
+ppproto = "0.2.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "macros", "time", "sync"] }
+tun-rs = { version = "2", features = ["async"] }
+
+[dev-dependencies]
+# Only the `linkup` example drives a real serial device; the library does not.
+tokio-serial = "5"

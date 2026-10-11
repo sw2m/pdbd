@@ -1,0 +1,9 @@
+[Unit]
+Description=pdbd datapath netns (slot %i)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{bin}}/ip netns add pdbd.%i
+ExecStartPost={{bin}}/ip -n pdbd.%i link set lo up
+ExecStop={{bin}}/ip netns del pdbd.%i

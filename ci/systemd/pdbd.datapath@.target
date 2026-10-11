@@ -1,0 +1,4 @@
+[Unit]
+Description=pdbd datapath instance %i
+Requires=pdbd.linkup@%i.service
+After=pdbd.linkup@%i.service
