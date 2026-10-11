@@ -1,5 +1,7 @@
 [Unit]
 Description=pdbd datapath netns (slot %i)
+# PartOf: Requires is start-only, so this makes `systemctl stop <target>` reclaim the whole slot
+PartOf=pdbd.datapath@%i.target
 
 [Service]
 Type=oneshot

@@ -24,9 +24,7 @@
           let
             tools = pkgs.buildEnv {
               name = "pdbd.tools";
-              # the datapath units call these by {{bin}}/<name>: ip (iproute2),
-              # socat, pppd (ppp), sh (bash); coreutils carries install/basename/tee.
-              paths = [ pkgs.coreutils pkgs.bash pkgs.iproute2 pkgs.socat pkgs.ppp ];
+              paths = [ pkgs.coreutils pkgs.bash pkgs.iproute2 pkgs.socat pkgs.ppp ]; # units need ip/socat/pppd/sh
             };
             names = lib.filter
               (n: builtins.match ".*\\.(service|target)" n != null)
@@ -44,16 +42,22 @@
           hook="''${1:-ci}"
           root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
           export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
+          export IP=${pkgs.iproute2}/bin/ip
+          export PING=${pkgs.iputils}/bin/ping
+          export SYSTEMCTL=${pkgs.systemd}/bin/systemctl
+          needs_units=
+          case "$hook" in ci | test | test:transport) needs_units=1 ;; esac
+          case ",''${LEFTHOOK_EXCLUDE:-}," in *,privileged,*) needs_units= ;; esac
           have=$(${pkgs.coreutils}/bin/ls -A ${services} 2>/dev/null || true)
           reap() {
-            [ -n "$have" ] || return 0
+            { [ -n "$needs_units" ] && [ -n "$have" ]; } || return 0
             for u in ${services}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
-            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
+            sudo -n "$SYSTEMCTL" daemon-reload || true
           }
           trap reap EXIT
-          if [ -n "$have" ]; then
+          if [ -n "$needs_units" ] && [ -n "$have" ]; then
             sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${services}/*
-            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
+            sudo -n "$SYSTEMCTL" daemon-reload
           fi
           ${pkgs.lefthook}/bin/lefthook run "$hook"
         '';
@@ -65,7 +69,7 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isLinux [ ci ]; # datapath harness is systemd-only
+          ] ++ lib.optionals pkgs.stdenv.isLinux [ ci pkgs.iproute2 pkgs.iputils ]; # datapath harness is systemd/Linux-only
         };
       });
 }

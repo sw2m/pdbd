@@ -1,13 +1,13 @@
-# Datapath test (#12-A), systemd form. The per-slot unit graph owns per-daemon
-# ordering (pdbd.datapath@<slot> Requires/After: netns -> socat -> pppd -> linkup),
-# so an `attempt` is one slot's lifecycle — its up/run/down are the steps. `fanout`
-# runs an N-wide spread of attempts in PARALLEL (the N=10 from-scratch campaign the
-# rig mandates), each on its own isolated slot, then calls teardown as a catch-all
-# so a slot a failed attempt left half-up (its `down` step skipped on failure) can't
-# leak. Prototype; `test:transport` is wired into the `test` stage below.
+# Datapath test (#12-A) — privileged (sudo + systemd); git hooks skip it via the privileged tag.
 test:transport:
   piped: true
   jobs:
+    - name: preflight
+      run: |
+        set -eu
+        sc="${SYSTEMCTL:-systemctl}"
+        sudo -n true 2>/dev/null || { echo "test:transport needs passwordless sudo — see README 'Local development'"; exit 1; }
+        "$sc" cat 'pdbd.datapath@.target' >/dev/null 2>&1 || { echo "units not installed — run via 'nix develop -c ci', not bare lefthook"; exit 1; }
     - name: build
       run: |
         set -eu
@@ -17,40 +17,36 @@ test:transport:
         sudo -n install -d -m0755 /run/pdbd
         printf 'LINKUP=%s\n' "$bin" | sudo -n tee /run/pdbd/linkup.env >/dev/null
     - name: fanout
-      env:
-        N: 10 # slots in the spread — the N=10 campaign; override with N_OVERRIDE
       run: |
         set -eu
-        N=${N_OVERRIDE:-$N}
+        N=${N:-10} # the rig's from-scratch campaign sample; override with `N=3 lefthook run test:transport`
         pids=""
         for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:transport:attempt & pids="$pids $!"; done
         rc=0; for p in $pids; do wait "$p" || rc=1; done
-        N=$N lefthook run test:transport:teardown >/dev/null 2>&1 || true # catch-all: reclaim any slot a failed attempt leaked
+        N=$N lefthook run test:transport:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
         [ "$rc" = 0 ]
 
-# one slot's lifecycle (SLOT supplied by fanout) — up/run/down are the steps; on a
-# failed step `piped` stops the rest, so a broken slot's `down` is skipped and the
-# fanout-level teardown is what reclaims it.
 test:transport:attempt:
   piped: true
   jobs:
     - name: up
-      run: sudo -n systemctl start "pdbd.datapath@${SLOT}.target"
+      run: sudo -n "${SYSTEMCTL:-systemctl}" start "pdbd.datapath@${SLOT}.target"
     - name: run
       run: |
         set -eu
         for _ in $(seq 1 20); do
-          sudo -n ip netns exec "pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
+          sudo -n "${IP:-ip}" netns exec "pdbd.${SLOT}" "${PING:-ping}" -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
           sleep 0.5
         done
         echo "slot ${SLOT}: FAIL"; exit 1
     - name: down
-      run: sudo -n systemctl stop "pdbd.datapath@${SLOT}.target" >/dev/null 2>&1 || true
+      run: sudo -n "${SYSTEMCTL:-systemctl}" stop "pdbd.datapath@${SLOT}.target" >/dev/null 2>&1 || true
 
-# catch-all reclaim — stops every slot the spread may have started
 test:transport:teardown:
   jobs:
     - name: stop
       run: |
-        N=${N_OVERRIDE:-${N:-10}}
-        for s in $(seq 0 $(( N - 1 ))); do sudo -n systemctl stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done
+        N=${N:-10}
+        sc="${SYSTEMCTL:-systemctl}"
+        for s in $(seq 0 $(( N - 1 ))); do sudo -n "$sc" stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done
+        sudo -n "$sc" reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean

@@ -2,6 +2,7 @@
 Description=pdbd linkup TUN (slot %i)
 Requires=pdbd.pppd@%i.service pdbd.netns@%i.service
 After=pdbd.pppd@%i.service pdbd.netns@%i.service
+PartOf=pdbd.datapath@%i.target
 
 [Service]
 NetworkNamespacePath=/run/netns/pdbd.%i
