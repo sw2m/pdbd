@@ -2,7 +2,7 @@
 Description=pdbd pppd peer (slot %i)
 Requires=pdbd.socat@%i.service
 After=pdbd.socat@%i.service
-PartOf=pdbd.datapath@%i.target
+PartOf=pdbd.rig@%i.target
 
 [Service]
 ExecStartPre={{bin}}/sh -c 'until [ -e /run/pdbd/%i/b ]; do sleep 0.1; done'

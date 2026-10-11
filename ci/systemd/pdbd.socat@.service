@@ -1,6 +1,6 @@
 [Unit]
 Description=pdbd PTY bridge (slot %i)
-PartOf=pdbd.datapath@%i.target
+PartOf=pdbd.rig@%i.target
 
 [Service]
 RuntimeDirectory=pdbd/%i

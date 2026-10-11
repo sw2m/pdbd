@@ -2,12 +2,11 @@
 test:transport:
   piped: true
   jobs:
-    - name: preflight
+    - { name: preflight, run: lefthook run is-privileged }
+    - name: units
       run: |
         set -eu
-        sc="${SYSTEMCTL:-systemctl}"
-        sudo -n true 2>/dev/null || { echo "test:transport needs passwordless sudo — see README 'Local development'"; exit 1; }
-        "$sc" cat 'pdbd.datapath@.target' >/dev/null 2>&1 || { echo "units not installed — run via 'nix develop -c ci', not bare lefthook"; exit 1; }
+        "${SYSTEMCTL:-systemctl}" cat 'pdbd.rig@.target' >/dev/null 2>&1 || { echo "units not installed — run via 'nix develop -c ci', not bare lefthook"; exit 1; }
     - name: build
       run: |
         set -eu
@@ -30,7 +29,11 @@ test:transport:attempt:
   piped: true
   jobs:
     - name: up
-      run: sudo -n "${SYSTEMCTL:-systemctl}" start "pdbd.datapath@${SLOT}.target"
+      run: |
+        set -eu
+        sudo -n "${SYSTEMCTL:-systemctl}" start "pdbd.rig@${SLOT}.target"
+        . /run/pdbd/linkup.env # LINKUP=<built example>, from the build step
+        sudo -n "${IP:-ip}" netns exec "pdbd.${SLOT}" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
     - name: run
       run: |
         set -eu
@@ -40,13 +43,19 @@ test:transport:attempt:
         done
         echo "slot ${SLOT}: FAIL"; exit 1
     - name: down
-      run: sudo -n "${SYSTEMCTL:-systemctl}" stop "pdbd.datapath@${SLOT}.target" >/dev/null 2>&1 || true
+      run: |
+        ip="${IP:-ip}"
+        for p in $(sudo -n "$ip" netns pids "pdbd.${SLOT}" 2>/dev/null); do sudo -n kill "$p" 2>/dev/null || true; done # kill the SUT while its netns still exists
+        sudo -n "${SYSTEMCTL:-systemctl}" stop "pdbd.rig@${SLOT}.target" >/dev/null 2>&1 || true
 
 test:transport:teardown:
   jobs:
     - name: stop
       run: |
         N=${N:-10}
-        sc="${SYSTEMCTL:-systemctl}"
-        for s in $(seq 0 $(( N - 1 ))); do sudo -n "$sc" stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done
+        sc="${SYSTEMCTL:-systemctl}"; ip="${IP:-ip}"
+        for s in $(seq 0 $(( N - 1 ))); do
+          for p in $(sudo -n "$ip" netns pids "pdbd.$s" 2>/dev/null); do sudo -n kill "$p" 2>/dev/null || true; done
+          sudo -n "$sc" stop "pdbd.rig@$s.target" >/dev/null 2>&1 || true
+        done
         sudo -n "$sc" reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean

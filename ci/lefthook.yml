@@ -17,6 +17,14 @@ test:
     - { name: unit, run: lefthook run test:unit }
     - { name: transport, run: lefthook run test:transport, tags: [privileged] }
 
+is-privileged:
+  jobs:
+    - name: check
+      run: |
+        set -eu
+        sudo -n true 2>/dev/null || { echo "privileged checks need passwordless sudo — see README 'Local development'"; exit 1; }
+        command -v "${SYSTEMCTL:-systemctl}" >/dev/null 2>&1 || { echo "privileged checks need systemd (systemctl not found)"; exit 1; }
+
 vuln: # security scanning — wiring tracked in #34
   jobs:
     - { name: stub, run: 'echo "vuln: reserved — see #34"' }
