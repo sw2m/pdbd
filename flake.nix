@@ -17,35 +17,42 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
+        inherit (pkgs) lib;
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
 
-        # process-compose client — see README "Local development". Socket in
-        # $PDBD_DIR (per-invocation under `ci`) so concurrent runs don't share one.
-        services = pkgs.writeShellScriptBin "services" ''
-          set -eu
-          : "''${PDBD_DIR:=/tmp/pdbd-pc-$(id -u)}"
-          ${pkgs.coreutils}/bin/mkdir -p "$PDBD_DIR"
-          sock="$PDBD_DIR/pc.sock"
-          if [ "''${1:-}" = up ]; then
-            shift
-            root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
-            exec ${pkgs.process-compose}/bin/process-compose up \
-              -f "$root/services.yml" -D --keep-project -U -u "$sock" -t=false "$@"
-          fi
-          exec ${pkgs.process-compose}/bin/process-compose "$@" -U -u "$sock"
-        '';
+        services =
+          let
+            tools = pkgs.buildEnv {
+              name = "pdbd.tools";
+              paths = [ pkgs.coreutils ]; # tests extend this with their own binaries
+            };
+            names = lib.filter
+              (n: builtins.match ".*\\.(service|target)" n != null)
+              (builtins.attrNames (builtins.readDir ./ci/systemd));
+            render = name: pkgs.writeText "unit"
+              (builtins.replaceStrings [ "{{bin}}" ] [ "${tools}/bin" ] # absolute — systemd ExecStart requires it
+                (builtins.readFile (./ci/systemd + "/${name}")));
+          in
+          pkgs.runCommand "pdbd.services" { } (''
+            mkdir -p "$out"
+          '' + lib.concatMapStrings (n: ''cp ${render n} "$out/${n}"'' + "\n") names);
 
-        # CI entrypoint — see README "Local development". The per-invocation 0700
-        # dir + run token are exported so services and the datapath test namespace off them.
         ci = pkgs.writeShellScriptBin "ci" ''
           set -eu
           hook="''${1:-ci}"
-          PDBD_DIR=$(${pkgs.coreutils}/bin/mktemp -d "''${XDG_RUNTIME_DIR:-/tmp}/pdbd.XXXXXXXX")
-          export PDBD_DIR
-          export PDBD_NS="pdbd-$$"   # per-run network namespace
-          export PDBD_UNIT="$$"      # per-run pppd unit → ppp$PDBD_UNIT
-          ${services}/bin/services up >/dev/null 2>&1 || true
-          trap '${services}/bin/services down >/dev/null 2>&1 || true; ${pkgs.coreutils}/bin/rm -rf "$PDBD_DIR"' EXIT
+          root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
+          export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
+          have=$(${pkgs.coreutils}/bin/ls -A ${services} 2>/dev/null || true)
+          reap() {
+            [ -n "$have" ] || return 0
+            for u in ${services}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
+            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
+          }
+          trap reap EXIT
+          if [ -n "$have" ]; then
+            sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${services}/*
+            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
+          fi
           ${pkgs.lefthook}/bin/lefthook run "$hook"
         '';
       in {
@@ -56,14 +63,7 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
-            pkgs.process-compose
-            services
-            ci
-            # transport test deps (services.yml) — #12
-            pkgs.socat
-            pkgs.ppp
-            pkgs.iproute2
-          ];
+          ] ++ lib.optionals pkgs.stdenv.isLinux [ ci ]; # datapath harness is systemd-only
         };
       });
 }

@@ -1,0 +1,2 @@
+# Tests drop *.service / *.target here; the flake's CI engine discovers and
+# installs them (see flake.nix, README "Local development"). Empty by design.
