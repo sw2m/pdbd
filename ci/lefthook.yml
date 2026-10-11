@@ -5,6 +5,7 @@ extends:
   - ci/lefthook.quality.lint.yml
   - ci/lefthook.build.yml
   - ci/lefthook.test.unit.yml
+  - ci/lefthook.test.transport.yml
 
 # Leaf hooks are namespaced under their root hook (quality/test/…) with a colon —
 # lefthook reserves the dot for config-key nesting, so the colon is its namespace
@@ -17,6 +18,7 @@ quality:
 test:
   jobs:
     - { name: unit, run: lefthook run test:unit }
+    - { name: transport, run: lefthook run test:transport }
 
 vuln: # security scanning — wiring tracked in #34
   jobs:

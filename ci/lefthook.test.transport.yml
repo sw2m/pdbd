@@ -1,9 +1,11 @@
-# Datapath test (#12-A), systemd form. Per-daemon ordering now lives in the unit
-# graph (pdbd.datapath@<slot> Requires/After: netns -> socat -> pppd -> linkup),
-# so the lefthook steps are the lifecycle PHASES, not per-daemon. The per-slot
-# units are independent, so `up` fans out P instances in parallel. Prototype;
-# wired into the `test` stage in PR 2.
-transport:
+# Datapath test (#12-A), systemd form. The per-slot unit graph owns per-daemon
+# ordering (pdbd.datapath@<slot> Requires/After: netns -> socat -> pppd -> linkup),
+# so an `attempt` is one slot's lifecycle — its up/run/down are the steps. `fanout`
+# runs an N-wide spread of attempts in PARALLEL (the N=10 from-scratch campaign the
+# rig mandates), each on its own isolated slot, then calls teardown as a catch-all
+# so a slot a failed attempt left half-up (its `down` step skipped on failure) can't
+# leak. Prototype; `test:transport` is wired into the `test` stage below.
+test:transport:
   piped: true
   jobs:
     - name: build
@@ -14,41 +16,41 @@ transport:
         [ -n "$bin" ]
         sudo -n install -d -m0755 /run/pdbd
         printf 'LINKUP=%s\n' "$bin" | sudo -n tee /run/pdbd/linkup.env >/dev/null
-    - name: campaign
+    - name: fanout
       env:
-        P: 4 # parallel datapath instances (slots); override with P_OVERRIDE
+        N: 10 # slots in the spread — the N=10 campaign; override with N_OVERRIDE
       run: |
         set -eu
-        export P=${P_OVERRIDE:-$P}
-        lefthook run up
-        if lefthook run verify; then rc=0; else rc=1; fi
-        lefthook run teardown >/dev/null 2>&1 || true   # always reclaim, pass or fail
-        exit $rc
-
-# phases — each separately runnable; `campaign` drives them and guarantees teardown
-up:
-  jobs:
-    - name: start
-      run: |
-        set -eu
-        for s in $(seq 0 $(( ${P:-4} - 1 ))); do sudo -n systemctl start "pdbd.datapath@$s.target" & done
-        wait   # P isolated datapaths come up concurrently
-
-verify:
-  jobs:
-    - name: ping
-      run: |
-        set -eu
-        rc=0
-        for s in $(seq 0 $(( ${P:-4} - 1 ))); do
-          ok=0
-          for _ in $(seq 1 20); do sudo -n ip netns exec "pdbd.$s" ping -c1 -W1 "10.0.$s.2" >/dev/null 2>&1 && { ok=1; break; }; sleep 0.5; done
-          [ "$ok" = 1 ] && echo "slot $s: PASS" || { echo "slot $s: FAIL"; rc=1; }
-        done
+        N=${N_OVERRIDE:-$N}
+        pids=""
+        for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:transport:attempt & pids="$pids $!"; done
+        rc=0; for p in $pids; do wait "$p" || rc=1; done
+        N=$N lefthook run test:transport:teardown >/dev/null 2>&1 || true # catch-all: reclaim any slot a failed attempt leaked
         [ "$rc" = 0 ]
 
-teardown:
+# one slot's lifecycle (SLOT supplied by fanout) — up/run/down are the steps; on a
+# failed step `piped` stops the rest, so a broken slot's `down` is skipped and the
+# fanout-level teardown is what reclaims it.
+test:transport:attempt:
+  piped: true
+  jobs:
+    - name: up
+      run: sudo -n systemctl start "pdbd.datapath@${SLOT}.target"
+    - name: run
+      run: |
+        set -eu
+        for _ in $(seq 1 20); do
+          sudo -n ip netns exec "pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
+          sleep 0.5
+        done
+        echo "slot ${SLOT}: FAIL"; exit 1
+    - name: down
+      run: sudo -n systemctl stop "pdbd.datapath@${SLOT}.target" >/dev/null 2>&1 || true
+
+# catch-all reclaim — stops every slot the spread may have started
+test:transport:teardown:
   jobs:
     - name: stop
       run: |
-        for s in $(seq 0 $(( ${P:-4} - 1 ))); do sudo -n systemctl stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done
+        N=${N_OVERRIDE:-${N:-10}}
+        for s in $(seq 0 $(( N - 1 ))); do sudo -n systemctl stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done

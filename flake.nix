@@ -24,7 +24,9 @@
           let
             tools = pkgs.buildEnv {
               name = "pdbd.tools";
-              paths = [ pkgs.coreutils ]; # tests extend this with their own binaries
+              # the datapath units call these by {{bin}}/<name>: ip (iproute2),
+              # socat, pppd (ppp), sh (bash); coreutils carries install/basename/tee.
+              paths = [ pkgs.coreutils pkgs.bash pkgs.iproute2 pkgs.socat pkgs.ppp ];
             };
             names = lib.filter
               (n: builtins.match ".*\\.(service|target)" n != null)
