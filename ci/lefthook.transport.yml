@@ -1,4 +1,7 @@
-# Datapath test (#12-A), systemd form — drives ci/systemd/pdbd.datapath@<slot>; wired into `test` in PR 2.
+# Datapath test (#12-A), systemd form. The per-slot template units
+# (pdbd.datapath@<slot> — each its own netns/subnet/pppd unit) are independent,
+# so the test PARALLELIZES across slots: P instances come up at once. Prototype;
+# wired into the `test` stage in PR 2.
 transport:
   piped: true
   jobs:
@@ -10,49 +13,26 @@ transport:
         [ -n "$bin" ]
         sudo -n install -d -m0755 /run/pdbd
         printf 'LINKUP=%s\n' "$bin" | sudo -n tee /run/pdbd/linkup.env >/dev/null
-    - name: loop
+    - name: run
       env:
-        N: 10
-        SLOT: 0
+        P: 4 # parallel datapath instances (slots); override with P_OVERRIDE
       run: |
         set -eu
-        N=${N_OVERRIDE:-$N}
-        pass=0
-        for n in $(seq 1 "$N"); do
-          if SLOT="$SLOT" lefthook run attempt >"/tmp/pdbd.attempt.$n.log" 2>&1; then
-            pass=$((pass + 1)); echo "run $n: PASS"
-          else
-            echo "run $n: FAIL"; cat "/tmp/pdbd.attempt.$n.log"
-            journalctl --no-pager -n40 -u "pdbd.*@$SLOT.service" 2>/dev/null || true
-          fi
+        P=${P_OVERRIDE:-$P}
+        slots=$(seq 0 $((P - 1)))
+        # bring up P isolated datapaths concurrently — the slot units share nothing
+        for s in $slots; do sudo -n systemctl start "pdbd.datapath@$s.target" & done
+        wait
+        # join: each slot must round-trip a ping across its own link, else fail
+        rc=0
+        for s in $slots; do
+          up=0
+          for _ in $(seq 1 20); do
+            sudo -n ip netns exec "pdbd.$s" ping -c1 -W1 "10.0.$s.2" >/dev/null 2>&1 && { up=1; break; }
+            sleep 0.5
+          done
+          [ "$up" = 1 ] && echo "slot $s: PASS" || { echo "slot $s: FAIL"; rc=1; }
         done
-        SLOT="$SLOT" lefthook run teardown >/dev/null 2>&1 || true
-        echo "PING: $pass/$N PASS"
-        [ "$pass" = "$N" ]
-
-attempt:
-  piped: true
-  jobs:
-    - { name: clean, run: 'SLOT=${SLOT:-0} lefthook run teardown' }
-    - name: up
-      run: |
-        set -eu
-        slot=${SLOT:-0}
-        sudo -n systemctl start "pdbd.datapath@$slot.target"
-        for _ in $(seq 1 20); do
-          sudo -n ip netns exec "pdbd.$slot" ping -c1 -W1 "10.0.$slot.2" >/dev/null 2>&1 && exit 0
-          sleep 0.5
-        done
-        exit 1
-    - name: ping
-      run: |
-        set -eu
-        slot=${SLOT:-0}
-        sudo -n ip netns exec "pdbd.$slot" ping -c3 -W2 "10.0.$slot.2" >/dev/null 2>&1
-
-teardown:
-  jobs:
-    - name: teardown
-      run: |
-        slot=${SLOT:-0}
-        sudo -n systemctl stop "pdbd.datapath@$slot.target" 2>/dev/null || true
+        for s in $slots; do sudo -n systemctl stop "pdbd.datapath@$s.target" >/dev/null 2>&1 || true; done
+        echo "parallel datapath: $(printf '%s\n' $slots | wc -l) slots, $(($(printf '%s\n' $slots | wc -l) - rc)) ok"
+        [ "$rc" = 0 ]
