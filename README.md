@@ -546,54 +546,50 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one definition**: a Nix flake pins the toolchain + a small service
-scheduler, and `lefthook.yml` defines the checks. The entrypoint is the flake's
-`ci` command, and GitHub Actions runs the same thing — so "passes locally" means
-"passes in CI":
+CI is **one definition**: a Nix flake pins the toolchain and lefthook defines the
+checks. The entrypoint is the flake's `ci` command, and GitHub Actions runs the
+same thing — so "passes locally" means "passes in CI":
 
 ```
 nix develop -c ci          # the whole suite (what GitHub Actions runs)
-nix develop -c ci test     # a single hook
+nix develop -c ci quality  # a single hook
 ```
 
-**Why `ci`, not bare `lefthook`.** Some checks need background *services* (the
-transport datapath test needs socat + pppd). lefthook reaps a job's child processes
-at the job boundary, so a service can't span jobs if a job spawns it. `ci` therefore
-boots a `process-compose` scheduler as lefthook's **sibling** (outside its reap
-tree), and checks drive services as clients through the `services` wrapper
-(`services process start/stop`); `ci` reaps the scheduler (`services down`) on exit.
-Checks that need no services just ignore it.
+**Where CI lives.** All non-GHA CI is under `ci/`: the lefthook config (`ci/lefthook.yml`)
+and the systemd unit files tests contribute (`ci/systemd/`). `ci` points lefthook at that
+config for you; a bare `lefthook` invocation needs `LEFTHOOK_CONFIG=ci/lefthook.yml`.
 
-The checks are lefthook hooks: `ci` runs the `ci` hook (whole suite); `lefthook run
-quality` (etc.) runs one directly. The **transport datapath test** needs root (TUN +
-pppd + netns) *and* the scheduler, so run it through `ci` (e.g. `ci test`), never bare
-`lefthook run transport`. Contexts without root/TUN skip it with
-`LEFTHOOK_EXCLUDE=privileged` — the local git hooks' job, not CI's.
+**The `ci` wrapper.** Some checks need background *services*, managed as **systemd units**.
+`ci` discovers the unit files a test drops in `ci/systemd/`, installs them to
+`/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them on
+exit; checks then drive instances with `systemctl start/stop name@<slot>`. With no units
+present it is a no-op, so `ci` runs anywhere lefthook does. Service-based checks are
+**Linux-only** (systemd); the rest (`quality`/`build`/`unit`) run anywhere — including
+macOS, where `ci` is absent and you run `LEFTHOOK_CONFIG=ci/lefthook.yml lefthook run <hook>`.
 
 How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
 Two that work:
 
 - **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
-- **Containerized** — if you'd rather keep Nix off your host, run it in a container (e.g.
-  rootless Podman with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume).
-  One wrinkle: a git *worktree* keeps its metadata outside the working dir, so mount the git
-  common-dir too if you want git usable inside the container:
+- **Containerized** — keep Nix off your host with a container (e.g. rootless Podman
+  with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume); mount the
+  git common-dir too if you want git usable inside, since a *worktree* keeps its
+  metadata outside the working dir:
 
   ```
   podman run --rm -it \
     -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
     -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
-    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD"
+    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c ci quality
   ```
 
-**Git hooks (optional, local-only).** To run the checks on every commit/push, point the
-hooks at that same container so no host Nix or lefthook is assumed — write `.git/hooks/pre-commit`
-and `.git/hooks/pre-push` as a one-liner that wraps the podman command above but ends in
-`… develop "path:$PWD" -c ci pre-commit` (and `… ci pre-push` respectively) — `ci` so the
-scheduler is bracketed the same way. `pre-commit` runs `quality`; `pre-push` runs the full
-`ci` minus the privileged transport test. Worktrees share
-the common `.git/hooks`, so this installs once per clone — and it's a local preference, kept out
-of the repo.
+  Service-based (systemd) checks additionally need a Linux host or a systemd-capable
+  privileged container; the non-service checks run in any Nix environment.
+
+To run the checks before each commit/push, wire git hooks that invoke `ci pre-commit`
+/ `ci pre-push` through whichever setup you chose — a local preference, kept out of the
+repo. (A hook that calls bare `lefthook` instead must set `LEFTHOOK_CONFIG=ci/lefthook.yml`,
+since the config lives under `ci/`.)
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 
