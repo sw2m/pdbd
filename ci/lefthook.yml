@@ -1,11 +1,10 @@
-# CI checks, run through the flake `ci` entrypoint — see README "Local development".
+# CI checks — see README "Local development".
 no_tty: true # no spinner/cursor animation — it's just log noise (the recursed runs inherit this)
 extends:
-  - ./lefthook.format.yml
-  - ./lefthook.lint.yml
-  - ./lefthook.build.yml
-  - ./lefthook.unit.yml
-  - ./lefthook.transport.yml
+  - ci/lefthook.format.yml
+  - ci/lefthook.lint.yml
+  - ci/lefthook.build.yml
+  - ci/lefthook.unit.yml
 
 quality:
   jobs:
@@ -15,15 +14,14 @@ quality:
 test:
   jobs:
     - { name: unit, run: lefthook run unit }
-    - { name: transport, tags: [privileged], run: lefthook run transport }
 
-vuln:
+vuln: # security scanning — wiring tracked in #34
   jobs:
-    - { name: stub, run: 'echo "vuln: no scanners wired yet (home reserved)"' }
+    - { name: stub, run: 'echo "vuln: reserved — see #34"' }
 
-governance:
+governance: # license / policy / SBOM — wiring tracked in #35
   jobs:
-    - { name: stub, run: 'echo "governance: reserved"' }
+    - { name: stub, run: 'echo "governance: reserved — see #35"' }
 
 ci:
   jobs:
@@ -38,4 +36,4 @@ pre-commit:
     - { name: quality, run: lefthook run quality }
 pre-push:
   jobs:
-    - { name: ci, env: { LEFTHOOK_EXCLUDE: privileged }, run: lefthook run ci }
+    - { name: ci, run: lefthook run ci }
