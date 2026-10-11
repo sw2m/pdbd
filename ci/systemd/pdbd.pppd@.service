@@ -2,9 +2,8 @@
 Description=pdbd pppd peer (slot %i)
 Requires=pdbd.socat@%i.service
 After=pdbd.socat@%i.service
-PartOf=pdbd.rig@%i.target
 
 [Service]
-ExecStartPre={{bin}}/sh -c 'until [ -e /run/pdbd/%i/b ]; do sleep 0.1; done'
+ExecStartPre=@sh@ -c 'until [ -e /run/pdbd/%i/b ]; do sleep 0.1; done'
 # nolock: dedicated per-slot PTYs; pppd's UUCP lock keys on the basename (b), so parallel slots would collide
-ExecStart={{bin}}/pppd /run/pdbd/%i/b 115200 noauth local nodetach nocrtscts novj noccp nolock lcp-echo-interval 0 unit %i 10.0.%i.2:10.0.%i.1
+ExecStart=@pppd@ /run/pdbd/%i/b 115200 noauth local nodetach nocrtscts novj noccp nolock lcp-echo-interval 0 unit %i 10.0.%i.2:10.0.%i.1

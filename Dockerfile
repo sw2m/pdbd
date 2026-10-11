@@ -20,12 +20,12 @@ RUN mkdir -p /etc/nix && printf 'experimental-features = nix-command flakes\n' >
 WORKDIR /pdbd
 ENV LEFTHOOK_CONFIG=ci/lefthook.yml
 COPY flake.nix flake.lock ./
-RUN nix develop --frozen -c true
+RUN nix develop --no-update-lock-file -c true
 
-# Entry under `nix develop --frozen`: every hook runs with the pinned toolchain, and
-# the --frozen lock check surfaces as part of the run (this is the "nix wraps the
+# Entry under `nix develop --no-update-lock-file`: every hook runs with the pinned toolchain, and
+# the no-update-lock-file check surfaces as part of the run (this is the "nix wraps the
 # build" guarantee). Usage: `podman run <img> lefthook run <hook>`.
-ENTRYPOINT ["nix", "develop", "--frozen", "-c"]
+ENTRYPOINT ["nix", "develop", "--no-update-lock-file", "-c"]
 
 # NOTE (prototype): systemd-as-PID1 capability for the privileged datapath checks is
 # the piece still needing the #31 de-risking on a nixos/nix base; marked, not wired.

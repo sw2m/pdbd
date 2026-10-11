@@ -549,7 +549,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 CI is **one definition**, layered by tool:
 
 - **nix** gives build reproducibility — a flake-locked toolchain, and the crate build
-  at run time under `nix develop --frozen` (so flake-lock verification surfaces in the
+  at run time under `nix develop --no-update-lock-file` (so flake-lock verification surfaces in the
   suite).
 - **lefthook** is the controller — checks, test fixtures (it installs/reaps the
   datapath's systemd units), reports, fanout, and the git hooks.
@@ -558,8 +558,8 @@ CI is **one definition**, layered by tool:
 The inner unit is the same everywhere:
 
 ```
-nix develop --frozen -c lefthook run ci       # the whole suite
-nix develop --frozen -c lefthook run quality  # one hook
+nix develop --no-update-lock-file -c lefthook run ci       # the whole suite
+nix develop --no-update-lock-file -c lefthook run quality  # one hook
 ```
 
 All non-GHA CI lives under `ci/`: the lefthook config (`ci/lefthook.yml`) and the

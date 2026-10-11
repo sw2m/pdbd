@@ -3,18 +3,24 @@ test:transport:
   piped: true
   jobs:
     - { name: preflight, run: lefthook run is-privileged }
-    - name: units
+    - name: fixtures
       run: |
         set -eu
-        "${SYSTEMCTL:-systemctl}" cat 'pdbd.rig@.target' >/dev/null 2>&1 || { echo "units not installed — run via 'nix develop -c ci', not bare lefthook"; exit 1; }
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
+        for u in ci/systemd/pdbd.netns@.service ci/systemd/pdbd.socat@.service ci/systemd/pdbd.pppd@.service; do
+          sed "s#@ip@#$(command -v ip)#g; s#@socat@#$(command -v socat)#g; s#@pppd@#$(command -v pppd)#g; s#@sh@#$(command -v sh)#g" "$u" \
+            | $sudo tee "/run/systemd/system/$(basename "$u")" >/dev/null
+        done
+        $sudo systemctl daemon-reload
     - name: build
       run: |
         set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         cargo build -q -p transport --example linkup
         bin=$(find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1)
         [ -n "$bin" ]
-        sudo -n install -d -m0755 /run/pdbd
-        printf 'LINKUP=%s\n' "$bin" | sudo -n tee /run/pdbd/linkup.env >/dev/null
+        $sudo install -d -m0755 /run/pdbd
+        printf 'LINKUP=%s\n' "$bin" | $sudo tee /run/pdbd/linkup.env >/dev/null
     - name: fanout
       run: |
         set -eu
@@ -31,31 +37,33 @@ test:transport:attempt:
     - name: up
       run: |
         set -eu
-        sudo -n "${SYSTEMCTL:-systemctl}" start "pdbd.rig@${SLOT}.target"
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
+        $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service" # pppd pulls socat
         . /run/pdbd/linkup.env # LINKUP=<built example>, from the build step
-        sudo -n "${IP:-ip}" netns exec "pdbd.${SLOT}" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
+        $sudo ip netns exec "pdbd.${SLOT}" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
     - name: run
       run: |
         set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         for _ in $(seq 1 20); do
-          sudo -n "${IP:-ip}" netns exec "pdbd.${SLOT}" "${PING:-ping}" -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
+          $sudo ip netns exec "pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
           sleep 0.5
         done
         echo "slot ${SLOT}: FAIL"; exit 1
     - name: down
       run: |
-        ip="${IP:-ip}"
-        for p in $(sudo -n "$ip" netns pids "pdbd.${SLOT}" 2>/dev/null); do sudo -n kill "$p" 2>/dev/null || true; done # kill the SUT while its netns still exists
-        sudo -n "${SYSTEMCTL:-systemctl}" stop "pdbd.rig@${SLOT}.target" >/dev/null 2>&1 || true
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
+        for p in $($sudo ip netns pids "pdbd.${SLOT}" 2>/dev/null); do $sudo kill "$p" 2>/dev/null || true; done # kill the SUT while its netns still exists
+        $sudo systemctl stop "pdbd.pppd@${SLOT}.service" "pdbd.socat@${SLOT}.service" "pdbd.netns@${SLOT}.service" >/dev/null 2>&1 || true
 
 test:transport:teardown:
   jobs:
     - name: stop
       run: |
         N=${N:-10}
-        sc="${SYSTEMCTL:-systemctl}"; ip="${IP:-ip}"
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         for s in $(seq 0 $(( N - 1 ))); do
-          for p in $(sudo -n "$ip" netns pids "pdbd.$s" 2>/dev/null); do sudo -n kill "$p" 2>/dev/null || true; done
-          sudo -n "$sc" stop "pdbd.rig@$s.target" >/dev/null 2>&1 || true
+          for p in $($sudo ip netns pids "pdbd.$s" 2>/dev/null); do $sudo kill "$p" 2>/dev/null || true; done
+          $sudo systemctl stop "pdbd.pppd@$s.service" "pdbd.socat@$s.service" "pdbd.netns@$s.service" >/dev/null 2>&1 || true
         done
-        sudo -n "$sc" reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean
+        $sudo systemctl reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean

@@ -1,4 +1,0 @@
-[Unit]
-Description=pdbd test rig (slot %i)
-Requires=pdbd.pppd@%i.service pdbd.netns@%i.service
-After=pdbd.pppd@%i.service pdbd.netns@%i.service
