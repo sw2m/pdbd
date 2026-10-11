@@ -1,33 +1,22 @@
 # The CI-runner environment (contract: README "Local development").
 #
-# Built + run ONLY when the target runner isn't already a disposable, nix-capable
-# box. GHA's ephemeral runner matches the desired env (and caches nix via the
-# marketplace action), so it skips this image and runs `nix develop -c lefthook`
-# directly. A dev machine isn't disposable, so it runs through this image instead —
-# podman gives the isolation, and Docker's layer cache stands in for GHA's nix cache.
+# Option B: a systemd-distro base (ubi-init, default CMD /sbin/init) with nix layered
+# in for the toolchain. Built + run only when the runner isn't already a disposable,
+# nix-capable box — GHA's ephemeral runner matches and runs nix+lefthook directly; a
+# dev machine runs through this image (podman) for isolation.
 #
-# The image is *capable* of the privileged datapath checks; whether a run gets that
-# privilege is gated by podman at run time:
-#   routine hooks:   podman run <img> lefthook run quality          # unprivileged
-#   troubleshooting: podman run --privileged --systemd=always <img> # datapath/systemd
-FROM docker.io/nixos/nix:latest
+# One image, two run modes (privilege gated by podman at run time):
+#   datapath (privileged):   podman run --systemd=always --privileged <img>
+#   checks   (unprivileged): podman run <img> nix develop --no-update-lock-file "path:/pdbd" -c lefthook run <hook>
+FROM docker.io/nixos/nix:latest AS nix
 
-RUN mkdir -p /etc/nix && printf 'experimental-features = nix-command flakes\n' >> /etc/nix/nix.conf
-
-# Toolchain layer — cached. The lock is COPY'd before the build so a flake.lock bump
-# (and only that) busts this layer. This pre-realizes the slow, stable toolchain
-# closure; the crate build stays at run time, where its repro surfaces in the suite.
+FROM registry.access.redhat.com/ubi9/ubi-init:latest
+COPY --from=nix /nix /nix
+RUN mkdir -p /etc/nix && printf 'experimental-features = nix-command flakes\nbuild-users-group =\n' > /etc/nix/nix.conf
+ENV PATH="/nix/var/nix/profiles/default/bin:${PATH}"
 WORKDIR /pdbd
 ENV LEFTHOOK_CONFIG=ci/lefthook.yml
+# toolchain layer — cached; lock copied before the build so only a flake.lock bump busts
+# it. `path:` treats the dir as a plain (non-git) flake — needed once the worktree mounts.
 COPY flake.nix flake.lock ./
-RUN nix develop --no-update-lock-file -c true
-
-# Entry under `nix develop --no-update-lock-file`: every hook runs with the pinned toolchain, and
-# the no-update-lock-file check surfaces as part of the run (this is the "nix wraps the
-# build" guarantee). Usage: `podman run <img> lefthook run <hook>`.
-ENTRYPOINT ["nix", "develop", "--no-update-lock-file", "-c"]
-
-# NOTE (prototype): systemd-as-PID1 capability for the privileged datapath checks is
-# the piece still needing the #31 de-risking on a nixos/nix base; marked, not wired.
-# A `nix profile install nixpkgs#systemd` + init wiring (or a NixOS-init base) lands
-# with that prototype. Routine unprivileged hooks don't exercise this path.
+RUN nix develop --no-update-lock-file "path:/pdbd" -c true

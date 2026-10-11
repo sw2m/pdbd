@@ -8,7 +8,7 @@ test:transport:
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         for u in ci/systemd/pdbd.netns@.service ci/systemd/pdbd.socat@.service ci/systemd/pdbd.pppd@.service; do
-          sed "s#@ip@#$(command -v ip)#g; s#@socat@#$(command -v socat)#g; s#@pppd@#$(command -v pppd)#g; s#@sh@#$(command -v sh)#g" "$u" \
+          minijinja-cli -D ip="$(command -v ip)" -D socat="$(command -v socat)" -D pppd="$(command -v pppd)" -D sh="$(command -v sh)" "$u" \
             | $sudo tee "/run/systemd/system/$(basename "$u")" >/dev/null
         done
         $sudo systemctl daemon-reload
@@ -38,15 +38,17 @@ test:transport:attempt:
       run: |
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
+        ns="/var/run/netns/pdbd.${SLOT}"
         $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service" # pppd pulls socat
+        $sudo nsenter --net="$ns" ip link set lo up
         . /run/pdbd/linkup.env # LINKUP=<built example>, from the build step
-        $sudo ip netns exec "pdbd.${SLOT}" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
+        $sudo nsenter --net="$ns" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
     - name: run
       run: |
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         for _ in $(seq 1 20); do
-          $sudo ip netns exec "pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
+          $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
           sleep 0.5
         done
         echo "slot ${SLOT}: FAIL"; exit 1

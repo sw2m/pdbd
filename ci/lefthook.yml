@@ -44,7 +44,7 @@ ci:
 # pre-commit/pre-push dispatch into the CI-env image (unprivileged) — see README "Local development"
 pre-commit:
   jobs:
-    - { name: quality, run: podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality }
+    - { name: quality, run: podman run --rm -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci nix develop --no-update-lock-file "path:/pdbd" -c lefthook runquality }
 pre-push:
   jobs:
-    - { name: ci, run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run ci }
+    - { name: ci, run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci nix develop --no-update-lock-file "path:/pdbd" -c lefthook runci }

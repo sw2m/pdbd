@@ -11,16 +11,14 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
-        inherit (pkgs) lib;
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
       in {
-        # see README "Local development"
         devShells.default = pkgs.mkShell {
           packages = [
             rust
@@ -28,7 +26,14 @@
             pkgs.lefthook
             pkgs.git
             pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.iproute2 pkgs.iputils pkgs.socat pkgs.ppp pkgs.bash ];
+            pkgs.minijinja # minijinja-cli — renders the unit templates (ci/lefthook.test.transport.yml)
+            pkgs.iproute2
+            pkgs.iputils
+            pkgs.socat
+            pkgs.ppp
+            pkgs.bash
+            pkgs.util-linux # nsenter — enters a netns without ip's /sys remount (container-safe)
+          ];
         };
       });
 }
