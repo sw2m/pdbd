@@ -1,0 +1,58 @@
+# Datapath test (#12-A), systemd form — drives ci/systemd/pdbd.datapath@<slot>; wired into `test` in PR 2.
+transport:
+  piped: true
+  jobs:
+    - name: build
+      run: |
+        set -eu
+        cargo build -q -p transport --example linkup
+        bin=$(find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1)
+        [ -n "$bin" ]
+        sudo -n install -d -m0755 /run/pdbd
+        printf 'LINKUP=%s\n' "$bin" | sudo -n tee /run/pdbd/linkup.env >/dev/null
+    - name: loop
+      env:
+        N: 10
+        SLOT: 0
+      run: |
+        set -eu
+        N=${N_OVERRIDE:-$N}
+        pass=0
+        for n in $(seq 1 "$N"); do
+          if SLOT="$SLOT" lefthook run attempt >"/tmp/pdbd.attempt.$n.log" 2>&1; then
+            pass=$((pass + 1)); echo "run $n: PASS"
+          else
+            echo "run $n: FAIL"; cat "/tmp/pdbd.attempt.$n.log"
+            journalctl --no-pager -n40 -u "pdbd.*@$SLOT.service" 2>/dev/null || true
+          fi
+        done
+        SLOT="$SLOT" lefthook run teardown >/dev/null 2>&1 || true
+        echo "PING: $pass/$N PASS"
+        [ "$pass" = "$N" ]
+
+attempt:
+  piped: true
+  jobs:
+    - { name: clean, run: 'SLOT=${SLOT:-0} lefthook run teardown' }
+    - name: up
+      run: |
+        set -eu
+        slot=${SLOT:-0}
+        sudo -n systemctl start "pdbd.datapath@$slot.target"
+        for _ in $(seq 1 20); do
+          sudo -n ip netns exec "pdbd.$slot" ping -c1 -W1 "10.0.$slot.2" >/dev/null 2>&1 && exit 0
+          sleep 0.5
+        done
+        exit 1
+    - name: ping
+      run: |
+        set -eu
+        slot=${SLOT:-0}
+        sudo -n ip netns exec "pdbd.$slot" ping -c3 -W2 "10.0.$slot.2" >/dev/null 2>&1
+
+teardown:
+  jobs:
+    - name: teardown
+      run: |
+        slot=${SLOT:-0}
+        sudo -n systemctl stop "pdbd.datapath@$slot.target" 2>/dev/null || true
