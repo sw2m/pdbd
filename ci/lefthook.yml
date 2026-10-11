@@ -41,9 +41,10 @@ ci:
     - { name: vuln, run: lefthook run vuln }
     - { name: governance, run: lefthook run governance }
 
-pre-push:
-  jobs:
-    - { name: ci, run: LEFTHOOK_EXCLUDE=privileged lefthook run ci }
+# pre-commit/pre-push dispatch into the CI-env image (unprivileged) — see README "Local development"
 pre-commit:
   jobs:
-    - { name: quality, run: lefthook run quality }
+    - { name: quality, run: podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality }
+pre-push:
+  jobs:
+    - { name: ci, run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run ci }

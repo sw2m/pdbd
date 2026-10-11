@@ -546,50 +546,64 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 ## Local development
 
-CI is **one definition**: a Nix flake pins the toolchain and lefthook defines the
-checks. The entrypoint is the flake's `ci` command, and GitHub Actions runs the
-same thing — so "passes locally" means "passes in CI":
+CI is **one definition**, layered by tool:
+
+- **nix** gives build reproducibility — a flake-locked toolchain, and the crate build
+  at run time under `nix develop --frozen` (so flake-lock verification surfaces in the
+  suite).
+- **lefthook** is the controller — checks, test fixtures (it installs/reaps the
+  datapath's systemd units), reports, fanout, and the git hooks.
+- **podman** supplies the runner environment when the host isn't already one.
+
+The inner unit is the same everywhere:
 
 ```
-nix develop -c ci          # the whole suite (what GitHub Actions runs)
-nix develop -c ci quality  # a single hook
+nix develop --frozen -c lefthook run ci       # the whole suite
+nix develop --frozen -c lefthook run quality  # one hook
 ```
 
-**Where CI lives.** All non-GHA CI is under `ci/`: the lefthook config (`ci/lefthook.yml`)
-and the systemd unit files tests contribute (`ci/systemd/`). `ci` points lefthook at that
-config for you; a bare `lefthook` invocation needs `LEFTHOOK_CONFIG=ci/lefthook.yml`.
+All non-GHA CI lives under `ci/`: the lefthook config (`ci/lefthook.yml`) and the
+systemd unit files tests contribute as fixtures (`ci/systemd/`). A bare `lefthook`
+invocation needs `LEFTHOOK_CONFIG=ci/lefthook.yml`.
 
-**The `ci` wrapper.** Some checks need background *services*, managed as **systemd units**.
-`ci` discovers the unit files a test drops in `ci/systemd/`, installs them to
-`/run/systemd/system` (tmpfs — disposable) before running lefthook, and removes them on
-exit; checks then drive instances with `systemctl start/stop name@<slot>`. With no units
-present it is a no-op, so `ci` runs anywhere lefthook does. Service-based checks are
-**Linux-only** (systemd); the rest (`quality`/`build`/`unit`) run anywhere — including
-macOS, where `ci` is absent and you run `LEFTHOOK_CONFIG=ci/lefthook.yml lefthook run <hook>`.
+### The environment contract — `./Dockerfile`
 
-How you provide the Nix environment is **up to you** — the repo doesn't assume a setup.
-Two that work:
+Run the inner unit directly **when the runner is already a disposable, nix-capable
+box; otherwise the `Dockerfile` provides that environment.** The deciding property is
+**disposability**, not capability:
 
-- **Nix on the host** — install Nix (with flakes) and use `nix develop` directly.
-- **Containerized** — keep Nix off your host with a container (e.g. rootless Podman
-  with `nixos/nix`, bind-mounting the repo and a persistent `/nix` volume); mount the
-  git common-dir too if you want git usable inside, since a *worktree* keeps its
-  metadata outside the working dir:
+- **GHA** matches — the runner is ephemeral (build output dies with it; the host's
+  state was never there) and caches nix via the `cache-nix-action`. So GHA skips the
+  image and runs the inner unit on the runner. Containerizing the toolchain build
+  there would only duplicate a cache GHA already has.
+- **A dev machine** does not match — it's precious, so build output must not land on
+  it and its state must not leak into CI. It runs the inner unit **inside the image**
+  (`podman`), where Docker's layer cache stands in for GHA's nix cache.
 
-  ```
-  podman run --rm -it \
-    -v "$PWD":"$PWD" -v "$(git rev-parse --git-common-dir)":"$(git rev-parse --git-common-dir)" \
-    -w "$PWD" -v pdbd-nix:/nix docker.io/nixos/nix \
-    nix --extra-experimental-features 'nix-command flakes' develop "path:$PWD" -c ci quality
-  ```
+The image builds the **toolchain** into a cached layer (`flake.lock` is copied before
+the build, so only a lock bump busts it); the **crate** build stays at run time, where
+its repro is asserted. Build and use it:
 
-  Service-based (systemd) checks additionally need a Linux host or a systemd-capable
-  privileged container; the non-service checks run in any Nix environment.
+```
+podman build -t pdbd-ci .
+podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
+```
 
-To run the checks before each commit/push, wire git hooks that invoke `ci pre-commit`
-/ `ci pre-push` through whichever setup you chose — a local preference, kept out of the
-repo. (A hook that calls bare `lefthook` instead must set `LEFTHOOK_CONFIG=ci/lefthook.yml`,
-since the config lives under `ci/`.)
+**Privilege is gated at run time, not baked into the image.** The image is *capable*
+of the privileged datapath checks (systemd), but routine runs stay unprivileged — you
+grant privilege only to reproduce a remote-CI datapath failure locally:
+
+```
+podman run --rm --privileged --systemd=always -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run test:transport
+```
+
+### Git hooks
+
+`pre-commit` and `pre-push` are defined in `ci/lefthook.yml` and **dispatch into the
+image** (`podman run … lefthook run …`, unprivileged) — so the checks always run in
+the pinned environment, never against host tool versions. The host needs only `git`,
+`podman`, and a `lefthook` binary (a thin dispatcher that runs no checks itself).
+Install the hooks with `lefthook install`.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 
