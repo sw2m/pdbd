@@ -50,10 +50,14 @@ jobs:
           LEFTHOOK_CONFIG: ${{ matrix.check.config }}
         run: nix develop -c lefthook run ${{ matrix.check.hook }}
 
-  # Stable required status for branch protection — green only if every check leg passed.
+  # The one status to mark required: it aggregates the dynamic matrix and ALWAYS
+  # reports (even on drafts, where the legs are skipped) so it is never stuck "expected".
   ci-ok:
-    needs: check
-    if: always() && github.event.pull_request.draft == false
+    needs: [discover, check]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: '[ "${{ needs.check.result }}" = "success" ] || exit 1'
+      - run: |
+          echo "discover=${{ needs.discover.result }} check=${{ needs.check.result }}"
+          [ "${{ needs.discover.result }}" = success ] || [ "${{ needs.discover.result }}" = skipped ] || exit 1
+          [ "${{ needs.check.result }}" = success ]    || [ "${{ needs.check.result }}" = skipped ]    || exit 1
