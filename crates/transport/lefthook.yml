@@ -1,6 +1,6 @@
 build: { jobs: [ { name: cargo, run: cargo build -p transport --locked } ] }
 
-# Datapath test (#12-A) — `datapath` is privileged (sudo + systemd); git hooks skip it via the tag.
+# Datapath test — #12-A
 test:
   jobs:
     - { name: unit,     run: cargo test -p transport --locked }
@@ -32,7 +32,7 @@ test:datapath:
     - name: fanout
       run: |
         set -eu
-        N=${N:-10} # the rig's from-scratch campaign sample; override with `N=3 lefthook run test:datapath`
+        N=${N:-10} # rig's from-scratch campaign sample
         pids=""
         for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:attempt & pids="$pids $!"; done
         rc=0; for p in $pids; do wait "$p" || rc=1; done
@@ -47,9 +47,9 @@ test:attempt:
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         ns="/var/run/netns/pdbd.${SLOT}"
-        $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service" # pppd pulls socat
+        $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service"
         $sudo nsenter --net="$ns" ip link set lo up
-        . /run/pdbd/linkup.env # LINKUP=<built example>, from the build step
+        . /run/pdbd/linkup.env
         $sudo nsenter --net="$ns" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
     - name: run
       run: |
