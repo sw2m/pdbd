@@ -1,3 +1,3 @@
 build:        { jobs: [ { name: cargo, root: "crates/proto/", run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p proto --locked' } ] }
-build:update: { jobs: [ { name: lock,  root: "crates/proto/", run: 'nix flake update --flake "path:$PWD"' } ] }
+build:update: { jobs: [ { name: rebuild, root: "crates/proto/", run: 'nix flake update --flake "path:$PWD" && nix develop --no-update-lock-file "path:$PWD" -c cargo build -p proto --locked' } ] }
 test:         { jobs: [ { name: cargo, run: cargo test -p proto --locked } ] }
