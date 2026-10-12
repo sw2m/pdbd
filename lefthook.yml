@@ -1,0 +1,44 @@
+# CI checks — see README "Local development".
+no_tty: true
+extends:
+  - lefthook.*.yml
+
+# Fan a hook out across the crates that define it + its non-noop <hook>:root.
+# {1}=hook, {2}=mode (plan prints the leaves, else runs them). GHA reads the plan with
+# LEFTHOOK_OUTPUT=execution_out — see .github/workflows/ci.yml.
+fanout:
+  jobs:
+    - name: fanout
+      run: |
+        hook="{1}"
+        plan() {
+          for f in crates/*/lefthook.yml; do
+            [ "$(yq "has(\"$hook\")" "$f")" = true ] \
+              && printf '%s\t%s\t%s\n' "$hook ($(basename "$(dirname "$f")"))" "$f" "$hook"
+          done
+          for leaf in lefthook.*.yml; do
+            [ "$(yq "has(\"$hook:root\")" "$leaf")" = true ] || continue
+            [ "$(yq "[.\"$hook:root\".jobs[].run] | all_c(. == \"true\")" "$leaf")" != true ] \
+              && printf '%s\t%s\t%s\n' "$hook:root" lefthook.yml "$hook:root"
+            break
+          done
+        }
+        case "{2}" in
+          plan) plan ;;
+          *)    plan | while IFS="$(printf '\t')" read -r _ cfg h; do LEFTHOOK_CONFIG="$cfg" lefthook run "$h"; done ;;
+        esac
+
+quality:      { jobs: [ { name: fanout, run: lefthook run fanout quality } ] }
+build:        { jobs: [ { name: fanout, run: lefthook run fanout build } ] }
+build:update: { jobs: [ { name: fanout, run: lefthook run fanout build:update } ] }
+test:         { jobs: [ { name: fanout, run: lefthook run fanout test } ] }
+vuln:         { jobs: [ { name: fanout, run: lefthook run fanout vuln } ] }
+governance:   { jobs: [ { name: fanout, run: lefthook run fanout governance } ] }
+
+ci:
+  jobs:
+    - { name: quality,    run: lefthook run quality }
+    - { name: build,      run: lefthook run build }
+    - { name: test,       run: lefthook run test }
+    - { name: vuln,       run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }

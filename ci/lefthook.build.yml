@@ -1,3 +1,0 @@
-build:
-  jobs:
-    - { name: cargo, run: cargo build --locked }
