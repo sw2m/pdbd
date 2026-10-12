@@ -570,6 +570,10 @@ the datapath's systemd units are `crates/transport/systemd/`. No `LEFTHOOK_CONFI
 needed; to run one crate's checks on their own, point lefthook at it:
 `LEFTHOOK_CONFIG=crates/<crate>/lefthook.yml lefthook run <hook>`.
 
+On GitHub, each lefthook check surfaces as its own PR status (`build (proto)`,
+`test (transport)`, `quality:root`, …), discovered from that same config — and a single
+`mergeable` status aggregates them, so it's the one to require in branch protection.
+
 ### The environment contract — `./Dockerfile`
 
 Run the inner unit directly **when the runner is already a disposable, nix-capable

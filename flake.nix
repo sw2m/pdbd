@@ -44,6 +44,7 @@
             lefthook
             pkgs.git
             pkgs.pkg-config
+            pkgs.yq-go # structural YAML reader for the lefthook fan-out (lefthook.yml)
             pkgs.minijinja # minijinja-cli — renders the unit templates (crates/transport/lefthook.yml)
             pkgs.iproute2
             pkgs.iputils
