@@ -36,12 +36,35 @@
           installPhase = "install -Dm755 $src $out/bin/lefthook";
           meta.mainProgram = "lefthook";
         };
+        # prettier + the maintained prettier-plugin-toml, pinned via nix/prettier's
+        # package-lock.json so `prettier` resolves the TOML plugin on PATH hermetically
+        # (no network / global npm at CI time). The wrapper passes the plugin by its
+        # absolute store path, so no .prettierrc plugin-resolution step is needed.
+        prettier = pkgs.buildNpmPackage {
+          pname = "pdbd-prettier";
+          version = "0.0.0";
+          src = ./nix/prettier;
+          npmDepsHash = "sha256-Z/rSe99x04f/18mQpYYceBckNm1oYNBrIRWeQm9JauI="; # prefetch-npm-deps nix/prettier/package-lock.json
+          dontNpmBuild = true;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/lib/pdbd-prettier $out/bin
+            cp -r node_modules $out/lib/pdbd-prettier/node_modules
+            makeWrapper ${pkgs.nodejs}/bin/node $out/bin/prettier \
+              --add-flags "$out/lib/pdbd-prettier/node_modules/prettier/bin/prettier.cjs" \
+              --add-flags "--plugin=$out/lib/pdbd-prettier/node_modules/prettier-plugin-toml/lib/index.cjs"
+            runHook postInstall
+          '';
+          meta.mainProgram = "prettier";
+        };
       in {
         devShells.default = pkgs.mkShell {
           packages = [
             rust
             pkgs.buf
             lefthook
+            prettier # prettier + prettier-plugin-toml for the format:root CI check
             pkgs.git
             pkgs.pkg-config
             pkgs.yq-go # structural YAML reader for the lefthook fan-out (lefthook.yml)

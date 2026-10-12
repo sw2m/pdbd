@@ -1,2 +1,12 @@
-build:root:        { jobs: [ { name: lock, run: 'nix develop --no-update-lock-file "path:$PWD" -c true' } ] }
-build:update:root: { jobs: [ { name: rebuild, run: 'nix develop "path:$PWD" -c true' } ] }
+build:root:
+  {
+    jobs:
+      [
+        {
+          name: lock,
+          run: 'nix develop --no-update-lock-file "path:$PWD" -c true',
+        },
+      ],
+  }
+build:update:root:
+  { jobs: [{ name: rebuild, run: 'nix develop "path:$PWD" -c true' }] }

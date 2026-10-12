@@ -28,17 +28,20 @@ fanout:
           *)    plan | while IFS="$(printf '\t')" read -r _ cfg h; do LEFTHOOK_CONFIG="$cfg" lefthook run "$h"; done ;;
         esac
 
-quality:      { jobs: [ { name: fanout, run: lefthook run fanout quality } ] }
-build:        { jobs: [ { name: fanout, run: lefthook run fanout build } ] }
-build:update: { jobs: [ { name: fanout, run: lefthook run fanout build:update } ] }
-test:         { jobs: [ { name: fanout, run: lefthook run fanout test } ] }
-vuln:         { jobs: [ { name: fanout, run: lefthook run fanout vuln } ] }
-governance:   { jobs: [ { name: fanout, run: lefthook run fanout governance } ] }
+quality: { jobs: [{ name: fanout, run: lefthook run fanout quality }] }
+format: { jobs: [{ name: fanout, run: lefthook run fanout format }] }
+build: { jobs: [{ name: fanout, run: lefthook run fanout build }] }
+build:update:
+  { jobs: [{ name: fanout, run: lefthook run fanout build:update }] }
+test: { jobs: [{ name: fanout, run: lefthook run fanout test }] }
+vuln: { jobs: [{ name: fanout, run: lefthook run fanout vuln }] }
+governance: { jobs: [{ name: fanout, run: lefthook run fanout governance }] }
 
 ci:
   jobs:
-    - { name: quality,    run: lefthook run quality }
-    - { name: build,      run: lefthook run build }
-    - { name: test,       run: lefthook run test }
-    - { name: vuln,       run: lefthook run vuln }
+    - { name: quality, run: lefthook run quality }
+    - { name: format, run: lefthook run format }
+    - { name: build, run: lefthook run build }
+    - { name: test, run: lefthook run test }
+    - { name: vuln, run: lefthook run vuln }
     - { name: governance, run: lefthook run governance }
