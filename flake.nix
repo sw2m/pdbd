@@ -67,6 +67,13 @@
             pkgs.git
             pkgs.pkg-config
             pkgs.yq-go
+            pkgs.minijinja
+            pkgs.iproute2
+            pkgs.iputils
+            pkgs.socat
+            pkgs.ppp
+            pkgs.bash
+            pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
           ];
         };
       });

@@ -552,8 +552,8 @@ CI is **one definition**, layered by tool:
   its own build flake, so every `build` runs `cargo build` under
   `nix develop --no-update-lock-file` and flake-lock verification is part of the report.
   Regenerate stale locks with `lefthook run build:update` (fans out to every crate + the root).
-- **lefthook** is the controller — checks, test fixtures (a test installs the
-  systemd units it needs), reports, fanout, and the git hooks.
+- **lefthook** is the controller — checks, test fixtures (it installs/reaps the
+  datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.
 
 The inner unit is the same everywhere:
@@ -565,14 +565,14 @@ nix develop --no-update-lock-file -c lefthook run quality  # one hook
 
 CI is **auto-discovered from the repo root**: the root `lefthook.yml` is the entrypoint
 and fans each hook out to the crate that owns it (`crates/*/lefthook.yml`), keeping
-workspace-wide checks (fmt, lint) at the root. A crate's test fixtures live beside it
-(in `crates/<crate>/`). No `LEFTHOOK_CONFIG` is
+workspace-wide checks (fmt, lint) at the root. A crate's test fixtures live beside it —
+the datapath's systemd units are `crates/transport/systemd/`. No `LEFTHOOK_CONFIG` is
 needed; to run one crate's checks on their own, point lefthook at it:
 `LEFTHOOK_CONFIG=crates/<crate>/lefthook.yml lefthook run <hook>`.
 
 On GitHub, each lefthook check surfaces as its own PR status (`build (proto)`,
-`quality:root`, …), discovered from that same config — and a single `mergeable`
-status aggregates them, so it's the one to require in branch protection.
+`test (transport)`, `quality:root`, …), discovered from that same config — and a single
+`mergeable` status aggregates them, so it's the one to require in branch protection.
 
 ### The environment contract — `./Dockerfile`
 
@@ -597,10 +597,17 @@ podman build -t pdbd-ci .
 podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 ```
 
-**Privilege is gated at run time, not baked into the image.** Routine runs stay
-unprivileged; for a service-based test that needs systemd, the image is *capable* of a
-privileged boot (`podman run --privileged --systemd=always` → ubi-init's `/sbin/init`),
-which the feature adding such a test documents alongside it.
+**Privilege is gated at run time, not baked into the image.** The image is *capable*
+of the privileged datapath checks (systemd), but routine runs stay unprivileged — you
+grant privilege only to reproduce a remote-CI datapath failure locally. That run boots
+systemd (`--systemd=always` → ubi-init's `/sbin/init`), then runs the check inside it:
+
+```
+cid=$(podman run -d --privileged --systemd=always -v "$PWD":/pdbd -w /pdbd pdbd-ci)
+podman exec -e LEFTHOOK_CONFIG=crates/transport/lefthook.yml "$cid" \
+  nix develop --no-update-lock-file "path:/pdbd" -c lefthook run test:datapath
+podman rm -f "$cid"
+```
 
 ### Git hooks
 

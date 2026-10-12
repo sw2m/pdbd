@@ -11,7 +11,7 @@ WORKDIR /pdbd
 COPY flake.nix flake.lock ./
 RUN nix develop --no-update-lock-file "path:/pdbd" -c true
 
-# no args (or init) -> systemd (service-test mode); a command -> run it in the devShell
+# no args (or init) -> systemd (datapath mode); a command -> run it in the devShell
 RUN printf '#!/bin/sh\ncase "${1:-init}" in init|/sbin/init) exec /sbin/init ;; esac\nexec nix develop --no-update-lock-file "path:/pdbd" -c "$@"\n' > /usr/local/bin/pdbd-entry \
  && chmod +x /usr/local/bin/pdbd-entry
 ENTRYPOINT ["/usr/local/bin/pdbd-entry"]
