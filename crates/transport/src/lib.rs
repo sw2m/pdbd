@@ -1,5 +1,4 @@
-//! PPP (`ppproto`) over an L1 byte pipe, terminated into a kernel TUN. See the
-//! crate README for the layer model.
+//! See the crate README for the layer model.
 //!
 //! #12-A is the clean-link datapath; the retransmit/timer/keepalive layer
 //! ppproto lacks is #12-B (owner/repo#24, upstream embassy-rs/ppproto#5).
@@ -22,17 +21,14 @@ use tun_rs::DeviceBuilder;
 #[derive(Debug)]
 pub enum Action {
     Idle,
-    /// Framed bytes to write to L1.
     Tx(Vec<u8>),
-    /// A decoded IP packet to deliver to the TUN.
     Ip(Vec<u8>),
 }
 
 /// PPP MRU we size buffers and the TUN for; ppproto defaults to 1500.
 const MRU: usize = 1500;
-/// Frame buffer size. Worst-case HDLC byte-stuffing can nearly double a frame
-/// (every byte escaped) on top of protocol/FCS/flag overhead, so a full-MRU IP
-/// packet must still fit once encoded. Sized so it never overflows at the MRU.
+/// HDLC byte-stuffing can nearly double a frame, plus FCS/flag overhead — a
+/// full-MRU packet must still fit once encoded.
 const FRAME: usize = 2 * (MRU + 8) + 8;
 
 /// The sync core driving `ppproto`; the async I/O and TUN are the effectful shell.
@@ -97,10 +93,6 @@ impl Default for Link {
 
 /// Run the link over a byte transport: drive PPP to `Open`, then shuttle IP
 /// packets between the peer and the TUN side.
-///
-/// `from_tun` carries IP packets read from the local TUN (to send to the peer);
-/// `to_tun` receives IP packets arriving from the peer (to write to the TUN);
-/// `phase` publishes the current PPP phase.
 pub async fn run<T>(
     mut link: Link,
     transport: T,
