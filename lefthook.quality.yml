@@ -4,6 +4,8 @@ quality:root:
       run: cargo fmt --check
     - name: fmt-buf
       run: buf format --diff --exit-code
+    - name: fmt-prettier
+      run: prettier --check "**/*.{json,yaml,yml,toml}"
     - name: lint-cargo
       run: cargo clippy --all-targets -- -D warnings
     - name: lint-buf

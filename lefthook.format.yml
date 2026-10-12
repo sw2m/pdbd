@@ -1,4 +1,0 @@
-format:root:
-  jobs:
-    - name: prettier
-      run: prettier --check "**/*.{json,yaml,yml,toml}"

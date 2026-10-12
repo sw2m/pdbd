@@ -32,10 +32,6 @@ quality:
   jobs:
     - name: fanout
       run: lefthook run fanout quality
-format:
-  jobs:
-    - name: fanout
-      run: lefthook run fanout format
 build:
   jobs:
     - name: fanout
@@ -61,8 +57,6 @@ ci:
   jobs:
     - name: quality
       run: lefthook run quality
-    - name: format
-      run: lefthook run format
     - name: build
       run: lefthook run build
     - name: test
