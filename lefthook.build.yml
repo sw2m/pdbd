@@ -1,1 +1,2 @@
-build:root: { jobs: [ { name: noop, run: 'true' } ] }
+build:root:        { jobs: [ { name: lock, run: 'nix develop --no-update-lock-file "path:$PWD" -c true' } ] }
+build:update:root: { jobs: [ { name: lock, run: 'nix flake update --flake "path:$PWD"' } ] }

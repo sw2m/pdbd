@@ -15,9 +15,10 @@ templates:
     }
     fanout
 
-quality:    { jobs: [ { name: fanout, run: '{fanout} quality' } ] }
-build:      { jobs: [ { name: fanout, run: '{fanout} build' } ] }
-test:       { jobs: [ { name: fanout, run: '{fanout} test' } ] }
+quality:      { jobs: [ { name: fanout, run: '{fanout} quality' } ] }
+build:        { jobs: [ { name: fanout, run: '{fanout} build' } ] }
+build:update: { jobs: [ { name: fanout, run: '{fanout} build:update' } ] }
+test:         { jobs: [ { name: fanout, run: '{fanout} test' } ] }
 vuln:       { jobs: [ { name: fanout, run: '{fanout} vuln' } ] }
 governance: { jobs: [ { name: fanout, run: '{fanout} governance' } ] }
 

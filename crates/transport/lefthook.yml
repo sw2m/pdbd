@@ -1,4 +1,5 @@
-build: { jobs: [ { name: cargo, run: cargo build -p transport --locked } ] }
+build:        { jobs: [ { name: cargo, root: "crates/transport/", run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p transport --locked' } ] }
+build:update: { jobs: [ { name: lock,  root: "crates/transport/", run: 'nix flake update --flake "path:$PWD"' } ] }
 
 # Datapath test — #12-A
 test:

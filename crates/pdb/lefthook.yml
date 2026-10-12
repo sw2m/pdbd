@@ -1,2 +1,3 @@
-build: { jobs: [ { name: cargo, run: cargo build -p pdb --locked } ] }
-test:  { jobs: [ { name: cargo, run: cargo test  -p pdb --locked } ] }
+build:        { jobs: [ { name: cargo, root: "crates/pdb/", run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p pdb --locked' } ] }
+build:update: { jobs: [ { name: lock,  root: "crates/pdb/", run: 'nix flake update --flake "path:$PWD"' } ] }
+test:         { jobs: [ { name: cargo, run: cargo test -p pdb --locked } ] }
