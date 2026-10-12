@@ -8,10 +8,7 @@ RUN mkdir -p /etc/nix && printf 'experimental-features = nix-command flakes\nbui
 ENV PATH="/nix/var/nix/profiles/default/bin:${PATH}"
 WORKDIR /pdbd
 # `path:` treats the dir as a plain (non-git) flake — needed once the worktree mounts.
-# nix/prettier is copied too: the devShell's pinned prettier builds from its lockfile,
-# so the toolchain prebuild needs it (a lock bump busts this layer, as intended).
 COPY flake.nix flake.lock ./
-COPY nix/prettier/ ./nix/prettier/
 RUN nix develop --no-update-lock-file "path:/pdbd" -c true
 
 # no args (or init) -> systemd (service-test mode); a command -> run it in the devShell

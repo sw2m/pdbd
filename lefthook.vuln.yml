@@ -1,1 +1,4 @@
-vuln:root: { jobs: [{ name: stub, run: 'echo "vuln: reserved — see #34"' }] }
+vuln:root:
+  jobs:
+    - name: stub
+      run: 'echo "vuln: reserved — see #34"'

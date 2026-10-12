@@ -1,12 +1,8 @@
 pre-commit:
   jobs:
-    - {
-        name: quality,
-        run: podman run --rm -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run quality,
-      }
+    - name: quality
+      run: podman run --rm -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run quality
 pre-push:
   jobs:
-    - {
-        name: ci,
-        run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run ci,
-      }
+    - name: ci
+      run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run ci

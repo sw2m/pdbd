@@ -36,28 +36,32 @@
           installPhase = "install -Dm755 $src $out/bin/lefthook";
           meta.mainProgram = "lefthook";
         };
-        # prettier + the maintained prettier-plugin-toml, pinned via nix/prettier's
-        # package-lock.json so `prettier` resolves the TOML plugin on PATH hermetically
-        # (no network / global npm at CI time). The wrapper passes the plugin by its
-        # absolute store path, so no .prettierrc plugin-resolution step is needed.
-        prettier = pkgs.buildNpmPackage {
-          pname = "pdbd-prettier";
-          version = "0.0.0";
-          src = ./nix/prettier;
-          npmDepsHash = "sha256-Z/rSe99x04f/18mQpYYceBckNm1oYNBrIRWeQm9JauI="; # prefetch-npm-deps nix/prettier/package-lock.json
-          dontNpmBuild = true;
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out/lib/pdbd-prettier $out/bin
-            cp -r node_modules $out/lib/pdbd-prettier/node_modules
-            makeWrapper ${pkgs.nodejs}/bin/node $out/bin/prettier \
-              --add-flags "$out/lib/pdbd-prettier/node_modules/prettier/bin/prettier.cjs" \
-              --add-flags "--plugin=$out/lib/pdbd-prettier/node_modules/prettier-plugin-toml/lib/index.cjs"
-            runHook postInstall
+        # nixpkgs `prettier` wrapped to always load the maintained prettier-plugin-toml.
+        # The plugin is absent from nixpkgs (its nodePackages alias was removed), so it
+        # and its three runtime deps are fetched as pinned npm tarballs and laid out as a
+        # single node_modules tree; node resolves the deps as siblings of the plugin.
+        # The wrapper adds only --plugin (no --no-config), so .prettierrc.json is honored.
+        prettier = let
+          npm = name: version: sha512: pkgs.fetchurl {
+            url = "https://registry.npmjs.org/${name}/-/${baseNameOf name}-${version}.tgz";
+            hash = "sha512-${sha512}";
+          };
+          pluginModules = pkgs.runCommand "prettier-plugin-toml-modules" { } ''
+            mkdir -p $out/node_modules/@tombi-toml $out/node_modules/@dual-bundle
+            unpack() {
+              local tmp; tmp=$(mktemp -d)
+              tar -xzf "$1" -C "$tmp"
+              mv "$tmp/package" "$2"
+            }
+            unpack ${npm "prettier-plugin-toml" "3.0.2" "1t1FOSGaXNy7xN6ffE7ND71VqsnbUtanGEKAD1hTwFDrGIH1cwZ0KH6lMThDVItjdV/UUJWqD3f1+16AHG3eUQ=="} $out/node_modules/prettier-plugin-toml
+            unpack ${npm "smol-toml" "1.9.1" "j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ=="} $out/node_modules/smol-toml
+            unpack ${npm "@tombi-toml/wasm-lib" "1.8.3" "aUUT/HK8sT0eGJn60S55dvG0ts/lXQr+AshrwFb+45LVUjps9xx6xLJrkC2fupZTLK0tHGTIV3lG9C3YG86PyA=="} $out/node_modules/@tombi-toml/wasm-lib
+            unpack ${npm "@dual-bundle/import-meta-resolve" "4.2.1" "id+7YRUgoUX6CgV0DtuhirQWodeeA7Lf4i2x71JS/vtA5pRb/hIGWlw+G6MeXvsM+MXrz0VAydTGElX1rAfgPg=="} $out/node_modules/@dual-bundle/import-meta-resolve
           '';
-          meta.mainProgram = "prettier";
-        };
+        in pkgs.runCommand "pdbd-prettier" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+          makeWrapper ${pkgs.prettier}/bin/prettier $out/bin/prettier \
+            --add-flags "--plugin=${pluginModules}/node_modules/prettier-plugin-toml/lib/index.cjs"
+        '';
       in {
         devShells.default = pkgs.mkShell {
           packages = [

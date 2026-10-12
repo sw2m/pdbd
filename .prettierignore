@@ -1,2 +1,0 @@
-# Generated lockfiles are owned by their own tools (npm / cargo / nix), not prettier.
-nix/prettier/package-lock.json

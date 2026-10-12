@@ -1,6 +1,10 @@
 quality:root:
   jobs:
-    - { name: fmt-cargo, run: cargo fmt --check }
-    - { name: fmt-buf, run: buf format --diff --exit-code }
-    - { name: lint-cargo, run: cargo clippy --all-targets -- -D warnings }
-    - { name: lint-buf, run: buf lint }
+    - name: fmt-cargo
+      run: cargo fmt --check
+    - name: fmt-buf
+      run: buf format --diff --exit-code
+    - name: lint-cargo
+      run: cargo clippy --all-targets -- -D warnings
+    - name: lint-buf
+      run: buf lint
