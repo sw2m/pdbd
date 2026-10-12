@@ -25,7 +25,8 @@ pub enum Action {
     Ip(Vec<u8>),
 }
 
-/// PPP MRU we size buffers and the TUN for; ppproto defaults to 1500.
+/// PPP MRU we size buffers and the TUN for; fixed at the RFC 1661 default —
+/// ppproto negotiates no MRU (#40), so both ends are pinned here.
 const MRU: usize = 1500;
 /// HDLC byte-stuffing can nearly double a frame, plus FCS/flag overhead — a
 /// full-MRU packet must still fit once encoded.
