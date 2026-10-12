@@ -11,59 +11,40 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
-        inherit (pkgs) lib;
         rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
-
-        services =
-          let
-            tools = pkgs.buildEnv {
-              name = "pdbd.tools";
-              paths = [ pkgs.coreutils ]; # tests extend this with their own binaries
-            };
-            names = lib.filter
-              (n: builtins.match ".*\\.(service|target)" n != null)
-              (builtins.attrNames (builtins.readDir ./ci/systemd));
-            render = name: pkgs.writeText "unit"
-              (builtins.replaceStrings [ "{{bin}}" ] [ "${tools}/bin" ] # absolute — systemd ExecStart requires it
-                (builtins.readFile (./ci/systemd + "/${name}")));
-          in
-          pkgs.runCommand "pdbd.services" { } (''
-            mkdir -p "$out"
-          '' + lib.concatMapStrings (n: ''cp ${render n} "$out/${n}"'' + "\n") names);
-
-        ci = pkgs.writeShellScriptBin "ci" ''
-          set -eu
-          hook="''${1:-ci}"
-          root=$(${pkgs.git}/bin/git rev-parse --show-toplevel)
-          export LEFTHOOK_CONFIG="$root/ci/lefthook.yml" # config lives under ci/, not the repo root
-          have=$(${pkgs.coreutils}/bin/ls -A ${services} 2>/dev/null || true)
-          reap() {
-            [ -n "$have" ] || return 0
-            for u in ${services}/*; do sudo -n ${pkgs.coreutils}/bin/rm -f "/run/systemd/system/$(${pkgs.coreutils}/bin/basename "$u")" || true; done
-            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload || true
-          }
-          trap reap EXIT
-          if [ -n "$have" ]; then
-            sudo -n ${pkgs.coreutils}/bin/install -m0644 -t /run/systemd/system ${services}/*
-            sudo -n ${pkgs.systemd}/bin/systemctl daemon-reload
-          fi
-          ${pkgs.lefthook}/bin/lefthook run "$hook"
-        '';
+        # pinned to the rig's portable tooling/bin/lefthook (byte-identical release binary) so CI and the git-hook shims run one lefthook
+        lefthook = let
+          v = "2.1.15";
+          plat = {
+            "x86_64-linux" = { arch = "x86_64"; sha256 = "df981b477c236546435047fb8c8ee1f6f902e17faebb1b07b6bf2165832e8fe3"; };
+            "aarch64-linux" = { arch = "arm64"; sha256 = "f3c881e1b6aa7f0461970173b1d692e0eb026bddfcd051cc87f636bf9a9782e0"; };
+          }.${system};
+        in pkgs.stdenvNoCC.mkDerivation {
+          pname = "lefthook";
+          version = v;
+          src = pkgs.fetchurl {
+            url = "https://github.com/evilmartians/lefthook/releases/download/v${v}/lefthook_${v}_Linux_${plat.arch}";
+            inherit (plat) sha256;
+          };
+          dontUnpack = true;
+          installPhase = "install -Dm755 $src $out/bin/lefthook";
+          meta.mainProgram = "lefthook";
+        };
       in {
         devShells.default = pkgs.mkShell {
           packages = [
             rust
             pkgs.buf
-            pkgs.lefthook
+            lefthook
             pkgs.git
             pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isLinux [ ci ]; # datapath harness is systemd-only
+          ];
         };
       });
 }

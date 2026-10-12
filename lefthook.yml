@@ -1,0 +1,31 @@
+# CI checks — see README "Local development".
+no_tty: true
+extends:
+  - lefthook.*.yml
+
+templates:
+  fanout: |-
+    fanout() {
+      hook="$1"
+      for cfg in crates/*/lefthook.yml; do
+        grep -qE "^$hook:([[:space:]]|$)" "$cfg" || continue
+        LEFTHOOK_CONFIG="$cfg" lefthook run "$hook"
+      done
+      lefthook run "$hook:root"
+    }
+    fanout
+
+quality:      { jobs: [ { name: fanout, run: '{fanout} quality' } ] }
+build:        { jobs: [ { name: fanout, run: '{fanout} build' } ] }
+build:update: { jobs: [ { name: fanout, run: '{fanout} build:update' } ] }
+test:         { jobs: [ { name: fanout, run: '{fanout} test' } ] }
+vuln:       { jobs: [ { name: fanout, run: '{fanout} vuln' } ] }
+governance: { jobs: [ { name: fanout, run: '{fanout} governance' } ] }
+
+ci:
+  jobs:
+    - { name: quality,    run: lefthook run quality }
+    - { name: build,      run: lefthook run build }
+    - { name: test,       run: lefthook run test }
+    - { name: vuln,       run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }

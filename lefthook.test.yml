@@ -1,0 +1,1 @@
+test:root: { jobs: [ { name: noop, run: 'true' } ] }
