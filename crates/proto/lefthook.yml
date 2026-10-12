@@ -1,0 +1,2 @@
+build: { jobs: [ { name: cargo, run: cargo build -p proto --locked } ] }
+test:  { jobs: [ { name: cargo, run: cargo test  -p proto --locked } ] }

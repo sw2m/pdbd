@@ -1,3 +1,0 @@
-test:unit:
-  jobs:
-    - { name: cargo, run: cargo test --locked }

@@ -562,9 +562,12 @@ nix develop --no-update-lock-file -c lefthook run ci       # the whole suite
 nix develop --no-update-lock-file -c lefthook run quality  # one hook
 ```
 
-All non-GHA CI lives under `ci/`: the lefthook config (`ci/lefthook.yml`) and the
-systemd unit files tests contribute as fixtures (`ci/systemd/`). A bare `lefthook`
-invocation needs `LEFTHOOK_CONFIG=ci/lefthook.yml`.
+CI is **auto-discovered from the repo root**: the root `lefthook.yml` is the entrypoint
+and fans each hook out to the crate that owns it (`crates/*/lefthook.yml`), keeping
+workspace-wide checks (fmt, lint) at the root. A crate's test fixtures live beside it —
+the datapath's systemd units are `crates/transport/systemd/`. No `LEFTHOOK_CONFIG` is
+needed; to run one crate's checks on their own, point lefthook at it:
+`LEFTHOOK_CONFIG=crates/<crate>/lefthook.yml lefthook run <hook>`.
 
 ### The environment contract — `./Dockerfile`
 
@@ -596,13 +599,14 @@ systemd (`--systemd=always` → ubi-init's `/sbin/init`), then runs the check in
 
 ```
 cid=$(podman run -d --privileged --systemd=always -v "$PWD":/pdbd -w /pdbd pdbd-ci)
-podman exec "$cid" nix develop --no-update-lock-file "path:/pdbd" -c lefthook run test:transport
+podman exec -e LEFTHOOK_CONFIG=crates/transport/lefthook.yml "$cid" \
+  nix develop --no-update-lock-file "path:/pdbd" -c lefthook run test:datapath
 podman rm -f "$cid"
 ```
 
 ### Git hooks
 
-`pre-commit` and `pre-push` are defined in `ci/lefthook.yml` and **dispatch into the
+`pre-commit` and `pre-push` are defined in `lefthook.yml` and **dispatch into the
 image** (`podman run … lefthook run …`, unprivileged) — so the checks always run in
 the pinned environment, never against host tool versions. The host needs only `git`,
 `podman`, and a `lefthook` binary (a thin dispatcher that runs no checks itself).

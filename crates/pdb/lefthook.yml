@@ -1,0 +1,2 @@
+build: { jobs: [ { name: cargo, run: cargo build -p pdb --locked } ] }
+test:  { jobs: [ { name: cargo, run: cargo test  -p pdb --locked } ] }

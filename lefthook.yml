@@ -1,0 +1,36 @@
+# CI checks — see README "Local development".
+no_tty: true
+extends:
+  - lefthook.*.yml
+
+templates:
+  kids: |-
+    fanout() {
+      hook="$1"
+      for cfg in crates/*/lefthook.yml; do
+        grep -qE "^$hook:([[:space:]]|$)" "$cfg" || continue
+        LEFTHOOK_CONFIG="$cfg" lefthook run "$hook"
+      done
+    }
+    fanout
+
+quality:    { jobs: [ { name: root,   run: lefthook run quality:root } ] }
+build:      { jobs: [ { name: crates, run: '{kids} build' } ] }
+test:       { jobs: [ { name: crates, run: '{kids} test' } ] }
+vuln:       { jobs: [ { name: stub,   run: 'echo "vuln: reserved — see #34"' } ] }
+governance: { jobs: [ { name: stub,   run: 'echo "governance: reserved — see #35"' } ] }
+
+ci:
+  jobs:
+    - { name: quality,    run: lefthook run quality }
+    - { name: build,      run: lefthook run build }
+    - { name: test,       run: lefthook run test }
+    - { name: vuln,       run: lefthook run vuln }
+    - { name: governance, run: lefthook run governance }
+
+pre-commit:
+  jobs:
+    - { name: quality, run: podman run --rm -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run quality }
+pre-push:
+  jobs:
+    - { name: ci, run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run ci }

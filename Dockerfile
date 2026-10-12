@@ -15,7 +15,6 @@ COPY --from=nix /nix /nix
 RUN mkdir -p /etc/nix && printf 'experimental-features = nix-command flakes\nbuild-users-group =\n' > /etc/nix/nix.conf
 ENV PATH="/nix/var/nix/profiles/default/bin:${PATH}"
 WORKDIR /pdbd
-ENV LEFTHOOK_CONFIG=ci/lefthook.yml
 # toolchain layer — cached; lock copied before the build so only a flake.lock bump busts
 # it. `path:` treats the dir as a plain (non-git) flake — needed once the worktree mounts.
 COPY flake.nix flake.lock ./

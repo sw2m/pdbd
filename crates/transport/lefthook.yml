@@ -1,13 +1,21 @@
-# Datapath test (#12-A) — privileged (sudo + systemd); git hooks skip it via the privileged tag.
-test:transport:
+build: { jobs: [ { name: cargo, run: cargo build -p transport --locked } ] }
+
+# Datapath test (#12-A) — `datapath` is privileged (sudo + systemd); git hooks skip it via the tag.
+test:
+  jobs:
+    - { name: unit,     run: cargo test -p transport --locked }
+    - { name: datapath, run: lefthook run test:datapath, tags: [privileged] }
+
+test:datapath:
   piped: true
   jobs:
     - { name: preflight, run: lefthook run is-privileged }
     - name: fixtures
+      root: "crates/transport/"
       run: |
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
-        for u in ci/systemd/pdbd.netns@.service ci/systemd/pdbd.socat@.service ci/systemd/pdbd.pppd@.service; do
+        for u in systemd/*.service; do
           minijinja-cli -D ip="$(command -v ip)" -D socat="$(command -v socat)" -D pppd="$(command -v pppd)" -D sh="$(command -v sh)" "$u" \
             | $sudo tee "/run/systemd/system/$(basename "$u")" >/dev/null
         done
@@ -24,14 +32,14 @@ test:transport:
     - name: fanout
       run: |
         set -eu
-        N=${N:-10} # the rig's from-scratch campaign sample; override with `N=3 lefthook run test:transport`
+        N=${N:-10} # the rig's from-scratch campaign sample; override with `N=3 lefthook run test:datapath`
         pids=""
-        for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:transport:attempt & pids="$pids $!"; done
+        for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:attempt & pids="$pids $!"; done
         rc=0; for p in $pids; do wait "$p" || rc=1; done
-        N=$N lefthook run test:transport:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
+        N=$N lefthook run test:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
         [ "$rc" = 0 ]
 
-test:transport:attempt:
+test:attempt:
   piped: true
   jobs:
     - name: up
@@ -58,7 +66,7 @@ test:transport:attempt:
         for p in $($sudo ip netns pids "pdbd.${SLOT}" 2>/dev/null); do $sudo kill "$p" 2>/dev/null || true; done # kill the SUT while its netns still exists
         $sudo systemctl stop "pdbd.pppd@${SLOT}.service" "pdbd.socat@${SLOT}.service" "pdbd.netns@${SLOT}.service" >/dev/null 2>&1 || true
 
-test:transport:teardown:
+test:teardown:
   jobs:
     - name: stop
       run: |
@@ -69,3 +77,11 @@ test:transport:teardown:
           $sudo systemctl stop "pdbd.pppd@$s.service" "pdbd.socat@$s.service" "pdbd.netns@$s.service" >/dev/null 2>&1 || true
         done
         $sudo systemctl reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean
+
+is-privileged:
+  jobs:
+    - name: check
+      run: |
+        set -eu
+        [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null || { echo "privileged checks need root or passwordless sudo — see README 'Local development'"; exit 1; }
+        command -v systemctl >/dev/null 2>&1 || { echo "privileged checks need systemd (systemctl not found)"; exit 1; }
