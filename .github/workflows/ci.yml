@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  # Ask lefthook what the checks are (the ci hook's fan-out leaves) — see .github/ci-matrix.py.
+  # The checks are lefthook's: `fanout <hook> plan` emits each leaf; LEFTHOOK_OUTPUT=execution_out
+  # strips the report so the output is clean TSV. Nothing here names a check.
   discover:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -25,7 +26,13 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
       - id: list
-        run: echo "checks=$(nix develop -c python3 .github/ci-matrix.py)" >> "$GITHUB_OUTPUT"
+        run: |
+          checks=$(
+            for x in $(nix develop -c yq '.ci.jobs[].name' lefthook.yml); do
+              LEFTHOOK_OUTPUT=execution_out nix develop -c lefthook run fanout "$x" plan --no-auto-install 2>/dev/null
+            done | { printf 'name\tconfig\thook\n'; cat; } | nix develop -c yq -p=tsv -o=json -I=0
+          )
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
 
   check:
     needs: discover

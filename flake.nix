@@ -44,6 +44,7 @@
             lefthook
             pkgs.git
             pkgs.pkg-config
+            pkgs.yq-go # structural YAML reader for the lefthook fan-out (lefthook.yml)
           ];
         };
       });
