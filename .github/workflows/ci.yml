@@ -52,7 +52,7 @@ jobs:
 
   # The one status to mark required: it aggregates the dynamic matrix and ALWAYS
   # reports (even on drafts, where the legs are skipped) so it is never stuck "expected".
-  ci-ok:
+  mergeable:
     needs: [discover, check]
     if: always()
     runs-on: ubuntu-latest
