@@ -11,10 +11,30 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    # don't spend CI on a work-in-progress draft — runs once it's marked ready
+  # Ask lefthook what the checks are (the ci hook's fan-out leaves) — see .github/ci-matrix.py.
+  discover:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    outputs:
+      checks: ${{ steps.list.outputs.checks }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - id: list
+        run: echo "checks=$(nix develop -c python3 .github/ci-matrix.py)" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: discover
+    runs-on: ubuntu-latest
+    name: ${{ matrix.check.name }}
+    strategy:
+      fail-fast: false # report every check, don't cancel siblings on first red
+      matrix:
+        check: ${{ fromJson(needs.discover.outputs.checks) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
@@ -26,4 +46,14 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — component reuse means build pollution is possible"
-      - run: nix develop -c lefthook run ci
+      - env:
+          LEFTHOOK_CONFIG: ${{ matrix.check.config }}
+        run: nix develop -c lefthook run ${{ matrix.check.hook }}
+
+  # Stable required status for branch protection — green only if every check leg passed.
+  ci-ok:
+    needs: check
+    if: always() && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[ "${{ needs.check.result }}" = "success" ] || exit 1'
