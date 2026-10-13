@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
-// protoc-free codegen (protox → tonic-prost-build), so only the Cargo toolchain is
-// needed to build. buf stays the proto governance gate — see harness/ci/check-proto.sh.
+// protoc-free codegen, so only the Cargo toolchain is needed to build. buf stays
+// the proto governance gate — see harness/ci/check-proto.sh.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?)
         .join("..")
         .join("..")
         .join("proto");
 
-    // Gather the .proto set by walking the tree (a new proto can't silently drop out
-    // of codegen) and rerun per file (a directory trigger misses nested edits).
+    // walk the tree rather than keep a static list, so a new proto can't silently
+    // drop out of codegen, and rerun per file rather than per directory for nested edits
     let mut protos = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
