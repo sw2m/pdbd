@@ -1,12 +1,16 @@
+pub(crate) mod support;
+
 use super::*;
-use crate::Phase;
+use crate::{Phase, Socket};
 use std::io;
-use tokio::io::{
-    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream,
-};
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use support::{await_open, bridge, hdlc, Channel, Remote};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::watch;
+use tokio::time::{sleep, timeout, Duration};
 
 fn tick(l: &mut Core, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
     if let Action::Transmit(bytes) = l.poll() {
@@ -80,59 +84,14 @@ fn garbage_bytes_do_not_panic_or_open() {
     assert_ne!(l.phase(), Phase::Open, "garbage must not bring the link up");
 }
 
-struct Channel(mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>);
-
-impl Channel {
-    fn pair() -> (Self, Self) {
-        let forward = mpsc::channel(8);
-        let back = mpsc::channel(8);
-        (Self(forward.0, back.1), Self(back.0, forward.1))
-    }
-}
-
-impl crate::Socket for Channel {
-    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
-        Ok(self.1.recv().await)
-    }
-
-    async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
-        self.0
-            .send(guest.to_vec())
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
-    }
-}
-
-fn spawn<T>(
-    peer: T,
-    phase: watch::Sender<Phase>,
-) -> (Channel, JoinHandle<io::Result<()>>)
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (offload, bridge) = Channel::pair();
-    (
-        bridge,
-        tokio::spawn(Bridge::new(peer, offload, phase).run()),
-    )
-}
-
-async fn await_open(ph: &mut watch::Receiver<Phase>) {
-    while *ph.borrow_and_update() != Phase::Open {
-        ph.changed()
-            .await
-            .expect("phase sender dropped before Open");
-    }
-}
-
 // #12
 #[tokio::test]
 async fn bridges_open_and_pass_ip() {
     let (a_io, b_io) = tokio::io::duplex(4096);
     let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
     let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
-    let (mut a, _a_task) = spawn(a_io, a_ph_tx);
-    let (mut b, _b_task) = spawn(b_io, b_ph_tx);
+    let (mut a, _a_task) = bridge(a_io, a_ph_tx);
+    let (mut b, _b_task) = bridge(b_io, b_ph_tx);
 
     timeout(Duration::from_secs(5), async {
         await_open(&mut a_ph).await;
@@ -156,8 +115,8 @@ async fn packets_before_open_are_dropped() {
     let (a_io, b_io) = tokio::io::duplex(4096);
     let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
     let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
-    let (mut a, _a_task) = spawn(a_io, a_ph_tx);
-    let (mut b, _b_task) = spawn(b_io, b_ph_tx);
+    let (mut a, _a_task) = bridge(a_io, a_ph_tx);
+    let (mut b, _b_task) = bridge(b_io, b_ph_tx);
 
     let early = vec![0x45u8, 0, 0, 20, 9, 9, 9, 9, 0, 0, 0, 0];
     a.send(&early).await.unwrap();
@@ -185,12 +144,12 @@ async fn bridge_ends_on_dead_transport() {
     let (a_io, b_io) = tokio::io::duplex(64);
     drop(b_io);
     let (ph_tx, _ph) = watch::channel(Phase::Dead);
-    let (mut a, task) = spawn(a_io, ph_tx);
+    let (mut a, task) = bridge(a_io, ph_tx);
 
     let r = timeout(Duration::from_secs(2), task).await;
     assert!(
-        matches!(r, Ok(Ok(_))),
-        "bridge did not end on a dead transport: {r:?}"
+        matches!(r, Ok(Ok(Err(_)))),
+        "bridge did not fail on a dead transport: {r:?}"
     );
     assert_eq!(a.receive().await.unwrap(), None);
 }
@@ -200,9 +159,9 @@ async fn bridge_ends_on_dead_transport() {
 async fn phase_watch_quiesces_when_stable() {
     let (a_io, _b_io) = tokio::io::duplex(4096); // _b_io kept open → no EOF
     let (ph_tx, mut ph) = watch::channel(Phase::Dead);
-    let (_a, _task) = spawn(a_io, ph_tx); // _a kept → the offload stays open and the bridge keeps running
+    let (_a, _task) = bridge(a_io, ph_tx); // _a kept → the offload stays open and the bridge keeps running
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_millis(300)).await;
     let _ = ph.borrow_and_update();
 
     let fired = timeout(Duration::from_millis(300), ph.changed()).await;
@@ -212,43 +171,14 @@ async fn phase_watch_quiesces_when_stable() {
     );
 }
 
-async fn step(peer: &mut Core, io: &mut DuplexStream, wire: &mut Vec<u8>) {
-    loop {
-        match peer.poll() {
-            Action::Transmit(bytes) => io.write_all(&bytes).await.unwrap(),
-            Action::Offload(_) => {}
-            Action::Idle => break,
-        }
-    }
-    let mut buf = [0u8; 2048];
-    if let Ok(Ok(n)) =
-        timeout(Duration::from_millis(5), io.read(&mut buf)).await
-    {
-        wire.extend_from_slice(&buf[..n]);
-    }
-    if !wire.is_empty() {
-        let n = peer.consume(wire.as_slice());
-        wire.drain(..n);
-    }
-}
-
 // #12
 #[tokio::test]
 async fn inbound_flows_while_outbound_is_blocked() {
-    let (a_io, mut p_io) = tokio::io::duplex(256);
+    let (a_io, p_io) = tokio::io::duplex(256);
     let (ph_tx, ph) = watch::channel(Phase::Dead);
-    let (mut a, _task) = spawn(a_io, ph_tx);
-
-    let mut peer = Core::new();
-    peer.open();
-    let mut wire = Vec::new();
-    timeout(Duration::from_secs(5), async {
-        while *ph.borrow() != Phase::Open || peer.phase() != Phase::Open {
-            step(&mut peer, &mut p_io, &mut wire).await;
-        }
-    })
-    .await
-    .expect("links did not reach Open");
+    let (mut a, _task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
 
     let flood = a.0.clone();
     tokio::spawn(async move {
@@ -258,13 +188,294 @@ async fn inbound_flows_while_outbound_is_blocked() {
             }
         }
     });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    timeout(Duration::from_secs(5), async {
+        while a.0.capacity() > 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("outbound never backed up: the peer queue never reached CAP");
 
     let guest = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8];
-    p_io.write_all(&peer.send(&guest).unwrap()).await.unwrap();
+    remote.send(&guest).await;
     let got = timeout(Duration::from_secs(2), a.receive())
         .await
         .expect("inbound stalled behind the blocked outbound write")
         .unwrap();
     assert_eq!(got, Some(guest));
+}
+
+struct Flood {
+    armed: watch::Receiver<bool>,
+    pulled: Arc<AtomicUsize>,
+}
+
+impl Socket for Flood {
+    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let _ = self.armed.wait_for(|armed| *armed).await;
+        self.pulled.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(vec![0x45u8; 1000]))
+    }
+
+    async fn send(&mut self, _: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+async fn settle(pulled: &AtomicUsize) -> usize {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let before = pulled.load(Ordering::SeqCst);
+            sleep(Duration::from_millis(200)).await;
+            let after = pulled.load(Ordering::SeqCst);
+            if before == after {
+                return after;
+            }
+        }
+    })
+    .await
+    .expect("offload intake never stopped: no backpressure")
+}
+
+// #12
+#[tokio::test]
+async fn offload_intake_stops_at_cap_and_resumes() {
+    let (a_io, p_io) = tokio::io::duplex(256);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (arm, armed) = watch::channel(false);
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let flood = Flood {
+        armed,
+        pulled: pulled.clone(),
+    };
+    let _task = tokio::spawn(Bridge::new(a_io, flood, ph_tx).run());
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    arm.send_replace(true);
+    let plateau = settle(&pulled).await;
+    let cap = Peer::<tokio::io::DuplexStream>::CAP / 1000;
+    assert!(
+        plateau >= cap / 2 && plateau <= cap + 4,
+        "intake stopped at {plateau} guests, expected about {cap}"
+    );
+
+    timeout(Duration::from_secs(5), async {
+        while pulled.load(Ordering::SeqCst) <= plateau {
+            remote.step().await;
+        }
+    })
+    .await
+    .expect("intake did not resume once the peer drained the queue");
+}
+
+struct Picky {
+    channel: Channel,
+    rejected: bool,
+}
+
+impl Socket for Picky {
+    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.channel.receive().await
+    }
+
+    async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
+        if !self.rejected {
+            self.rejected = true;
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.channel.send(guest).await
+    }
+}
+
+// #12
+#[tokio::test]
+async fn offload_rejecting_a_packet_drops_it_and_continues() {
+    let (a_io, p_io) = tokio::io::duplex(4096);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (channel, mut a) = Channel::pair(8);
+    let picky = Picky {
+        channel,
+        rejected: false,
+    };
+    let task = tokio::spawn(Bridge::new(a_io, picky, ph_tx).run());
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    remote.send(&[0x45u8, 0, 0, 20, 9, 9, 9, 9]).await;
+    let kept = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4];
+    remote.send(&kept).await;
+    let got = timeout(Duration::from_secs(2), a.receive())
+        .await
+        .expect("bridge stopped delivering after the offload rejected a packet")
+        .unwrap();
+    assert_eq!(got, Some(kept));
+    assert!(!task.is_finished());
+}
+
+// #12
+#[tokio::test]
+async fn offload_close_flushes_the_peer_queue() {
+    let (a_io, p_io) = tokio::io::duplex(256);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (a, task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    for _ in 0..20 {
+        a.0.send(vec![0x45u8; 1000]).await.unwrap();
+    }
+    let marker = vec![0x45u8, 0, 0, 20, 7, 7, 7, 7];
+    a.0.send(marker.clone()).await.unwrap();
+    while a.0.capacity() < 8 {
+        sleep(Duration::from_millis(10)).await;
+    }
+    drop(a);
+
+    let mut last = Vec::new();
+    timeout(Duration::from_secs(5), async {
+        while last != marker {
+            last = remote.receive().await;
+        }
+    })
+    .await
+    .expect("queued frames were not flushed to the peer");
+    let r = timeout(Duration::from_secs(2), task).await;
+    assert!(
+        matches!(r, Ok(Ok(Ok(())))),
+        "bridge did not end cleanly: {r:?}"
+    );
+}
+
+// #12
+#[tokio::test(start_paused = true)]
+async fn offload_close_gives_up_on_a_stalled_peer() {
+    let (a_io, p_io) = tokio::io::duplex(256);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (a, task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    for _ in 0..20 {
+        a.0.send(vec![0x45u8; 1000]).await.unwrap();
+    }
+    while a.0.capacity() < 8 {
+        sleep(Duration::from_millis(10)).await;
+    }
+    drop(a);
+
+    let r = timeout(Duration::from_secs(60), task).await;
+    assert!(
+        matches!(&r, Ok(Ok(Err(e))) if e.kind() == io::ErrorKind::TimedOut),
+        "bridge hung flushing to a stalled peer: {r:?}"
+    );
+    drop(remote);
+}
+
+// #12
+#[tokio::test]
+async fn peer_eof_while_open_is_an_error() {
+    let (a_io, p_io) = tokio::io::duplex(4096);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (_a, task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+    drop(remote);
+
+    let r = timeout(Duration::from_secs(2), task).await;
+    assert!(
+        matches!(&r, Ok(Ok(Err(e))) if e.kind() == io::ErrorKind::UnexpectedEof),
+        "peer EOF while Open was not reported: {r:?}"
+    );
+}
+
+// #12
+#[tokio::test]
+async fn peer_eof_mid_frame_is_an_error() {
+    let (a_io, p_io) = tokio::io::duplex(4096);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (_a, task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+    let frame = hdlc(0x0021, &[0x45u8; 40]);
+    remote.write(&frame[..frame.len() / 2]).await;
+    drop(remote);
+
+    let r = timeout(Duration::from_secs(2), task).await;
+    assert!(
+        matches!(&r, Ok(Ok(Err(e))) if e.kind() == io::ErrorKind::UnexpectedEof),
+        "peer EOF mid-frame was not reported: {r:?}"
+    );
+}
+
+struct ZeroWriter;
+
+impl AsyncRead for ZeroWriter {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for ZeroWriter {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        _: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Ok(0))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+// #12
+#[tokio::test]
+async fn peer_accepting_no_bytes_is_an_error() {
+    let (ph_tx, _ph) = watch::channel(Phase::Dead);
+    let (offload, _a) = Channel::pair(8);
+    let r = timeout(
+        Duration::from_secs(2),
+        Bridge::new(ZeroWriter, offload, ph_tx).run(),
+    )
+    .await;
+    assert!(
+        matches!(&r, Ok(Err(e)) if e.kind() == io::ErrorKind::WriteZero),
+        "a transport writing zero bytes was not reported: {r:?}"
+    );
+}
+
+// #12
+#[tokio::test]
+async fn oversized_inbound_frame_is_dropped() {
+    let (a_io, p_io) = tokio::io::duplex(16384);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (mut a, _task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    remote.write(&hdlc(0x0021, &[0x45u8; 4000])).await;
+    let kept = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4];
+    remote.send(&kept).await;
+    let got = timeout(Duration::from_secs(2), a.receive())
+        .await
+        .expect("a valid frame after an oversized one was not delivered")
+        .unwrap();
+    assert_eq!(got, Some(kept));
+    assert_eq!(*ph.borrow(), Phase::Open);
 }

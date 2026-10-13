@@ -82,8 +82,8 @@ struct Cadence {
 }
 
 impl Cadence {
-    const FAST: Duration = Duration::from_millis(20); // stands in for ppproto's missing retransmit timer during bring-up (#24)
-    const SLOW: Duration = Duration::from_secs(1); // once Open, only keepalive-paced polling is needed
+    const FAST: Duration = Duration::from_millis(20); // advances ppproto's phase machine during bring-up; not a retransmit timer (#24)
+    const SLOW: Duration = Duration::from_secs(1); // once Open nothing needs polling; no keepalive exists yet (#24)
 
     fn new() -> Self {
         Self {
@@ -114,6 +114,7 @@ struct Peer<T> {
 
 impl<T: AsyncRead + AsyncWrite> Peer<T> {
     const CAP: usize = 16 * FRAME; // ~16 full frames buffered before the offload is backpressured
+    const FLUSH: Duration = Duration::from_secs(10); // > a full CAP queue at 115200 baud (~4.2 s)
 
     fn new(transport: T) -> Self {
         let (reader, writer) = tokio::io::split(transport);
@@ -159,7 +160,7 @@ where
                 r = self.peer.reader.read(&mut rbuf) => {
                     let n = r?;
                     if n == 0 {
-                        return Ok(());
+                        return self.closed();
                     }
                     self.wire.extend_from_slice(&rbuf[..n]);
                     self.pump().await?;
@@ -173,15 +174,33 @@ where
                 }
                 r = self.offload.receive(), if self.peer.queue.len() < Peer::<T>::CAP => match r? {
                     Some(guest) => self.frame(&guest),
-                    None => {
-                        self.peer.writer.write_all(&self.peer.queue).await?;
-                        return Ok(());
-                    }
+                    None => return self.flush().await,
                 },
                 _ = self.cadence.wait() => {
                     self.pump().await?;
                 }
             }
+        }
+    }
+
+    fn closed(&self) -> io::Result<()> {
+        if self.core.phase() == Phase::Dead {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "L1 transport closed while the L2 (PPP) link was up",
+        ))
+    }
+
+    async fn flush(&mut self) -> io::Result<()> {
+        let write = self.peer.writer.write_all(&self.peer.queue);
+        match tokio::time::timeout(Peer::<T>::FLUSH, write).await {
+            Ok(r) => r,
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "L1 transport stopped accepting L2 (PPP) frames during shutdown",
+            )),
         }
     }
 
@@ -207,7 +226,16 @@ where
                     Action::Transmit(bytes) => {
                         self.peer.queue.extend_from_slice(&bytes)
                     }
-                    Action::Offload(guest) => self.offload.send(&guest).await?,
+                    Action::Offload(guest) => {
+                        match self.offload.send(&guest).await {
+                            Err(e)
+                                if e.kind() == io::ErrorKind::InvalidInput =>
+                            {
+                                eprintln!("transport: L3 offload rejected an inbound L3 (IP) packet: {e}")
+                            }
+                            r => r?,
+                        }
+                    }
                     Action::Idle => break,
                 }
             }
@@ -225,9 +253,10 @@ where
                 break;
             }
             let c = self.core.consume(self.wire.as_slice());
-            if c == 0 {
-                break; // a frame is pending; the next poll drains it, next pump() retries
-            }
+            assert_ne!(
+                c, 0,
+                "L2 (PPP) decoder took no input after its output drained"
+            );
             self.wire.drain(..c);
         }
         Ok(())
@@ -235,4 +264,4 @@ where
 }
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;

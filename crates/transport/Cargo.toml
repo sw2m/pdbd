@@ -19,6 +19,7 @@ tokio = { version = "1", features = [
 tun-rs = { version = "2", features = ["async"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }  # paused clock for timeout tests
 tokio-serial = "5"  # linkup example only
 clap = { workspace = true }  # linkup example only
 dotenvy = { workspace = true }  # linkup example only

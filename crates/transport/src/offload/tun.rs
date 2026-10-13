@@ -32,8 +32,12 @@ impl Socket {
 impl crate::Socket for Socket {
     async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut buf = [0u8; MRU];
-        let n = self.device.recv(&mut buf).await?;
-        Ok((n > 0).then(|| buf[..n].to_vec()))
+        loop {
+            let n = self.device.recv(&mut buf).await?;
+            if n > 0 {
+                return Ok(Some(buf[..n].to_vec()));
+            }
+        }
     }
 
     async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
