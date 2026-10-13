@@ -2,8 +2,8 @@ use super::*;
 use tokio::time::{timeout, Duration};
 
 // One poll + one consume, interleaved — ppproto processes one frame per poll.
-fn tick(l: &mut Link, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
-    if let Action::Tx(bytes) = l.poll() {
+fn tick(l: &mut ppp::Socket, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
+    if let ppp::Action::Tx(bytes) = l.poll() {
         outbox.extend_from_slice(&bytes);
     }
     if !inbox.is_empty() {
@@ -14,11 +14,11 @@ fn tick(l: &mut Link, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
     }
 }
 
-// #12 — two links back-to-back over an in-memory byte pipe reach PPP Open.
+// #12 — two sockets back-to-back over an in-memory byte pipe reach PPP Open.
 #[test]
 fn two_links_negotiate_to_open() {
-    let mut a = Link::new();
-    let mut b = Link::new();
+    let mut a = ppp::Socket::new();
+    let mut b = ppp::Socket::new();
     a.open();
     b.open();
     let mut a2b = Vec::new();
@@ -38,7 +38,7 @@ fn two_links_negotiate_to_open() {
     );
 }
 
-// #12 — the async pump brings two links up and passes an IP packet across.
+// #12 — the async datapath brings two links up and passes an IP packet across.
 #[tokio::test]
 async fn pump_brings_link_up_and_passes_ip() {
     let (a_io, b_io) = tokio::io::duplex(4096);
@@ -49,8 +49,20 @@ async fn pump_brings_link_up_and_passes_ip() {
     let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
     let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
 
-    tokio::spawn(run(Link::new(), a_io, a_from_rx, a_to_tx, a_ph_tx));
-    tokio::spawn(run(Link::new(), b_io, b_from_rx, b_to_tx, b_ph_tx));
+    tokio::spawn(splice(
+        ppp::Socket::new(),
+        a_io,
+        a_from_rx,
+        a_to_tx,
+        a_ph_tx,
+    ));
+    tokio::spawn(splice(
+        ppp::Socket::new(),
+        b_io,
+        b_from_rx,
+        b_to_tx,
+        b_ph_tx,
+    ));
 
     timeout(Duration::from_secs(5), async {
         loop {
@@ -80,7 +92,7 @@ async fn pump_brings_link_up_and_passes_ip() {
 // C1 — an over-FRAME packet must err, not panic (HDLC escaping can double it).
 #[test]
 fn send_oversized_errs_not_panics() {
-    let mut l = Link::new();
+    let mut l = ppp::Socket::new();
     let big = vec![0x7eu8; FRAME];
     assert!(l.send(&big).is_err());
 }
@@ -88,7 +100,7 @@ fn send_oversized_errs_not_panics() {
 // C1 — a full-MRU packet frames cleanly (the buffer is sized for it).
 #[test]
 fn send_full_mru_ok() {
-    let mut l = Link::new();
+    let mut l = ppp::Socket::new();
     let pkt = vec![0x41u8; MRU];
     assert!(l.send(&pkt).is_ok());
 }
@@ -108,8 +120,20 @@ async fn packets_before_open_are_dropped() {
     let early = vec![0x45u8, 0, 0, 20, 9, 9, 9, 9, 0, 0, 0, 0];
     a_from_tx.send(early.clone()).await.unwrap();
 
-    tokio::spawn(run(Link::new(), a_io, a_from_rx, a_to_tx, a_ph_tx));
-    tokio::spawn(run(Link::new(), b_io, b_from_rx, b_to_tx, b_ph_tx));
+    tokio::spawn(splice(
+        ppp::Socket::new(),
+        a_io,
+        a_from_rx,
+        a_to_tx,
+        a_ph_tx,
+    ));
+    tokio::spawn(splice(
+        ppp::Socket::new(),
+        b_io,
+        b_from_rx,
+        b_to_tx,
+        b_ph_tx,
+    ));
 
     timeout(Duration::from_secs(5), async {
         loop {
@@ -138,9 +162,9 @@ async fn packets_before_open_are_dropped() {
     assert_eq!(got, real);
 }
 
-// H1 — a dead transport must end the pump, not hang (drives tun::run teardown).
+// H1 — a dead transport must end the datapath, not hang (drives tun::run teardown).
 #[tokio::test]
-async fn run_terminates_on_dead_transport() {
+async fn splice_terminates_on_dead_transport() {
     let (a_io, b_io) = tokio::io::duplex(64);
     drop(b_io); // closing one half → writes break / reads hit EOF
     let (_from_tx, from_rx) = mpsc::channel::<Vec<u8>>(1);
@@ -149,10 +173,10 @@ async fn run_terminates_on_dead_transport() {
 
     let r = timeout(
         Duration::from_secs(2),
-        run(Link::new(), a_io, from_rx, to_tx, ph_tx),
+        splice(ppp::Socket::new(), a_io, from_rx, to_tx, ph_tx),
     )
     .await;
-    assert!(r.is_ok(), "pump hung on a dead transport");
+    assert!(r.is_ok(), "datapath hung on a dead transport");
 }
 
 // H2 — the phase watch fires on change, not every tick, then quiesces.
@@ -162,7 +186,7 @@ async fn phase_watch_quiesces_when_stable() {
     let (_from_tx, from_rx) = mpsc::channel::<Vec<u8>>(1);
     let (to_tx, _to_rx) = mpsc::channel::<Vec<u8>>(1);
     let (ph_tx, mut ph) = watch::channel(Phase::Dead);
-    tokio::spawn(run(Link::new(), a_io, from_rx, to_tx, ph_tx));
+    tokio::spawn(splice(ppp::Socket::new(), a_io, from_rx, to_tx, ph_tx));
 
     // Let the initial Dead→Establish transition settle, then mark it seen.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -179,7 +203,7 @@ async fn phase_watch_quiesces_when_stable() {
 // Garbage on the wire must not panic or spuriously open (bad frames fail FCS).
 #[test]
 fn garbage_bytes_do_not_panic_or_open() {
-    let mut l = Link::new();
+    let mut l = ppp::Socket::new();
     l.open();
     let mut inbox: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
     for _ in 0..2000 {
@@ -207,7 +231,7 @@ async fn tun_run_creates_device_and_tears_down() {
     let h = tokio::spawn(tun::run(a_io, local, peer, Some("pdbdtest0"), ph_tx));
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    drop(b_io); // dead transport → pump returns → bridge tasks aborted
+    drop(b_io); // dead transport → datapath returns → bridge tasks aborted
     let r = timeout(Duration::from_secs(2), h).await;
     assert!(
         matches!(r, Ok(Ok(_))),
