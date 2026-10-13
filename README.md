@@ -127,7 +127,7 @@ Common to both ends: a small, long-lived **control-plane core** owns the link an
 
 **Host and guest.** Stack a protocol on a socket and the model becomes a **pseudo three-layer model**: a **protocol layer** presents a **guest socket** carried on the **host socket** beneath it. It is *pseudo* because nothing new appears — it is the two-layer model applied recursively, the guest socket living in the host socket's data layer. **Everything above a host socket is guest**, whether a generic data payload or structured protocol data. (Host/guest here means socket nesting, not a VM's host and guest.)
 
-**The L3 guest and its three host endpoints.** `pdbd`'s guest is the IP packet. It passes between three host endpoints, each playing a role:
+**The L3 guest and its three host endpoints.** The `transport` crate's guest is the IP packet. (`pdbd` and `pdb` as a whole are multilayer and recursive: they stack many host and guest protocols, so they have more than one guest.) The IP packet passes between three host endpoints, each playing a role:
 
 ```mermaid
 flowchart LR
