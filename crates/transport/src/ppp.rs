@@ -38,9 +38,7 @@ impl Core {
     }
 
     pub(crate) fn open(&mut self) {
-        self.ppp
-            .open()
-            .expect("ppp::Core::open on a non-fresh core");
+        self.ppp.open().expect("L2 (PPP) link opened twice");
     }
 
     pub(crate) fn phase(&self) -> Phase {
@@ -63,7 +61,7 @@ impl Core {
         let n = self.ppp.send(guest, &mut self.tx).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "guest exceeds PPP frame buffer",
+                "larger than the L2 (PPP) frame buffer",
             )
         })?;
         Ok(self.tx[..n].to_vec())
@@ -192,7 +190,9 @@ where
         }
         match self.core.send(guest) {
             Ok(bytes) => self.peer.queue.extend_from_slice(&bytes),
-            Err(e) => eprintln!("transport: dropping unsendable guest: {e}"),
+            Err(e) => eprintln!(
+                "transport: L2 (PPP) dropped an outbound L3 (IP) packet: {e}"
+            ),
         }
     }
 

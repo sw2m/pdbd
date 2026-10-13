@@ -147,6 +147,8 @@ The bridge role is the datapath's middle node; it is unrelated to the L7 `bridge
 
 **The offload contract.** Each offload is a module under `transport::offload::<name>` (today only `tun`) and **owns its `run()`**: it opens that offload's packet `Socket` and runs a `ppp::Bridge` over it. `run()` is a per-module contract, not a trait method, because each offload takes its own setup arguments (a TUN needs its addresses and device name).
 
+**Output speaks OSI.** Code is named in the socket model's roles; anything written for an operator — logs, error messages, panics — uses the OSI layer labels (*L1 serial*, *L2 (PPP)*, *L3 (IP) packet*), the vocabulary every operator already shares.
+
 ---
 
 ## Topology & lifecycle

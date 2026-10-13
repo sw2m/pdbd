@@ -22,12 +22,12 @@ async fn main() {
 
     let transport = tokio_serial::new(&args.dev, args.baud)
         .open_native_async()
-        .expect("open serial device");
+        .expect("L1: open serial device");
 
     let (ph_tx, mut ph) = watch::channel(Phase::Dead);
     tokio::spawn(async move {
         while ph.changed().await.is_ok() {
-            eprintln!("phase: {:?}", *ph.borrow());
+            eprintln!("L2 (PPP) phase: {:?}", *ph.borrow());
         }
     });
 
@@ -39,5 +39,5 @@ async fn main() {
         ph_tx,
     )
     .await
-    .expect("offload::tun::run");
+    .expect("L1–L3 datapath (serial → PPP → TUN) failed");
 }
