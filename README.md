@@ -143,7 +143,7 @@ flowchart LR
 
 The bridge role is the datapath's middle node; it is unrelated to the L7 `bridge` (`socat`/`forward`) service.
 
-**Naming follows the roles.** In code the bridge is `ppp::Bridge`: its `peer` port is the byte transport to the remote PPP endpoint, and its `offload` port is a packet `Socket` (`offload::tun::Socket`). A port is named for the role on its far side, so `offload.send()` sends *to* the offload and `offload.receive()` receives *from* it; the same holds for `peer`.
+**Naming follows the roles.** In code the bridge is `ppp::Bridge`: its `peer` port is the byte transport to the remote PPP endpoint, and its `offload` port is a packet `Socket` (`offload::tun::Socket`). A port is named for the role on its far side, so `offload.send()` sends *to* the offload and `offload.receive()` receives *from* it. The peer port is a byte stream rather than a packet `Socket`, so it reads and writes instead: `peer.writer` writes *to* the peer, `peer.reader` reads *from* it.
 
 **The offload contract.** Each offload is a module under `transport::offload::<name>` (today only `tun`) and **owns its `run()`**: it opens that offload's packet `Socket` and runs a `ppp::Bridge` over it. `run()` is a per-module contract, not a trait method, because each offload takes its own setup arguments (a TUN needs its addresses and device name).
 
