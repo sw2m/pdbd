@@ -16,35 +16,5 @@ pub trait Socket {
     async fn send(&mut self, guest: &[u8]) -> io::Result<()>;
 }
 
-pub(crate) struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-pub async fn splice<P, O>(mut peer: P, mut offload: O) -> io::Result<()>
-where
-    P: Socket,
-    O: Socket,
-{
-    loop {
-        tokio::select! {
-            r = peer.receive() => match r? {
-                Some(guest) => offload.send(&guest).await?,
-                None => return Ok(()),
-            },
-            r = offload.receive() => match r? {
-                Some(guest) => peer.send(&guest).await?,
-                None => return Ok(()),
-            },
-        }
-    }
-}
-
 pub mod ppp;
 pub mod tun;
-
-#[cfg(test)]
-mod tests;

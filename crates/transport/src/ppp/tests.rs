@@ -1,7 +1,9 @@
 use super::*;
 use crate::Phase;
-use crate::Socket as _;
-use tokio::sync::watch;
+use std::io;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
 fn tick(l: &mut Core, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
@@ -76,6 +78,43 @@ fn garbage_bytes_do_not_panic_or_open() {
     assert_ne!(l.phase(), Phase::Open, "garbage must not bring the link up");
 }
 
+struct Channel(mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>);
+
+impl Channel {
+    fn pair() -> (Self, Self) {
+        let forward = mpsc::channel(8);
+        let back = mpsc::channel(8);
+        (Self(forward.0, back.1), Self(back.0, forward.1))
+    }
+}
+
+impl crate::Socket for Channel {
+    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.1.recv().await)
+    }
+
+    async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
+        self.0
+            .send(guest.to_vec())
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+    }
+}
+
+fn spawn<T>(
+    peer: T,
+    phase: watch::Sender<Phase>,
+) -> (Channel, JoinHandle<io::Result<()>>)
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (offload, bridge) = Channel::pair();
+    (
+        bridge,
+        tokio::spawn(Bridge::new(peer, offload, phase).run()),
+    )
+}
+
 async fn await_open(ph: &mut watch::Receiver<Phase>) {
     while *ph.borrow_and_update() != Phase::Open {
         ph.changed()
@@ -86,12 +125,12 @@ async fn await_open(ph: &mut watch::Receiver<Phase>) {
 
 // #12
 #[tokio::test]
-async fn pump_brings_link_up_and_passes_ip() {
+async fn bridges_open_and_pass_ip() {
     let (a_io, b_io) = tokio::io::duplex(4096);
     let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
     let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
-    let mut a = Socket::connect(a_io, a_ph_tx);
-    let mut b = Socket::connect(b_io, b_ph_tx);
+    let (mut a, _a_task) = spawn(a_io, a_ph_tx);
+    let (mut b, _b_task) = spawn(b_io, b_ph_tx);
 
     timeout(Duration::from_secs(5), async {
         await_open(&mut a_ph).await;
@@ -105,7 +144,7 @@ async fn pump_brings_link_up_and_passes_ip() {
     let got = timeout(Duration::from_secs(2), b.receive())
         .await
         .expect("no packet delivered")
-        .expect("ppp socket errored");
+        .expect("bridge errored");
     assert_eq!(got, Some(pkt));
 }
 
@@ -115,8 +154,8 @@ async fn packets_before_open_are_dropped() {
     let (a_io, b_io) = tokio::io::duplex(4096);
     let (a_ph_tx, mut a_ph) = watch::channel(Phase::Dead);
     let (b_ph_tx, mut b_ph) = watch::channel(Phase::Dead);
-    let mut a = Socket::connect(a_io, a_ph_tx);
-    let mut b = Socket::connect(b_io, b_ph_tx);
+    let (mut a, _a_task) = spawn(a_io, a_ph_tx);
+    let (mut b, _b_task) = spawn(b_io, b_ph_tx);
 
     let early = vec![0x45u8, 0, 0, 20, 9, 9, 9, 9, 0, 0, 0, 0];
     a.send(&early).await.unwrap();
@@ -134,23 +173,24 @@ async fn packets_before_open_are_dropped() {
     let got = timeout(Duration::from_secs(2), b.receive())
         .await
         .expect("no packet delivered")
-        .expect("ppp socket errored");
+        .expect("bridge errored");
     assert_eq!(got, Some(real));
 }
 
 // #12
 #[tokio::test]
-async fn ppp_socket_closes_on_dead_transport() {
+async fn bridge_ends_on_dead_transport() {
     let (a_io, b_io) = tokio::io::duplex(64);
     drop(b_io);
     let (ph_tx, _ph) = watch::channel(Phase::Dead);
-    let mut a = Socket::connect(a_io, ph_tx);
+    let (mut a, task) = spawn(a_io, ph_tx);
 
-    let r = timeout(Duration::from_secs(2), a.receive()).await;
+    let r = timeout(Duration::from_secs(2), task).await;
     assert!(
-        matches!(r, Ok(Ok(None))),
-        "ppp::Socket did not close on a dead transport: {r:?}"
+        matches!(r, Ok(Ok(_))),
+        "bridge did not end on a dead transport: {r:?}"
     );
+    assert_eq!(a.receive().await.unwrap(), None);
 }
 
 // #12
@@ -158,7 +198,7 @@ async fn ppp_socket_closes_on_dead_transport() {
 async fn phase_watch_quiesces_when_stable() {
     let (a_io, _b_io) = tokio::io::duplex(4096); // _b_io kept open → no EOF
     let (ph_tx, mut ph) = watch::channel(Phase::Dead);
-    let _a = Socket::connect(a_io, ph_tx); // keep the socket (driver) alive
+    let (_a, _task) = spawn(a_io, ph_tx); // _a kept → the offload stays open and the bridge keeps running
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let _ = ph.borrow_and_update();

@@ -31,6 +31,8 @@ They solve the *same* problem — *run a process on the far side of a byte chann
 
 ## The layer model
 
+The L1–L7 numbers here are **borrowed labels**, not a model. The OSI 7-layer model is not accurate and does not describe `pdbd`'s architecture well, if at all; `pdbd`'s network model is *The socket model* below. The labels are kept only because they are the shared vocabulary for transport, link, IP, and services.
+
 The central idea: **`pdbd`/`pdb` own L1 (transport) and L2 (link), the kernel owns L3/L4 (IP/TCP/UDP), and `pdbd`/`pdb` own L7 (the services).** PPP in userspace bridges a dumb L1 pipe up to a kernel IP interface, so everything above L2 is *real kernel networking* — real sockets, real kernel TCP reliability, real `netfilter`.
 
 ```mermaid
@@ -118,7 +120,7 @@ Common to both ends: a small, long-lived **control-plane core** owns the link an
 
 ## The socket model
 
-Beneath the OSI layers, `pdbd` runs on a **two-layer model**:
+`pdbd`'s network model is a **two-layer model**, in place of the OSI 7-layer model:
 
 - **the socket layer** — anything you can read from and write to: a UART, a `vsock`, a TUN, an in-process channel;
 - **the data layer** — whatever moves through it.
@@ -141,7 +143,7 @@ flowchart LR
 
 The bridge role is the datapath's middle node; it is unrelated to the L7 `bridge` (`socat`/`forward`) service.
 
-**Naming follows the roles.** In code, a channel end is named for the role on its far side, from its holder's point of view: `<role>_tx.send()` sends *to* that role, and `<role>_rx.recv()` receives *from* it. A socket's outward end is `peer_*` or `offload_*`; the inward end its internals hold is `bridge_*`.
+**Naming follows the roles.** In code the bridge is `ppp::Bridge`: its `peer` port is the byte transport to the remote PPP endpoint, and its `offload` port is a packet `Socket` (`tun::Socket`). A port is named for the role on its far side, so `offload.send()` sends *to* the offload and `offload.receive()` receives *from* it; the same holds for `peer`.
 
 ---
 

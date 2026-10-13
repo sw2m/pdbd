@@ -1,17 +1,13 @@
-use super::ppp::MRU;
-use super::{AbortOnDrop, Phase};
+use super::ppp::{Bridge, MRU};
+use super::Phase;
 use std::io;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, watch};
-use tun_rs::DeviceBuilder;
+use tokio::sync::watch;
+use tun_rs::{AsyncDevice, DeviceBuilder};
 
 pub struct Socket {
-    offload_rx: mpsc::Receiver<Vec<u8>>,
-    offload_tx: mpsc::Sender<Vec<u8>>,
-    _rx: AbortOnDrop,
-    _tx: AbortOnDrop,
+    device: AsyncDevice,
 }
 
 impl Socket {
@@ -27,52 +23,21 @@ impl Socket {
         if let Some(n) = name {
             builder = builder.name(n);
         }
-        let dev = Arc::new(builder.build_async()?);
-
-        let (bridge_tx, offload_rx) = mpsc::channel::<Vec<u8>>(64);
-        let (offload_tx, mut bridge_rx) = mpsc::channel::<Vec<u8>>(64);
-
-        let dev_rx = dev.clone();
-        let rx = AbortOnDrop(tokio::spawn(async move {
-            let mut buf = [0u8; MRU];
-            loop {
-                match dev_rx.recv(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if bridge_tx.send(buf[..n].to_vec()).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        }));
-        let dev_tx = dev.clone();
-        let tx = AbortOnDrop(tokio::spawn(async move {
-            while let Some(guest) = bridge_rx.recv().await {
-                if dev_tx.send(&guest).await.is_err() {
-                    break;
-                }
-            }
-        }));
-
         Ok(Self {
-            offload_rx,
-            offload_tx,
-            _rx: rx,
-            _tx: tx,
+            device: builder.build_async()?,
         })
     }
 }
 
 impl crate::Socket for Socket {
     async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
-        Ok(self.offload_rx.recv().await)
+        let mut buf = [0u8; MRU];
+        let n = self.device.recv(&mut buf).await?;
+        Ok((n > 0).then(|| buf[..n].to_vec()))
     }
 
     async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
-        self.offload_tx.send(guest.to_vec()).await.map_err(|_| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "tun socket closed")
-        })
+        self.device.send(guest).await.map(|_| ())
     }
 }
 
@@ -84,13 +49,11 @@ pub async fn run<T>(
     phase: watch::Sender<Phase>,
 ) -> io::Result<()>
 where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin,
 {
-    super::splice(
-        super::ppp::Socket::connect(transport, phase),
-        Socket::open(local, peer, name)?,
-    )
-    .await
+    Bridge::new(transport, Socket::open(local, peer, name)?, phase)
+        .run()
+        .await
 }
 
 #[cfg(test)]
