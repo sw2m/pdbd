@@ -3,7 +3,9 @@ use ppproto::pppos::{PPPoS, PPPoSAction};
 use ppproto::Config;
 use std::io;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf,
+};
 use tokio::sync::watch;
 
 pub(crate) const MRU: usize = 1500; // RFC 1661 default; ppproto negotiates no MRU (#40)
@@ -104,9 +106,28 @@ impl Cadence {
     }
 }
 
+struct Peer<T> {
+    reader: ReadHalf<T>,
+    writer: WriteHalf<T>,
+    queue: Vec<u8>,
+}
+
+impl<T: AsyncRead + AsyncWrite> Peer<T> {
+    const CAP: usize = 16 * FRAME; // ~16 full frames buffered before the offload is backpressured
+
+    fn new(transport: T) -> Self {
+        let (reader, writer) = tokio::io::split(transport);
+        Self {
+            reader,
+            writer,
+            queue: Vec::new(),
+        }
+    }
+}
+
 pub struct Bridge<T, O> {
     core: Core,
-    peer: T,
+    peer: Peer<T>,
     offload: O,
     wire: Vec<u8>,
     phase: watch::Sender<Phase>,
@@ -121,7 +142,7 @@ where
     pub fn new(peer: T, offload: O, phase: watch::Sender<Phase>) -> Self {
         Self {
             core: Core::new(),
-            peer,
+            peer: Peer::new(peer),
             offload,
             wire: Vec::new(),
             phase,
@@ -135,7 +156,7 @@ where
         self.pump().await?;
         loop {
             tokio::select! {
-                r = self.peer.read(&mut rbuf) => {
+                r = self.peer.reader.read(&mut rbuf) => {
                     let n = r?;
                     if n == 0 {
                         return Ok(());
@@ -143,9 +164,19 @@ where
                     self.wire.extend_from_slice(&rbuf[..n]);
                     self.pump().await?;
                 }
-                r = self.offload.receive() => match r? {
-                    Some(guest) => self.frame(&guest).await?,
-                    None => return Ok(()),
+                r = self.peer.writer.write(&self.peer.queue), if !self.peer.queue.is_empty() => {
+                    let n = r?;
+                    if n == 0 {
+                        return Err(io::ErrorKind::WriteZero.into());
+                    }
+                    self.peer.queue.drain(..n);
+                }
+                r = self.offload.receive(), if self.peer.queue.len() < Peer::<T>::CAP => match r? {
+                    Some(guest) => self.frame(&guest),
+                    None => {
+                        self.peer.writer.write_all(&self.peer.queue).await?;
+                        return Ok(());
+                    }
                 },
                 _ = self.cadence.wait() => {
                     self.pump().await?;
@@ -154,17 +185,14 @@ where
         }
     }
 
-    async fn frame(&mut self, guest: &[u8]) -> io::Result<()> {
+    fn frame(&mut self, guest: &[u8]) {
         // Nothing rides the link before Open; drop (kernel TCP retransmits).
         if self.core.phase() != Phase::Open {
-            return Ok(());
+            return;
         }
         match self.core.send(guest) {
-            Ok(bytes) => self.peer.write_all(&bytes).await,
-            Err(e) => {
-                eprintln!("transport: dropping unsendable guest: {e}");
-                Ok(())
-            }
+            Ok(bytes) => self.peer.queue.extend_from_slice(&bytes),
+            Err(e) => eprintln!("transport: dropping unsendable guest: {e}"),
         }
     }
 
@@ -174,7 +202,9 @@ where
         loop {
             loop {
                 match self.core.poll() {
-                    Action::Tx(bytes) => self.peer.write_all(&bytes).await?,
+                    Action::Tx(bytes) => {
+                        self.peer.queue.extend_from_slice(&bytes)
+                    }
                     Action::Ip(guest) => self.offload.send(&guest).await?,
                     Action::Idle => break,
                 }

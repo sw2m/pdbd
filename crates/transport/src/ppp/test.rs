@@ -1,7 +1,9 @@
 use super::*;
 use crate::Phase;
 use std::io;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream,
+};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
@@ -208,4 +210,61 @@ async fn phase_watch_quiesces_when_stable() {
         fired.is_err(),
         "phase watch kept firing while the phase was stable"
     );
+}
+
+async fn step(peer: &mut Core, io: &mut DuplexStream, wire: &mut Vec<u8>) {
+    loop {
+        match peer.poll() {
+            Action::Tx(bytes) => io.write_all(&bytes).await.unwrap(),
+            Action::Ip(_) => {}
+            Action::Idle => break,
+        }
+    }
+    let mut buf = [0u8; 2048];
+    if let Ok(Ok(n)) =
+        timeout(Duration::from_millis(5), io.read(&mut buf)).await
+    {
+        wire.extend_from_slice(&buf[..n]);
+    }
+    if !wire.is_empty() {
+        let n = peer.consume(wire.as_slice());
+        wire.drain(..n);
+    }
+}
+
+// #12
+#[tokio::test]
+async fn inbound_flows_while_outbound_is_blocked() {
+    let (a_io, mut p_io) = tokio::io::duplex(256);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (mut a, _task) = spawn(a_io, ph_tx);
+
+    let mut peer = Core::new();
+    peer.open();
+    let mut wire = Vec::new();
+    timeout(Duration::from_secs(5), async {
+        while *ph.borrow() != Phase::Open || peer.phase() != Phase::Open {
+            step(&mut peer, &mut p_io, &mut wire).await;
+        }
+    })
+    .await
+    .expect("links did not reach Open");
+
+    let flood = a.0.clone();
+    tokio::spawn(async move {
+        for _ in 0..64 {
+            if flood.send(vec![0x45u8; 1000]).await.is_err() {
+                break;
+            }
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let guest = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8];
+    p_io.write_all(&peer.send(&guest).unwrap()).await.unwrap();
+    let got = timeout(Duration::from_secs(2), a.receive())
+        .await
+        .expect("inbound stalled behind the blocked outbound write")
+        .unwrap();
+    assert_eq!(got, Some(guest));
 }
