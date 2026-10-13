@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
 fn tick(l: &mut Core, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
-    if let Action::Tx(bytes) = l.poll() {
+    if let Action::Transmit(bytes) = l.poll() {
         outbox.extend_from_slice(&bytes);
     }
     if !inbox.is_empty() {
@@ -215,8 +215,8 @@ async fn phase_watch_quiesces_when_stable() {
 async fn step(peer: &mut Core, io: &mut DuplexStream, wire: &mut Vec<u8>) {
     loop {
         match peer.poll() {
-            Action::Tx(bytes) => io.write_all(&bytes).await.unwrap(),
-            Action::Ip(_) => {}
+            Action::Transmit(bytes) => io.write_all(&bytes).await.unwrap(),
+            Action::Offload(_) => {}
             Action::Idle => break,
         }
     }

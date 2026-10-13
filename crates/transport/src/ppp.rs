@@ -14,8 +14,8 @@ pub(crate) const FRAME: usize = 2 * (MRU + 8) + 8; // HDLC stuffing can nearly d
 #[derive(Debug)]
 pub(crate) enum Action {
     Idle,
-    Tx(Vec<u8>),
-    Ip(Vec<u8>),
+    Transmit(Vec<u8>),
+    Offload(Vec<u8>),
 }
 
 pub(crate) struct Core {
@@ -52,8 +52,10 @@ impl Core {
     pub(crate) fn poll(&mut self) -> Action {
         match self.ppp.poll(&mut self.tx, &mut self.rx) {
             PPPoSAction::None => Action::Idle,
-            PPPoSAction::Transmit(n) => Action::Tx(self.tx[..n].to_vec()),
-            PPPoSAction::Received(range) => Action::Ip(self.rx[range].to_vec()),
+            PPPoSAction::Transmit(n) => Action::Transmit(self.tx[..n].to_vec()),
+            PPPoSAction::Received(range) => {
+                Action::Offload(self.rx[range].to_vec())
+            }
         }
     }
 
@@ -202,10 +204,10 @@ where
         loop {
             loop {
                 match self.core.poll() {
-                    Action::Tx(bytes) => {
+                    Action::Transmit(bytes) => {
                         self.peer.queue.extend_from_slice(&bytes)
                     }
-                    Action::Ip(guest) => self.offload.send(&guest).await?,
+                    Action::Offload(guest) => self.offload.send(&guest).await?,
                     Action::Idle => break,
                 }
             }
