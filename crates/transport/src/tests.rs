@@ -86,12 +86,12 @@ struct ChanSocket {
 }
 
 impl Socket for ChanSocket {
-    async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
+    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
         Ok(self.rx.recv().await)
     }
-    async fn send(&mut self, pkt: &[u8]) -> io::Result<()> {
+    async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
         self.tx
-            .send(pkt.to_vec())
+            .send(guest.to_vec())
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
     }
@@ -156,7 +156,7 @@ async fn pump_brings_link_up_and_passes_ip() {
 
     let pkt = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8];
     a.send(&pkt).await.unwrap();
-    let got = timeout(Duration::from_secs(2), b.recv())
+    let got = timeout(Duration::from_secs(2), b.receive())
         .await
         .expect("no packet delivered")
         .expect("ppp socket errored");
@@ -187,7 +187,7 @@ async fn packets_before_open_are_dropped() {
     a.send(&real).await.unwrap();
 
     // The first (and only) packet delivered is the post-Open one.
-    let got = timeout(Duration::from_secs(2), b.recv())
+    let got = timeout(Duration::from_secs(2), b.receive())
         .await
         .expect("no packet delivered")
         .expect("ppp socket errored");
@@ -202,7 +202,7 @@ async fn ppp_socket_closes_on_dead_transport() {
     let (ph_tx, _ph) = watch::channel(Phase::Dead);
     let mut a = ppp::Socket::connect(a_io, ph_tx);
 
-    let r = timeout(Duration::from_secs(2), a.recv()).await;
+    let r = timeout(Duration::from_secs(2), a.receive()).await;
     assert!(
         matches!(r, Ok(Ok(None))),
         "ppp::Socket did not close on a dead transport: {r:?}"

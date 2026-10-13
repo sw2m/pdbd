@@ -13,7 +13,7 @@ build:update:
 # Datapath test — #12-A
 test:
   jobs:
-    - { name: unit,     run: cargo test -p transport --locked }
+    - { name: unit, run: cargo test -p transport --locked }
     - { name: datapath, run: lefthook run test:datapath, tags: [privileged] }
 
 test:datapath:

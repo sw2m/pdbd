@@ -6,21 +6,27 @@
 //! ppproto's IPCP accepts a peer address but never assigns one, so the TUN is
 //! addressed statically from config rather than from IPCP.
 //!
-//! Everything is a socket: `ppp::Socket` and `tun::Socket` both read/write IP
-//! packets, and `splice` copies packets between any two.
+//! Everything is a socket. `splice` copies *guests* (the IP payloads) between a
+//! `peer` — another transport endpoint, via `ppp::Socket` — and an *offload*,
+//! whoever takes responsibility for the guests (here `tun::Socket` → the
+//! kernel). The core crate never handles L3 itself; it always offloads. The
+//! *bridge* is the node in between: the two sockets and the `splice` joining
+//! them. Inside a socket, the end facing outward is named for its party (`peer`
+//! or `offload`); the end facing inward is named `bridge`.
 
 use std::io;
 
 pub use ppproto::Phase;
 
-/// A packet socket: read and write whole IP packets. Both ends of the datapath
-/// are sockets; `splice` is the only thing that joins them.
+/// A packet socket: send and receive *guests* (whole IP packets). Named from the
+/// socket's own side — `peer.send(g)` sends a guest to the peer, `offload.receive()`
+/// takes a guest from the offload. `splice` is the only thing that joins two.
 #[allow(async_fn_in_trait)] // internal trait, used via generics — no `dyn`, no Send bound needed
 pub trait Socket {
-    /// The next inbound packet, or `None` once the socket has closed.
-    async fn recv(&mut self) -> io::Result<Option<Vec<u8>>>;
-    /// Send an outbound packet.
-    async fn send(&mut self, pkt: &[u8]) -> io::Result<()>;
+    /// The next guest, or `None` once the socket has closed.
+    async fn receive(&mut self) -> io::Result<Option<Vec<u8>>>;
+    /// Hand a guest to this socket.
+    async fn send(&mut self, guest: &[u8]) -> io::Result<()>;
 }
 
 /// PPP MRU we size buffers and the TUN for; fixed at the RFC 1661 default —
@@ -39,21 +45,21 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// The datapath: copy IP packets both ways between two sockets until either end
-/// closes. All the protocol/device machinery lives inside the sockets.
-pub async fn splice<A, B>(mut a: A, mut b: B) -> io::Result<()>
+/// The datapath: carry guests both ways between a `peer` and an `offload` until
+/// either end closes. All protocol/device machinery lives inside the sockets.
+pub async fn splice<P, O>(mut peer: P, mut offload: O) -> io::Result<()>
 where
-    A: Socket,
-    B: Socket,
+    P: Socket,
+    O: Socket,
 {
     loop {
         tokio::select! {
-            r = a.recv() => match r? {
-                Some(pkt) => b.send(&pkt).await?,
+            r = peer.receive() => match r? {
+                Some(guest) => offload.send(&guest).await?,
                 None => return Ok(()),
             },
-            r = b.recv() => match r? {
-                Some(pkt) => a.send(&pkt).await?,
+            r = offload.receive() => match r? {
+                Some(guest) => peer.send(&guest).await?,
                 None => return Ok(()),
             },
         }
@@ -66,7 +72,9 @@ pub mod ppp {
     use ppproto::Config;
     use std::io;
     use std::time::Duration;
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use tokio::io::{
+        AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf,
+    };
     use tokio::sync::{mpsc, watch};
 
     #[derive(Debug)]
@@ -77,7 +85,7 @@ pub mod ppp {
     }
 
     /// The sync codec+pump: `ppproto` (the encapsulator) plus the pump's
-    /// inlet/outlet buffers. `Socket`'s driver turns it over a byte transport.
+    /// inlet/outlet buffers. The `Driver` turns it over a byte transport.
     pub(crate) struct Core {
         ppp: PPPoS<'static>,
         tx: Vec<u8>,
@@ -122,13 +130,13 @@ pub mod ppp {
             }
         }
 
-        /// Frame an IP packet for L1. Oversized (beyond the frame buffer) is an
-        /// error, not a panic — the caller drops it and the link survives.
-        pub(crate) fn send(&mut self, pkt: &[u8]) -> io::Result<Vec<u8>> {
-            let n = self.ppp.send(pkt, &mut self.tx).map_err(|_| {
+        /// Frame a guest for L1. Oversized (beyond the frame buffer) is an error,
+        /// not a panic — the caller drops it and the link survives.
+        pub(crate) fn send(&mut self, guest: &[u8]) -> io::Result<Vec<u8>> {
+            let n = self.ppp.send(guest, &mut self.tx).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "IP packet exceeds PPP frame buffer",
+                    "guest exceeds PPP frame buffer",
                 )
             })?;
             Ok(self.tx[..n].to_vec())
@@ -174,148 +182,152 @@ pub mod ppp {
         }
     }
 
-    /// A PPP packet socket over a byte transport. Its driver task runs the pump
-    /// (negotiation, framing, phase) so `recv`/`send` are just packet queues.
+    /// Turns a `Core` over a byte transport: the state machine that negotiates to
+    /// `Open`, hands the peer's guests to the bridge, and frames the bridge's
+    /// guests back to the peer.
+    struct Driver<T> {
+        core: Core,
+        rd: ReadHalf<T>,
+        wr: WriteHalf<T>,
+        wire: Vec<u8>,
+        bridge_tx: mpsc::Sender<Vec<u8>>,
+        bridge_rx: mpsc::Receiver<Vec<u8>>,
+        phase: watch::Sender<Phase>,
+        cadence: Cadence,
+    }
+
+    impl<T: AsyncRead + AsyncWrite + Unpin> Driver<T> {
+        fn new(
+            transport: T,
+            bridge_tx: mpsc::Sender<Vec<u8>>,
+            bridge_rx: mpsc::Receiver<Vec<u8>>,
+            phase: watch::Sender<Phase>,
+        ) -> Self {
+            let (rd, wr) = tokio::io::split(transport);
+            Self {
+                core: Core::new(),
+                rd,
+                wr,
+                wire: Vec::new(),
+                bridge_tx,
+                bridge_rx,
+                phase,
+                cadence: Cadence::new(),
+            }
+        }
+
+        async fn run(mut self) -> io::Result<()> {
+            let mut rbuf = [0u8; 2048];
+            self.core.open();
+            self.pump().await?;
+            loop {
+                tokio::select! {
+                    r = self.rd.read(&mut rbuf) => {
+                        let n = r?;
+                        if n == 0 {
+                            return Ok(()); // transport closed
+                        }
+                        self.wire.extend_from_slice(&rbuf[..n]);
+                        self.pump().await?;
+                    }
+                    Some(guest) = self.bridge_rx.recv() => {
+                        // Nothing rides the link before Open; drop (kernel TCP retransmits).
+                        if self.core.phase() != Phase::Open {
+                            continue;
+                        }
+                        match self.core.send(&guest) {
+                            Ok(bytes) => self.wr.write_all(&bytes).await?,
+                            Err(e) => eprintln!("transport: dropping unsendable guest: {e}"),
+                        }
+                    }
+                    _ = self.cadence.wait() => {
+                        self.pump().await?;
+                    }
+                }
+            }
+        }
+
+        // ppproto processes one frame per poll — poll and consume must interleave,
+        // not drain-all-then-feed-all.
+        async fn pump(&mut self) -> io::Result<()> {
+            loop {
+                loop {
+                    match self.core.poll() {
+                        Action::Tx(bytes) => self.wr.write_all(&bytes).await?,
+                        Action::Ip(guest) => {
+                            let _ = self.bridge_tx.send(guest).await;
+                        }
+                        Action::Idle => break,
+                    }
+                }
+                let now = self.core.phase();
+                self.phase.send_if_modified(|cur| {
+                    if *cur != now {
+                        *cur = now;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                self.cadence.adjust(now);
+                if self.wire.is_empty() {
+                    break;
+                }
+                let c = self.core.consume(self.wire.as_slice());
+                if c == 0 {
+                    break; // a frame is pending; the next poll drains it, next pump() retries
+                }
+                self.wire.drain(..c);
+            }
+            Ok(())
+        }
+    }
+
+    /// A PPP packet socket over a byte transport — your handle to the `peer`. A
+    /// `Driver` task runs the protocol so `send`/`receive` are just guest queues.
     pub struct Socket {
-        inbound: mpsc::Receiver<Vec<u8>>,
-        outbound: mpsc::Sender<Vec<u8>>,
+        peer_rx: mpsc::Receiver<Vec<u8>>,
+        peer_tx: mpsc::Sender<Vec<u8>>,
         _driver: AbortOnDrop,
     }
 
     impl Socket {
-        /// Bring up a PPP socket over `transport`, publishing negotiation phase
-        /// to `phase`. The pump runs on an internal task that aborts on drop.
+        /// Bring up a PPP socket over `transport`, publishing negotiation phase to
+        /// `phase`. The driver runs on an internal task that aborts on drop.
         pub fn connect<T>(transport: T, phase: watch::Sender<Phase>) -> Self
         where
             T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         {
-            let (in_tx, in_rx) = mpsc::channel(64);
-            let (out_tx, out_rx) = mpsc::channel(64);
+            let (bridge_tx, peer_rx) = mpsc::channel(64);
+            let (peer_tx, bridge_rx) = mpsc::channel(64);
             let driver = AbortOnDrop(tokio::spawn(async move {
-                let _ = drive(transport, in_tx, out_rx, phase).await;
+                let _ = Driver::new(transport, bridge_tx, bridge_rx, phase)
+                    .run()
+                    .await;
             }));
             Self {
-                inbound: in_rx,
-                outbound: out_tx,
+                peer_rx,
+                peer_tx,
                 _driver: driver,
             }
         }
     }
 
     impl crate::Socket for Socket {
-        async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-            Ok(self.inbound.recv().await)
+        async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+            Ok(self.peer_rx.recv().await)
         }
 
-        async fn send(&mut self, pkt: &[u8]) -> io::Result<()> {
-            self.outbound.send(pkt.to_vec()).await.map_err(|_| {
+        async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
+            self.peer_tx.send(guest.to_vec()).await.map_err(|_| {
                 io::Error::new(io::ErrorKind::BrokenPipe, "ppp socket closed")
             })
         }
     }
-
-    /// The pump task: drive `Core` to `Open` over `transport`, delivering decoded
-    /// IP packets to `inbound` and framing packets pulled from `outbound`.
-    async fn drive<T>(
-        transport: T,
-        inbound: mpsc::Sender<Vec<u8>>,
-        mut outbound: mpsc::Receiver<Vec<u8>>,
-        phase: watch::Sender<Phase>,
-    ) -> io::Result<()>
-    where
-        T: AsyncRead + AsyncWrite + Unpin,
-    {
-        let mut core = Core::new();
-        let (mut rd, mut wr) = tokio::io::split(transport);
-        let mut rbuf = [0u8; 2048];
-        let mut inbox: Vec<u8> = Vec::new();
-        let mut cadence = Cadence::new();
-
-        core.open();
-        pump(
-            &mut core,
-            &mut inbox,
-            &mut wr,
-            &inbound,
-            &phase,
-            &mut cadence,
-        )
-        .await?;
-        loop {
-            tokio::select! {
-                r = rd.read(&mut rbuf) => {
-                    let n = r?;
-                    if n == 0 {
-                        return Ok(()); // transport closed
-                    }
-                    inbox.extend_from_slice(&rbuf[..n]);
-                    pump(&mut core, &mut inbox, &mut wr, &inbound, &phase, &mut cadence).await?;
-                }
-                Some(pkt) = outbound.recv() => {
-                    // Nothing rides the link before Open; drop (kernel TCP retransmits).
-                    if core.phase() != Phase::Open {
-                        continue;
-                    }
-                    match core.send(&pkt) {
-                        Ok(bytes) => wr.write_all(&bytes).await?,
-                        Err(e) => eprintln!("transport: dropping unsendable packet: {e}"),
-                    }
-                }
-                _ = cadence.wait() => {
-                    pump(&mut core, &mut inbox, &mut wr, &inbound, &phase, &mut cadence).await?;
-                }
-            }
-        }
-    }
-
-    // ppproto processes one frame per poll — poll and consume must interleave,
-    // not drain-all-then-feed-all.
-    async fn pump<W>(
-        core: &mut Core,
-        inbox: &mut Vec<u8>,
-        wr: &mut W,
-        inbound: &mpsc::Sender<Vec<u8>>,
-        phase: &watch::Sender<Phase>,
-        cadence: &mut Cadence,
-    ) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        loop {
-            loop {
-                match core.poll() {
-                    Action::Tx(bytes) => wr.write_all(&bytes).await?,
-                    Action::Ip(pkt) => {
-                        let _ = inbound.send(pkt).await;
-                    }
-                    Action::Idle => break,
-                }
-            }
-            let now = core.phase();
-            phase.send_if_modified(|cur| {
-                if *cur != now {
-                    *cur = now;
-                    true
-                } else {
-                    false
-                }
-            });
-            cadence.adjust(now);
-            if inbox.is_empty() {
-                break;
-            }
-            let c = core.consume(inbox.as_slice());
-            if c == 0 {
-                break; // a frame is pending; the next poll drains it, next pump() retries
-            }
-            inbox.drain(..c);
-        }
-        Ok(())
-    }
 }
 
 pub mod tun {
-    use super::{ppp, splice, AbortOnDrop, Phase, FRAME, MRU};
+    use super::{AbortOnDrop, Phase, FRAME, MRU};
     use std::io;
     use std::net::Ipv4Addr;
     use std::sync::Arc;
@@ -323,12 +335,12 @@ pub mod tun {
     use tokio::sync::{mpsc, watch};
     use tun_rs::DeviceBuilder;
 
-    /// A point-to-point kernel TUN as a packet socket: `recv` reads off the
-    /// device, `send` writes to it. The device-I/O tasks abort on drop.
-    /// Privileged (CAP_NET_ADMIN).
+    /// A point-to-point kernel TUN as a packet socket — one `offload` for guests.
+    /// `receive` reads off the device, `send` writes to it; the device-I/O tasks
+    /// abort on drop. Privileged (CAP_NET_ADMIN).
     pub struct Socket {
-        from_tun: mpsc::Receiver<Vec<u8>>,
-        to_tun: mpsc::Sender<Vec<u8>>,
+        offload_rx: mpsc::Receiver<Vec<u8>>,
+        offload_tx: mpsc::Sender<Vec<u8>>,
         _rx: AbortOnDrop,
         _tx: AbortOnDrop,
     }
@@ -348,8 +360,8 @@ pub mod tun {
             let dev = Arc::new(builder.build_async()?);
 
             // recv/send take &self, so the two directions share the device.
-            let (to_tun_tx, mut to_tun_rx) = mpsc::channel::<Vec<u8>>(64);
-            let (from_tun_tx, from_tun_rx) = mpsc::channel::<Vec<u8>>(64);
+            let (bridge_tx, offload_rx) = mpsc::channel::<Vec<u8>>(64);
+            let (offload_tx, mut bridge_rx) = mpsc::channel::<Vec<u8>>(64);
 
             let dev_rx = dev.clone();
             let rx = AbortOnDrop(tokio::spawn(async move {
@@ -358,10 +370,7 @@ pub mod tun {
                     match dev_rx.recv(&mut buf).await {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            if from_tun_tx
-                                .send(buf[..n].to_vec())
-                                .await
-                                .is_err()
+                            if bridge_tx.send(buf[..n].to_vec()).await.is_err()
                             {
                                 break;
                             }
@@ -371,16 +380,16 @@ pub mod tun {
             }));
             let dev_tx = dev.clone();
             let tx = AbortOnDrop(tokio::spawn(async move {
-                while let Some(pkt) = to_tun_rx.recv().await {
-                    if dev_tx.send(&pkt).await.is_err() {
+                while let Some(guest) = bridge_rx.recv().await {
+                    if dev_tx.send(&guest).await.is_err() {
                         break;
                     }
                 }
             }));
 
             Ok(Self {
-                from_tun: from_tun_rx,
-                to_tun: to_tun_tx,
+                offload_rx,
+                offload_tx,
                 _rx: rx,
                 _tx: tx,
             })
@@ -388,18 +397,18 @@ pub mod tun {
     }
 
     impl crate::Socket for Socket {
-        async fn recv(&mut self) -> io::Result<Option<Vec<u8>>> {
-            Ok(self.from_tun.recv().await)
+        async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+            Ok(self.offload_rx.recv().await)
         }
 
-        async fn send(&mut self, pkt: &[u8]) -> io::Result<()> {
-            self.to_tun.send(pkt.to_vec()).await.map_err(|_| {
+        async fn send(&mut self, guest: &[u8]) -> io::Result<()> {
+            self.offload_tx.send(guest.to_vec()).await.map_err(|_| {
                 io::Error::new(io::ErrorKind::BrokenPipe, "tun socket closed")
             })
         }
     }
 
-    /// Convenience: splice a PPP socket (over `transport`) to a fresh kernel TUN.
+    /// Convenience: splice a `peer` (PPP over `transport`) to a fresh kernel TUN.
     pub async fn run<T>(
         transport: T,
         local: Ipv4Addr,
@@ -410,9 +419,11 @@ pub mod tun {
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let tun = Socket::open(local, peer, name)?;
-        let ppp = ppp::Socket::connect(transport, phase);
-        splice(ppp, tun).await
+        super::splice(
+            super::ppp::Socket::connect(transport, phase),
+            Socket::open(local, peer, name)?,
+        )
+        .await
     }
 }
 
