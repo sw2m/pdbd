@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use clap::Parser;
 use tokio::sync::watch;
 use tokio_serial::SerialPortBuilderExt;
-use transport::{tun, Phase};
+use transport::{offload, Phase};
 
 #[derive(Parser)]
 struct Args {
@@ -31,7 +31,7 @@ async fn main() {
         }
     });
 
-    tun::run(
+    offload::tun::run(
         transport,
         args.local,
         args.peer,
@@ -39,5 +39,5 @@ async fn main() {
         ph_tx,
     )
     .await
-    .expect("tun::run");
+    .expect("offload::tun::run");
 }

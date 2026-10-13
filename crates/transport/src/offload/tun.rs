@@ -1,5 +1,5 @@
-use super::ppp::{Bridge, MRU};
-use super::Phase;
+use crate::ppp::{Bridge, MRU};
+use crate::Phase;
 use std::io;
 use std::net::Ipv4Addr;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -57,4 +57,4 @@ where
 }
 
 #[cfg(test)]
-mod tests;
+mod test;

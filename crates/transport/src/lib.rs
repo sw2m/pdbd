@@ -16,5 +16,5 @@ pub trait Socket {
     async fn send(&mut self, guest: &[u8]) -> io::Result<()>;
 }
 
+pub mod offload;
 pub mod ppp;
-pub mod tun;
