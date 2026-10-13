@@ -1,11 +1,7 @@
-# Local git hooks dispatch into the pinned image (pdbd-ci). Both the worktree and
-# the git common-dir are mounted (--git-common-dir, absolute), so git resolves
-# inside a linked worktree — whose .git is a file pointing into the common-dir —
-# not just the main checkout.
+# The git common-dir is mounted (absolute) beside the worktree, so the in-container
+# lefthook resolves git in a linked worktree, not only the main checkout.
 pre-commit:
   jobs:
-    # Autoformat in the pinned toolchain (write mode); stage_fixed re-stages the
-    # staged files the formatters changed, so the fix lands in this commit.
     - name: autoformat
       run: |
         podman run --rm \
@@ -13,8 +9,6 @@ pre-commit:
           -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
           pdbd-ci sh -c 'cargo fmt && buf format -w . && prettier --write "**/*.{json,yaml,yml,toml}"'
       stage_fixed: true
-    # The check gate still runs and still blocks: lint can't be auto-fixed, and
-    # any formatting the autoformat step could not resolve fails here too.
     - name: quality
       run: |
         podman run --rm \
