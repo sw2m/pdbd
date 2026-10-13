@@ -116,9 +116,38 @@ Common to both ends: a small, long-lived **control-plane core** owns the link an
 
 ---
 
+## The socket model
+
+Beneath the OSI layers, `pdbd` runs on a **two-layer model**:
+
+- **the socket layer** — anything you can read from and write to: a UART, a `vsock`, a TUN, an in-process channel;
+- **the data layer** — whatever moves through it.
+
+**Host and guest.** Stack a protocol on a socket and the model becomes a **pseudo three-layer model**: a **protocol layer** presents a **guest socket** carried on the **host socket** beneath it. It is *pseudo* because nothing new appears — it is the two-layer model applied recursively, the guest socket living in the host socket's data layer. **Everything above a host socket is guest**, whether a generic data payload or structured protocol data. (Host/guest here means socket nesting, not a VM's host and guest.)
+
+**The L3 guest and its three host endpoints.** `pdbd`'s guest is the IP packet. It passes between three host endpoints, each playing a role:
+
+```mermaid
+flowchart LR
+    P["<b>peer</b><br/>remote PPP endpoint"] <-->|"L1 transport — PPP frames"| B["<b>bridge</b><br/>local PPP endpoint"]
+    B <-->|"IP packets"| O["<b>offload</b><br/>TUN → kernel"]
+```
+
+| role | host endpoint | what it does with the guest |
+| --- | --- | --- |
+| **peer** | the remote PPP endpoint | the far end of the link — guests come from it and go to it |
+| **bridge** | the local PPP endpoint | carries guests between the peer and the offload; never handles L3 itself |
+| **offload** | the TUN | takes responsibility for the guest — hands it to the kernel's L3 |
+
+The bridge role is the datapath's middle node; it is unrelated to the L7 `bridge` (`socat`/`forward`) service.
+
+**Naming follows the roles.** In code, a channel end is named for the role on its far side, from its holder's point of view: `<role>_tx.send()` sends *to* that role, and `<role>_rx.recv()` receives *from* it. A socket's outward end is `peer_*` or `offload_*`; the inward end its internals hold is `bridge_*`.
+
+---
+
 ## Topology & lifecycle
 
-Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" (on bare metal there is no host/guest, just two ends of a wire).
+Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" for the two machines (on bare metal there is no VM host/guest, just two ends of a wire; host/guest in this README means socket nesting — see *The socket model*).
 
 ```mermaid
 flowchart LR

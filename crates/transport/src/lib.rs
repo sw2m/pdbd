@@ -1,18 +1,11 @@
-//! See the crate README for the layer model.
+//! See the repo README: *The layer model*, and *The socket model* for the
+//! peer / bridge / offload / guest vocabulary used here.
 //!
 //! #12-A is the clean-link datapath; the retransmit/timer/keepalive layer
 //! ppproto lacks is #12-B (owner/repo#24, upstream embassy-rs/ppproto#5).
 //!
 //! ppproto's IPCP accepts a peer address but never assigns one, so the TUN is
 //! addressed statically from config rather than from IPCP.
-//!
-//! Everything is a socket. `splice` copies *guests* (the IP payloads) between a
-//! `peer` — another transport endpoint, via `ppp::Socket` — and an *offload*,
-//! whoever takes responsibility for the guests (here `tun::Socket` → the
-//! kernel). The core crate never handles L3 itself; it always offloads. The
-//! *bridge* is the node in between: the two sockets and the `splice` joining
-//! them. Inside a socket, the end facing outward is named for its party (`peer`
-//! or `offload`); the end facing inward is named `bridge`.
 
 use std::io;
 
