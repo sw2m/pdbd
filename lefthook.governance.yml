@@ -1,1 +1,4 @@
-governance:root: { jobs: [ { name: stub, run: 'echo "governance: reserved — see #35"' } ] }
+governance:root:
+  jobs:
+    - name: stub
+      run: 'echo "governance: reserved — see #35"'

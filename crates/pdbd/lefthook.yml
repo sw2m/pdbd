@@ -1,3 +1,14 @@
-build:        { jobs: [ { name: cargo, root: "crates/pdbd/", run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p pdbd --locked' } ] }
-build:update: { jobs: [ { name: rebuild, root: "crates/pdbd/", run: 'nix develop "path:$PWD" -c cargo build -p pdbd --locked' } ] }
-test:         { jobs: [ { name: cargo, run: cargo test -p pdbd --locked } ] }
+build:
+  jobs:
+    - name: cargo
+      root: "crates/pdbd/"
+      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p pdbd --locked'
+build:update:
+  jobs:
+    - name: rebuild
+      root: "crates/pdbd/"
+      run: 'nix develop "path:$PWD" -c cargo build -p pdbd --locked'
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p pdbd --locked

@@ -36,15 +36,37 @@
           installPhase = "install -Dm755 $src $out/bin/lefthook";
           meta.mainProgram = "lefthook";
         };
+        prettier = let
+          npm = name: version: sha512: pkgs.fetchurl {
+            url = "https://registry.npmjs.org/${name}/-/${baseNameOf name}-${version}.tgz";
+            hash = "sha512-${sha512}";
+          };
+          pluginModules = pkgs.runCommand "prettier-plugin-toml-modules" { } ''
+            mkdir -p $out/node_modules/@tombi-toml $out/node_modules/@dual-bundle
+            unpack() {
+              local tmp; tmp=$(mktemp -d)
+              tar -xzf "$1" -C "$tmp"
+              mv "$tmp/package" "$2"
+            }
+            unpack ${npm "prettier-plugin-toml" "3.0.2" "1t1FOSGaXNy7xN6ffE7ND71VqsnbUtanGEKAD1hTwFDrGIH1cwZ0KH6lMThDVItjdV/UUJWqD3f1+16AHG3eUQ=="} $out/node_modules/prettier-plugin-toml
+            unpack ${npm "smol-toml" "1.9.1" "j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ=="} $out/node_modules/smol-toml
+            unpack ${npm "@tombi-toml/wasm-lib" "1.8.3" "aUUT/HK8sT0eGJn60S55dvG0ts/lXQr+AshrwFb+45LVUjps9xx6xLJrkC2fupZTLK0tHGTIV3lG9C3YG86PyA=="} $out/node_modules/@tombi-toml/wasm-lib
+            unpack ${npm "@dual-bundle/import-meta-resolve" "4.2.1" "id+7YRUgoUX6CgV0DtuhirQWodeeA7Lf4i2x71JS/vtA5pRb/hIGWlw+G6MeXvsM+MXrz0VAydTGElX1rAfgPg=="} $out/node_modules/@dual-bundle/import-meta-resolve
+          '';
+        in pkgs.runCommand "pdbd-prettier" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+          makeWrapper ${pkgs.prettier}/bin/prettier $out/bin/prettier \
+            --add-flags "--plugin=${pluginModules}/node_modules/prettier-plugin-toml/lib/index.cjs"
+        '';
       in {
         devShells.default = pkgs.mkShell {
           packages = [
             rust
             pkgs.buf
             lefthook
+            prettier
             pkgs.git
             pkgs.pkg-config
-            pkgs.yq-go # structural YAML reader for the lefthook fan-out (lefthook.yml)
+            pkgs.yq-go
           ];
         };
       });

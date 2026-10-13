@@ -1,6 +1,25 @@
+# The git common-dir is mounted (absolute) beside the worktree, so the in-container
+# lefthook resolves git in a linked worktree, not only the main checkout.
 pre-commit:
   jobs:
-    - { name: quality, run: podman run --rm -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run quality }
+    - name: autoformat
+      run: |
+        podman run --rm \
+          -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
+          pdbd-ci sh -c 'cargo fmt && buf format -w . && prettier --write "**/*.{json,yaml,yml,toml}"'
+      stage_fixed: true
+    - name: quality
+      run: |
+        podman run --rm \
+          -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
+          pdbd-ci lefthook run quality
 pre-push:
   jobs:
-    - { name: ci, run: podman run --rm -e LEFTHOOK_EXCLUDE=privileged -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd pdbd-ci lefthook run ci }
+    - name: ci
+      run: |
+        podman run --rm -e LEFTHOOK_EXCLUDE=privileged \
+          -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
+          pdbd-ci lefthook run ci
