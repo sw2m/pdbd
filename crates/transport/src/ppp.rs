@@ -1,4 +1,4 @@
-use super::{AbortOnDrop, Phase, FRAME};
+use super::{AbortOnDrop, Phase};
 use ppproto::pppos::{PPPoS, PPPoSAction};
 use ppproto::Config;
 use std::io;
@@ -8,6 +8,9 @@ use tokio::io::{
 };
 use tokio::sync::{mpsc, watch};
 
+pub(crate) const MRU: usize = 1500; // RFC 1661 default; ppproto negotiates no MRU (#40)
+pub(crate) const FRAME: usize = 2 * (MRU + 8) + 8; // HDLC stuffing can nearly double a frame, plus FCS/flags
+
 #[derive(Debug)]
 pub(crate) enum Action {
     Idle,
@@ -15,8 +18,6 @@ pub(crate) enum Action {
     Ip(Vec<u8>),
 }
 
-/// The sync codec+pump: `ppproto` (the encapsulator) plus the pump's
-/// inlet/outlet buffers. The `Driver` turns it over a byte transport.
 pub(crate) struct Core {
     ppp: PPPoS<'static>,
     tx: Vec<u8>,
@@ -36,7 +37,6 @@ impl Core {
         }
     }
 
-    /// Begin negotiation; the first LCP Configure-Request goes out on the next poll.
     pub(crate) fn open(&mut self) {
         self.ppp
             .open()
@@ -59,8 +59,6 @@ impl Core {
         }
     }
 
-    /// Frame a guest for L1. Oversized (beyond the frame buffer) is an error,
-    /// not a panic — the caller drops it and the link survives.
     pub(crate) fn send(&mut self, guest: &[u8]) -> io::Result<Vec<u8>> {
         let n = self.ppp.send(guest, &mut self.tx).map_err(|_| {
             io::Error::new(
@@ -78,17 +76,14 @@ impl Default for Core {
     }
 }
 
-/// Phase-aware poll cadence. ppproto has no timers (#24), so a tick nudges
-/// negotiation forward; it ticks fast during bring-up, then relaxes once
-/// `Open` so a settled, quiet link isn't polled every 20ms.
 struct Cadence {
     tick: tokio::time::Interval,
     open: bool,
 }
 
 impl Cadence {
-    const FAST: Duration = Duration::from_millis(20);
-    const SLOW: Duration = Duration::from_secs(1);
+    const FAST: Duration = Duration::from_millis(20); // stands in for ppproto's missing retransmit timer during bring-up (#24)
+    const SLOW: Duration = Duration::from_secs(1); // once Open, only keepalive-paced polling is needed
 
     fn new() -> Self {
         Self {
@@ -111,9 +106,6 @@ impl Cadence {
     }
 }
 
-/// Turns a `Core` over a byte transport: the state machine that negotiates to
-/// `Open`, hands the peer's guests to the bridge, and frames the bridge's
-/// guests back to the peer.
 struct Driver<T> {
     core: Core,
     rd: ReadHalf<T>,
@@ -154,7 +146,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Driver<T> {
                 r = self.rd.read(&mut rbuf) => {
                     let n = r?;
                     if n == 0 {
-                        return Ok(()); // transport closed
+                        return Ok(());
                     }
                     self.wire.extend_from_slice(&rbuf[..n]);
                     self.pump().await?;
@@ -212,8 +204,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Driver<T> {
     }
 }
 
-/// A PPP packet socket over a byte transport — your handle to the `peer`. A
-/// `Driver` task runs the protocol so `send`/`receive` are just guest queues.
 pub struct Socket {
     peer_rx: mpsc::Receiver<Vec<u8>>,
     peer_tx: mpsc::Sender<Vec<u8>>,
@@ -221,8 +211,6 @@ pub struct Socket {
 }
 
 impl Socket {
-    /// Bring up a PPP socket over `transport`, publishing negotiation phase to
-    /// `phase`. The driver runs on an internal task that aborts on drop.
     pub fn connect<T>(transport: T, phase: watch::Sender<Phase>) -> Self
     where
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,

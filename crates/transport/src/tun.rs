@@ -1,4 +1,5 @@
-use super::{AbortOnDrop, Phase, FRAME, MRU};
+use super::ppp::MRU;
+use super::{AbortOnDrop, Phase};
 use std::io;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -6,9 +7,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 use tun_rs::DeviceBuilder;
 
-/// A point-to-point kernel TUN as a packet socket — one `offload` for guests.
-/// `receive` reads off the device, `send` writes to it; the device-I/O tasks
-/// abort on drop. Privileged (CAP_NET_ADMIN).
 pub struct Socket {
     offload_rx: mpsc::Receiver<Vec<u8>>,
     offload_tx: mpsc::Sender<Vec<u8>>,
@@ -17,6 +15,7 @@ pub struct Socket {
 }
 
 impl Socket {
+    /// Requires CAP_NET_ADMIN.
     pub fn open(
         local: Ipv4Addr,
         peer: Ipv4Addr,
@@ -30,13 +29,12 @@ impl Socket {
         }
         let dev = Arc::new(builder.build_async()?);
 
-        // recv/send take &self, so the two directions share the device.
         let (bridge_tx, offload_rx) = mpsc::channel::<Vec<u8>>(64);
         let (offload_tx, mut bridge_rx) = mpsc::channel::<Vec<u8>>(64);
 
         let dev_rx = dev.clone();
         let rx = AbortOnDrop(tokio::spawn(async move {
-            let mut buf = [0u8; FRAME];
+            let mut buf = [0u8; MRU];
             loop {
                 match dev_rx.recv(&mut buf).await {
                     Ok(0) | Err(_) => break,
@@ -78,7 +76,6 @@ impl crate::Socket for Socket {
     }
 }
 
-/// Convenience: splice a `peer` (PPP over `transport`) to a fresh kernel TUN.
 pub async fn run<T>(
     transport: T,
     local: Ipv4Addr,

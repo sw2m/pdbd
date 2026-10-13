@@ -1,5 +1,3 @@
-//! Manual harness: bring up the pdbd link over a serial device + TUN.
-
 use std::net::Ipv4Addr;
 
 use clap::Parser;

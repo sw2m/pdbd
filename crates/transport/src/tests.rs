@@ -2,9 +2,6 @@ use super::*;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout, Duration};
 
-// --- ppp::Core — the sync codec ---
-
-// One poll + one consume, interleaved — ppproto processes one frame per poll.
 fn tick(l: &mut ppp::Core, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
     if let ppp::Action::Tx(bytes) = l.poll() {
         outbox.extend_from_slice(&bytes);
@@ -17,7 +14,7 @@ fn tick(l: &mut ppp::Core, inbox: &mut Vec<u8>, outbox: &mut Vec<u8>) {
     }
 }
 
-// #12 — two cores back-to-back over an in-memory byte pipe reach PPP Open.
+// #12
 #[test]
 fn two_links_negotiate_to_open() {
     let mut a = ppp::Core::new();
@@ -41,23 +38,23 @@ fn two_links_negotiate_to_open() {
     );
 }
 
-// C1 — an over-FRAME packet must err, not panic (HDLC escaping can double it).
+// #12
 #[test]
 fn send_oversized_errs_not_panics() {
     let mut l = ppp::Core::new();
-    let big = vec![0x7eu8; FRAME];
+    let big = vec![0x7eu8; ppp::FRAME];
     assert!(l.send(&big).is_err());
 }
 
-// C1 — a full-MRU packet frames cleanly (the buffer is sized for it).
+// #12
 #[test]
 fn send_full_mru_ok() {
     let mut l = ppp::Core::new();
-    let pkt = vec![0x41u8; MRU];
+    let pkt = vec![0x41u8; ppp::MRU];
     assert!(l.send(&pkt).is_ok());
 }
 
-// Garbage on the wire must not panic or spuriously open (bad frames fail FCS).
+// #12
 #[test]
 fn garbage_bytes_do_not_panic_or_open() {
     let mut l = ppp::Core::new();
@@ -77,9 +74,6 @@ fn garbage_bytes_do_not_panic_or_open() {
     assert_ne!(l.phase(), Phase::Open, "garbage must not bring the link up");
 }
 
-// --- splice — the generic connector ---
-
-// A socket backed by a plain channel pair, for testing `splice` on its own.
 struct ChanSocket {
     rx: mpsc::Receiver<Vec<u8>>,
     tx: mpsc::Sender<Vec<u8>>,
@@ -97,7 +91,7 @@ impl Socket for ChanSocket {
     }
 }
 
-// splice copies packets both directions between the two sockets.
+// #12
 #[tokio::test]
 async fn splice_copies_both_ways() {
     let (l_in_tx, l_in_rx) = mpsc::channel::<Vec<u8>>(8);
@@ -127,9 +121,6 @@ async fn splice_copies_both_ways() {
     assert_eq!(got, Some(vec![4, 5, 6]));
 }
 
-// --- ppp::Socket — the async socket, driven directly ---
-
-// Wait for a watched phase to reach Open (or time out).
 async fn await_open(ph: &mut watch::Receiver<Phase>) {
     while *ph.borrow_and_update() != Phase::Open {
         ph.changed()
@@ -138,7 +129,7 @@ async fn await_open(ph: &mut watch::Receiver<Phase>) {
     }
 }
 
-// #12 — two sockets bring their links up and pass an IP packet across.
+// #12
 #[tokio::test]
 async fn pump_brings_link_up_and_passes_ip() {
     let (a_io, b_io) = tokio::io::duplex(4096);
@@ -163,7 +154,7 @@ async fn pump_brings_link_up_and_passes_ip() {
     assert_eq!(got, Some(pkt));
 }
 
-// C2 — packets before Open are dropped; only a post-Open packet crosses.
+// #12
 #[tokio::test]
 async fn packets_before_open_are_dropped() {
     let (a_io, b_io) = tokio::io::duplex(4096);
@@ -172,7 +163,6 @@ async fn packets_before_open_are_dropped() {
     let mut a = ppp::Socket::connect(a_io, a_ph_tx);
     let mut b = ppp::Socket::connect(b_io, b_ph_tx);
 
-    // Injected before either link is up — must be dropped by the Open gate.
     let early = vec![0x45u8, 0, 0, 20, 9, 9, 9, 9, 0, 0, 0, 0];
     a.send(&early).await.unwrap();
 
@@ -186,7 +176,6 @@ async fn packets_before_open_are_dropped() {
     let real = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8];
     a.send(&real).await.unwrap();
 
-    // The first (and only) packet delivered is the post-Open one.
     let got = timeout(Duration::from_secs(2), b.receive())
         .await
         .expect("no packet delivered")
@@ -194,11 +183,11 @@ async fn packets_before_open_are_dropped() {
     assert_eq!(got, Some(real));
 }
 
-// H1 — a dead transport ends the socket's driver: recv() then closes (None).
+// #12
 #[tokio::test]
 async fn ppp_socket_closes_on_dead_transport() {
     let (a_io, b_io) = tokio::io::duplex(64);
-    drop(b_io); // closing one half → driver reads EOF / writes break
+    drop(b_io);
     let (ph_tx, _ph) = watch::channel(Phase::Dead);
     let mut a = ppp::Socket::connect(a_io, ph_tx);
 
@@ -209,18 +198,16 @@ async fn ppp_socket_closes_on_dead_transport() {
     );
 }
 
-// H2 — the phase watch fires on change, not every tick, then quiesces.
+// #12
 #[tokio::test]
 async fn phase_watch_quiesces_when_stable() {
     let (a_io, _b_io) = tokio::io::duplex(4096); // _b_io kept open → no EOF
     let (ph_tx, mut ph) = watch::channel(Phase::Dead);
     let _a = ppp::Socket::connect(a_io, ph_tx); // keep the socket (driver) alive
 
-    // Let the initial Dead→Establish transition settle, then mark it seen.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let _ = ph.borrow_and_update();
 
-    // Stable phase → no notification (send_if_modified, not send_replace per tick).
     let fired = timeout(Duration::from_millis(300), ph.changed()).await;
     assert!(
         fired.is_err(),
@@ -228,9 +215,7 @@ async fn phase_watch_quiesces_when_stable() {
     );
 }
 
-// --- tun::Socket (privileged) ---
-
-// H1 against a real kernel TUN — device create + driver teardown on EOF.
+// #12
 #[tokio::test]
 #[ignore = "privileged: creates a kernel TUN; run via the transport CI job"]
 async fn tun_run_creates_device_and_tears_down() {
@@ -241,7 +226,7 @@ async fn tun_run_creates_device_and_tears_down() {
     let h = tokio::spawn(tun::run(a_io, local, peer, Some("pdbdtest0"), ph_tx));
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    drop(b_io); // dead transport → driver returns → sockets drop → tasks aborted
+    drop(b_io);
     let r = timeout(Duration::from_secs(2), h).await;
     assert!(
         matches!(r, Ok(Ok(_))),
