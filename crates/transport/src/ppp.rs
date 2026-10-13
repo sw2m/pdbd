@@ -241,3 +241,6 @@ impl crate::Socket for Socket {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
