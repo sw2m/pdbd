@@ -36,8 +36,6 @@
           installPhase = "install -Dm755 $src $out/bin/lefthook";
           meta.mainProgram = "lefthook";
         };
-        # prettier-plugin-toml isn't in nixpkgs → plugin + runtime deps as pinned npm
-        # tarballs beside nixpkgs prettier; wrapper injects --plugin, keeps config discovery.
         prettier = let
           npm = name: version: sha512: pkgs.fetchurl {
             url = "https://registry.npmjs.org/${name}/-/${baseNameOf name}-${version}.tgz";
