@@ -63,10 +63,10 @@
             rust
             pkgs.buf
             lefthook
-            prettier # prettier + prettier-plugin-toml for the format:root CI check
+            prettier
             pkgs.git
             pkgs.pkg-config
-            pkgs.yq-go # structural YAML reader for the lefthook fan-out (lefthook.yml)
+            pkgs.yq-go
           ];
         };
       });
