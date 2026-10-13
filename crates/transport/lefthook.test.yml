@@ -2,6 +2,11 @@ test:datapath:
   piped: true
   jobs:
     - { name: preflight, run: lefthook run test:privileged }
+    - name: unit
+      run: |
+        set -eu
+        runner=env; [ "$(id -u)" != 0 ] && runner="sudo -n"
+        cargo test -p transport --locked --lib --config "target.'cfg(all())'.runner='$runner'" -- --ignored
     - name: fixtures
       root: "crates/transport/"
       run: |
@@ -17,7 +22,7 @@ test:datapath:
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
         cargo build -q -p transport --example linkup
-        bin=$(find "$(git rev-parse --show-toplevel)/target" -type f -name linkup -path '*debug/examples*' | head -1)
+        bin=$(find "$(cargo metadata --no-deps --format-version 1 | yq -p json .target_directory)" -type f -name linkup -path '*debug/examples*' | head -1)
         [ -n "$bin" ]
         $sudo install -d -m0755 /run/pdbd
         printf 'LINKUP=%s\n' "$bin" | $sudo tee /run/pdbd/linkup.env >/dev/null
@@ -43,7 +48,7 @@ test:attempt:
         $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service"
         $sudo nsenter --net="$ns" ip link set lo up
         . /run/pdbd/linkup.env
-        $sudo nsenter --net="$ns" "$LINKUP" "/run/pdbd/${SLOT}/a" "10.0.${SLOT}.1" "10.0.${SLOT}.2" pdbd0 >/dev/null 2>&1 &
+        $sudo sh -c 'exec nsenter --net="$1" "$2" "/run/pdbd/$3/a" "10.0.$3.1" "10.0.$3.2" pdbd0 >"/run/pdbd/linkup.$3.log" 2>&1' _ "$ns" "$LINKUP" "$SLOT" &
     - name: run
       run: |
         set -eu
@@ -52,7 +57,10 @@ test:attempt:
           $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
           sleep 0.5
         done
-        echo "slot ${SLOT}: FAIL"; exit 1
+        echo "slot ${SLOT}: FAIL"
+        echo "--- slot ${SLOT}: linkup"; $sudo cat "/run/pdbd/linkup.${SLOT}.log" 2>/dev/null || true
+        echo "--- slot ${SLOT}: pppd"; $sudo journalctl --no-pager -u "pdbd.pppd@${SLOT}" 2>/dev/null | tail -20 || true
+        exit 1
     - name: down
       run: |
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n"
