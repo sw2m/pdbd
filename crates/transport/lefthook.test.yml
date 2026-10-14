@@ -63,6 +63,19 @@ test:attempt:
         echo "--- slot ${SLOT}: linkup"; $sudo cat "/run/pdbd/linkup.${SLOT}.log" 2>/dev/null || true
         echo "--- slot ${SLOT}: pppd"; $sudo journalctl --no-pager -u "pdbd.pppd@${SLOT}" 2>/dev/null | tail -60 || true
         exit 1
+    - name: tcp
+      run: |
+        set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
+        far="10.0.${SLOT}.2"
+        dir=$(mktemp -d); trap 'rm -rf "$dir"' EXIT
+        head -c 65536 /dev/urandom >"$dir/sent" # ~44 MRU-sized segments
+        timeout 30 socat "TCP-LISTEN:7777,bind=${far},reuseaddr" EXEC:cat </dev/null >/dev/null 2>&1 &
+        for _ in $(seq 1 50); do [ -n "$(ss -Hltn "src ${far}:7777")" ] && break; sleep 0.1; done
+        timeout 20 $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" socat -t 10 - "TCP:${far}:7777" <"$dir/sent" >"$dir/got" || true
+        cmp -s "$dir/sent" "$dir/got" && { echo "slot ${SLOT}: TCP PASS"; exit 0; }
+        echo "slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
+        exit 1
     - name: down
       run: |
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
