@@ -31,6 +31,8 @@ They solve the *same* problem — *run a process on the far side of a byte chann
 
 ## The layer model
 
+The L1–L7 numbers here are **borrowed labels**, not a model. The OSI 7-layer model is not accurate and does not describe `pdbd`'s architecture well, if at all; `pdbd`'s network model is *The socket model* below. The labels are kept only because they are the shared vocabulary for transport, link, IP, and services.
+
 The central idea: **`pdbd`/`pdb` own L1 (transport) and L2 (link), the kernel owns L3/L4 (IP/TCP/UDP), and `pdbd`/`pdb` own L7 (the services).** PPP in userspace bridges a dumb L1 pipe up to a kernel IP interface, so everything above L2 is *real kernel networking* — real sockets, real kernel TCP reliability, real `netfilter`.
 
 ```mermaid
@@ -116,9 +118,42 @@ Common to both ends: a small, long-lived **control-plane core** owns the link an
 
 ---
 
+## The socket model
+
+`pdbd`'s network model is a **two-layer model**, in place of the OSI 7-layer model:
+
+- **the socket layer** — anything you can read from and write to: a UART, a `vsock`, a TUN, an in-process channel;
+- **the data layer** — whatever moves through it.
+
+**Host and guest.** Stack a protocol on a socket and the model becomes a **pseudo three-layer model**: a **protocol layer** presents a **guest socket** carried on the **host socket** beneath it. It is *pseudo* because nothing new appears — it is the two-layer model applied recursively, the guest socket living in the host socket's data layer. **Everything above a host socket is guest**, whether a generic data payload or structured protocol data. (Host/guest here means socket nesting, not a VM's host and guest.)
+
+**The L3 guest and its three host endpoints.** The `transport` crate's guest is the IP packet. (`pdbd` and `pdb` as a whole are multilayer and recursive: they stack many host and guest protocols, so they have more than one guest.) The IP packet passes between three host endpoints, each playing a role:
+
+```mermaid
+flowchart LR
+    P["<b>peer</b><br/>remote PPP endpoint"] <-->|"L1 transport — PPP frames"| B["<b>bridge</b><br/>local PPP endpoint"]
+    B <-->|"IP packets"| O["<b>offload</b><br/>TUN → kernel"]
+```
+
+| role | host endpoint | what it does with the guest |
+| --- | --- | --- |
+| **peer** | the remote PPP endpoint | the far end of the link — guests come from it and go to it |
+| **bridge** | the local PPP endpoint | carries guests between the peer and the offload; never handles L3 itself |
+| **offload** | the TUN | takes responsibility for the guest — hands it to the kernel's L3 |
+
+The bridge role is the datapath's middle node; it is unrelated to the L7 `bridge` (`socat`/`forward`) service.
+
+**Naming follows the roles.** In code the bridge is `ppp::Bridge`: its `peer` port is the byte transport to the remote PPP endpoint, and its `offload` port is a packet `Socket` (`offload::tun::Socket`). A port is named for the role on its far side, so `offload.send()` sends *to* the offload and `offload.receive()` receives *from* it. The peer port is a byte stream rather than a packet `Socket`, so it reads and writes instead: `peer.writer` writes *to* the peer, `peer.reader` reads *from* it.
+
+**The offload contract.** Each offload is a module under `transport::offload::<name>` (today only `tun`) and **owns its `run()`**: it opens that offload's packet `Socket` and runs a `ppp::Bridge` over it. `run()` is a per-module contract, not a trait method, because each offload takes its own setup arguments (a TUN needs its addresses and device name).
+
+**Output speaks OSI.** Code is named in the socket model's roles; anything written for an operator — logs, error messages, panics — uses the OSI layer labels (*L1 serial*, *L2 (PPP)*, *L3 (IP) packet*), the vocabulary every operator already shares.
+
+---
+
 ## Topology & lifecycle
 
-Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" (on bare metal there is no host/guest, just two ends of a wire).
+Modeled on `ssh`/`adb` — **client-side vs daemon-side**, never "host/guest" for the two machines (on bare metal there is no VM host/guest, just two ends of a wire; host/guest in this README means socket nesting — see *The socket model*).
 
 ```mermaid
 flowchart LR
@@ -492,7 +527,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 **L2 — PPP:**
 
-- [`ppproto`](https://crates.io/crates/ppproto) `0.2.1` — sans-IO PPP state machine (LCP + IPCP). Primary L2 engine. HDLC framing + FCS are internal to it; a standalone [`hdlc`](https://crates.io/crates/hdlc) `0.4.1` is the fallback only if we drive framing ourselves.
+- [`ppproto`](https://crates.io/crates/ppproto) `0.2.1` — sans-IO PPP state machine (LCP + IPCP). Primary L2 engine. HDLC framing + FCS are internal to it; a standalone [`hdlc`](https://crates.io/crates/hdlc) `0.4.1` is the fallback only if we drive framing ourselves. Built from the [`sw2m/ppproto`](https://github.com/sw2m/ppproto) fork via `[patch.crates-io]` until upstream releases the fix for peer-triggered panics ([embassy-rs/ppproto#8](https://github.com/embassy-rs/ppproto/pull/8), #45).
 
 **L3 — TUN device:**
 
@@ -552,8 +587,8 @@ CI is **one definition**, layered by tool:
   its own build flake, so every `build` runs `cargo build` under
   `nix develop --no-update-lock-file` and flake-lock verification is part of the report.
   Regenerate stale locks with `lefthook run build:update` (fans out to every crate + the root).
-- **lefthook** is the controller — checks, test fixtures (a test installs the
-  systemd units it needs), reports, fanout, and the git hooks.
+- **lefthook** is the controller — checks, test fixtures (it installs/reaps the
+  datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.
 
 The inner unit is the same everywhere:
@@ -565,14 +600,14 @@ nix develop --no-update-lock-file -c lefthook run quality  # one hook
 
 CI is **auto-discovered from the repo root**: the root `lefthook.yml` is the entrypoint
 and fans each hook out to the crate that owns it (`crates/*/lefthook.yml`), keeping
-workspace-wide checks (fmt, lint) at the root. A crate's test fixtures live beside it
-(in `crates/<crate>/`). No `LEFTHOOK_CONFIG` is
+workspace-wide checks (fmt, lint) at the root. A crate's test fixtures live beside it —
+the datapath's systemd units are `crates/transport/systemd/`. No `LEFTHOOK_CONFIG` is
 needed; to run one crate's checks on their own, point lefthook at it:
 `LEFTHOOK_CONFIG=crates/<crate>/lefthook.yml lefthook run <hook>`.
 
 On GitHub, each lefthook check surfaces as its own PR status (`build (proto)`,
-`quality:root`, …), discovered from that same config — and a single `mergeable`
-status aggregates them, so it's the one to require in branch protection.
+`test (transport)`, `quality:root`, …), discovered from that same config — and a single
+`mergeable` status aggregates them, so it's the one to require in branch protection.
 
 ### The environment contract — `./Dockerfile`
 
@@ -597,10 +632,17 @@ podman build -t pdbd-ci .
 podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 ```
 
-**Privilege is gated at run time, not baked into the image.** Routine runs stay
-unprivileged; for a service-based test that needs systemd, the image is *capable* of a
-privileged boot (`podman run --privileged --systemd=always` → ubi-init's `/sbin/init`),
-which the feature adding such a test documents alongside it.
+**Privilege is gated at run time, not baked into the image.** The image is *capable*
+of the privileged datapath checks (systemd), but routine runs stay unprivileged — you
+grant privilege only to reproduce a remote-CI datapath failure locally. That run boots
+systemd (`--systemd=always` → ubi-init's `/sbin/init`), then runs the check inside it:
+
+```
+cid=$(podman run -d --privileged --systemd=always -v "$PWD":/pdbd -w /pdbd pdbd-ci)
+podman exec -e LEFTHOOK_CONFIG=crates/transport/lefthook.yml "$cid" \
+  nix develop --no-update-lock-file "path:/pdbd" -c lefthook run test:datapath
+podman rm -f "$cid"
+```
 
 ### Git hooks
 

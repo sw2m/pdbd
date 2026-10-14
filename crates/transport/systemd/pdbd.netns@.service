@@ -1,0 +1,8 @@
+[Unit]
+Description=pdbd datapath netns (slot %i)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ ip }} netns add pdbd.%i
+ExecStop={{ ip }} netns del pdbd.%i
