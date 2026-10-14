@@ -635,14 +635,23 @@ podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 **Privilege is gated at run time, not baked into the image.** The image is *capable*
 of the privileged datapath checks (systemd), but routine runs stay unprivileged — you
 grant privilege only to reproduce a remote-CI datapath failure locally. That run boots
-systemd (`--systemd=always` → ubi-init's `/sbin/init`), then runs the check inside it:
+systemd (`--systemd=always` → ubi-init's `/sbin/init`), then runs the check inside it.
+It must be **rootful** with `/dev/ppp` passed through — the reference `pppd` peer
+cannot open a root-only `/dev/ppp` from a rootless container — so the image goes into
+root's store, and root in the container needs git's `safe.directory` for the user-owned
+checkout:
 
 ```
-cid=$(podman run -d --privileged --systemd=always -v "$PWD":/pdbd -w /pdbd pdbd-ci)
-podman exec -e LEFTHOOK_CONFIG=crates/transport/lefthook.yml "$cid" \
+podman save pdbd-ci | sudo podman load
+cid=$(sudo podman run -d --privileged --systemd=always --device /dev/ppp \
+  -v "$PWD":/pdbd -w /pdbd localhost/pdbd-ci)
+sudo podman exec "$cid" git config --global safe.directory '*'
+sudo podman exec -e LEFTHOOK_CONFIG=crates/transport/lefthook.yml -e CARGO_TARGET_DIR=/tmp/t "$cid" \
   nix develop --no-update-lock-file "path:/pdbd" -c lefthook run test:datapath
-podman rm -f "$cid"
+sudo podman rm -f "$cid"
 ```
+
+`CARGO_TARGET_DIR` keeps root's build out of the checkout's `target/`.
 
 ### Git hooks
 
