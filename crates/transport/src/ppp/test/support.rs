@@ -123,10 +123,26 @@ impl Remote {
         .expect("no guest reached the remote");
         self.guests.remove(0)
     }
+
+    pub(crate) async fn silent(&mut self, span: Duration) -> bool {
+        let _ = timeout(span, async {
+            while self.guests.is_empty() {
+                self.step().await;
+            }
+        })
+        .await;
+        self.guests.is_empty()
+    }
 }
 
 pub(crate) fn hdlc(proto: u16, payload: &[u8]) -> Vec<u8> {
-    let mut body = vec![0xff, 0x03, (proto >> 8) as u8, proto as u8];
+    let mut body = proto.to_be_bytes().to_vec();
+    body.extend_from_slice(payload);
+    bare(&body)
+}
+
+pub(crate) fn bare(payload: &[u8]) -> Vec<u8> {
+    let mut body = vec![0xff, 0x03];
     body.extend_from_slice(payload);
     let mut fcs: u16 = 0xffff;
     for &b in &body {

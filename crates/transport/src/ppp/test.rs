@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use support::{await_open, bridge, hdlc, Channel, Remote};
+use support::{await_open, bare, bridge, hdlc, Channel, Remote};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::watch;
 use tokio::time::{sleep, timeout, Duration};
@@ -478,4 +478,111 @@ async fn oversized_inbound_frame_is_dropped() {
         .unwrap();
     assert_eq!(got, Some(kept));
     assert_eq!(*ph.borrow(), Phase::Open);
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+async fn survives(hostile: Vec<u8>) {
+    let (a_io, p_io) = tokio::io::duplex(16384);
+    let (ph_tx, ph) = watch::channel(Phase::Dead);
+    let (mut a, task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    remote.write(&hostile).await;
+    let kept = vec![0x45u8, 0, 0, 20, 1, 2, 3, 4];
+    remote.send(&kept).await;
+    let got = timeout(Duration::from_secs(2), a.receive())
+        .await
+        .expect("the bridge stopped delivering after a hostile frame")
+        .unwrap();
+    assert_eq!(got, Some(kept));
+    assert_eq!(*ph.borrow(), Phase::Open);
+    assert!(!task.is_finished());
+}
+
+// #45 — embassy-rs/ppproto#6 case A: an Echo-Reply larger than the reply buffer
+#[tokio::test]
+async fn survives_oversized_echo_request() {
+    let mut payload = hex("092a00d000000000");
+    payload.resize(0xd0, b'A');
+    survives(hdlc(0xc021, &payload)).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case A: a Protocol-Reject of a large non-IPv4 packet
+#[tokio::test]
+async fn survives_oversized_unknown_protocol() {
+    let mut payload = vec![0x60u8];
+    payload.resize(200, 0);
+    survives(hdlc(0x0057, &payload)).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case B
+#[tokio::test]
+async fn survives_frame_without_protocol() {
+    survives(bare(&[])).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case C
+#[tokio::test]
+async fn survives_lcp_length_below_header() {
+    survives(hdlc(0xc021, &hex("010500020000"))).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case D
+#[tokio::test]
+async fn survives_malformed_option_list() {
+    survives(hdlc(0xc021, &hex("010600060301"))).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case E
+#[tokio::test]
+async fn survives_too_many_options() {
+    survives(hdlc(
+        0xc021,
+        &hex("010700142002210222022302240225022602270200"),
+    ))
+    .await;
+}
+
+// #45 — embassy-rs/ppproto#6 case F
+#[tokio::test]
+async fn survives_overlong_option() {
+    survives(hdlc(0xc021, &hex("0108000c3008010203040506"))).await;
+}
+
+// #45 — embassy-rs/ppproto#6 case G
+#[tokio::test]
+async fn survives_pap_length_off_by_two() {
+    survives(hdlc(0xc023, &hex("0201000600"))).await;
+}
+
+// #12
+#[tokio::test]
+async fn lcp_terminate_takes_the_link_down() {
+    let (a_io, p_io) = tokio::io::duplex(16384);
+    let (ph_tx, mut ph) = watch::channel(Phase::Dead);
+    let (a, _task) = bridge(a_io, ph_tx);
+    let mut remote = Remote::new(p_io);
+    remote.open(&ph).await;
+
+    remote.write(&hdlc(0xc021, &hex("05070004"))).await;
+    timeout(Duration::from_secs(5), async {
+        while *ph.borrow_and_update() == Phase::Open {
+            remote.step().await;
+        }
+    })
+    .await
+    .expect("the phase stayed Open after the peer terminated LCP");
+
+    a.0.send(vec![0x45u8, 0, 0, 20, 1, 2, 3, 4]).await.unwrap();
+    assert!(
+        remote.silent(Duration::from_secs(1)).await,
+        "a guest was framed to a peer that terminated the link"
+    );
 }
