@@ -1114,8 +1114,7 @@ dependencies = [
 [[package]]
 name = "ppproto"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e97092aa0d37d5c9ff116dded64bcf99a89ecda7901fc305b2176bdfac967f2"
+source = "git+https://github.com/sw2m/ppproto?rev=2a608947e49aa0c35ca8195dddf1d7167751c8aa#2a608947e49aa0c35ca8195dddf1d7167751c8aa"
 dependencies = [
  "heapless",
  "num_enum",

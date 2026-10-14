@@ -527,7 +527,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 **L2 — PPP:**
 
-- [`ppproto`](https://crates.io/crates/ppproto) `0.2.1` — sans-IO PPP state machine (LCP + IPCP). Primary L2 engine. HDLC framing + FCS are internal to it; a standalone [`hdlc`](https://crates.io/crates/hdlc) `0.4.1` is the fallback only if we drive framing ourselves.
+- [`ppproto`](https://crates.io/crates/ppproto) `0.2.1` — sans-IO PPP state machine (LCP + IPCP). Primary L2 engine. HDLC framing + FCS are internal to it; a standalone [`hdlc`](https://crates.io/crates/hdlc) `0.4.1` is the fallback only if we drive framing ourselves. Built from the [`sw2m/ppproto`](https://github.com/sw2m/ppproto) fork via `[patch.crates-io]` until upstream releases the fix for peer-triggered panics ([embassy-rs/ppproto#8](https://github.com/embassy-rs/ppproto/pull/8), #45).
 
 **L3 — TUN device:**
 
