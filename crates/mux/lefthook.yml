@@ -1,0 +1,7 @@
+extends:
+  - nix/lefthook.yml
+
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p mux --locked
