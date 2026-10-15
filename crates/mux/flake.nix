@@ -5,7 +5,7 @@
 
   outputs = { root, ... }: {
     output = { # expected build output per system; `lefthook run build:update` rewrites it
-      "x86_64-linux" = "sha256-GY1l3tfi5Mu+8ofAEr+xnHNMWt9x/vnnAjQTxYobRu8=";
+      "x86_64-linux" = "sha256-tXKjuKFX9JyZFgDXpcqV/ijMjk8FohVb+4Z6mUknKY4=";
     };
     packages = builtins.mapAttrs (system: packages: {
       default = packages.mux;
