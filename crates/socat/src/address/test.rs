@@ -528,7 +528,7 @@ fn escapes() {
 fn brackets() {
     assert_eq!(exec("EXEC:a]b"), Target::Exec(text("a]b")));
     assert_eq!(exec("EXEC:a)b}"), Target::Exec(text("a)b}")));
-    assert_eq!(exec("EXEC:(a]b)"), Target::Exec(text("(a]b)")));
+    assert_eq!(exec("EXEC:(a)b]"), Target::Exec(text("(a)b]")));
     assert_eq!(parse("EXEC:a]b").to_string(), "EXEC:'a]b'");
 }
 
