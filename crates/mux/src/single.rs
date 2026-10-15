@@ -116,6 +116,30 @@ impl Single {
         Ok(())
     }
 
+    pub fn stop(&mut self, id: u32) -> Result<(), Error> {
+        let _ = id;
+        todo!()
+    }
+
+    pub fn grow(&mut self, id: u32, window: u32) -> Result<(), Error> {
+        let _ = (id, window);
+        todo!()
+    }
+
+    pub fn tick(&mut self, now: u64) {
+        let _ = now;
+        todo!()
+    }
+
+    pub fn expire(&mut self, now: u64, deadline: u64) {
+        let _ = (now, deadline);
+        todo!()
+    }
+
+    pub fn paused(&self) -> bool {
+        todo!()
+    }
+
     pub fn done(&self) -> bool {
         self.reset || (self.sent && self.received)
     }

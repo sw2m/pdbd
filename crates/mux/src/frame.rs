@@ -17,6 +17,7 @@ pub enum Body {
     Window(u32),
     Close,
     Reset(u32),
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub enum Error {
     Oversize(u32),
     Increment,
     Field(u32),
+    Empty,
 }
 
 impl Proto {
@@ -55,6 +57,7 @@ impl Body {
             Self::Window(_) => 3,
             Self::Close => 4,
             Self::Reset(_) => 5,
+            Self::Stop => 6,
         }
     }
 
@@ -65,12 +68,17 @@ impl Body {
             | Self::Accept(n)
             | Self::Window(n)
             | Self::Reset(n) => *n,
-            Self::Close => 0,
+            Self::Close | Self::Stop => 0,
         }
     }
 }
 
 impl Frame {
+    pub fn write(out: &mut Vec<u8>, flow: u32, proto: Proto, payload: &[u8]) {
+        let _ = (out, flow, proto, payload);
+        todo!()
+    }
+
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.body.kind());
         out.push(self.proto as u8);
@@ -158,8 +166,12 @@ impl fmt::Display for Error {
             }
             Self::Increment => write!(f, "L4 bridge window increment of 0"),
             Self::Field(v) => {
-                write!(f, "L4 bridge CLOSE frame carries nonzero field {v}")
+                write!(
+                    f,
+                    "L4 bridge CLOSE or STOP frame carries nonzero field {v}"
+                )
             }
+            Self::Empty => write!(f, "L4 bridge empty DATA on a stream flow"),
         }
     }
 }

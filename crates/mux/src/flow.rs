@@ -19,6 +19,8 @@ pub enum Event {
     Window(u32),
     Closed,
     Reset(u32),
+    Stopped,
+    Dropped(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +34,8 @@ pub enum Error {
     Credit { len: u32, credit: u32 },
     Overflow,
     Consume { n: u32, held: u32 },
+    Stopped,
+    Window(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +50,9 @@ pub struct Flow {
     freed: u32,
     sent: bool,
     received: bool,
+    stopped: bool,
+    halted: bool,
+    since: u64,
 }
 
 impl Flow {
@@ -67,6 +74,9 @@ impl Flow {
             freed: 0,
             sent: false,
             received: false,
+            stopped: false,
+            halted: false,
+            since: 0,
         }
     }
 
@@ -78,10 +88,14 @@ impl Flow {
         }
     }
 
-    pub fn open(id: u32, proto: Proto, window: u32) -> (Self, Frame) {
+    pub fn open(
+        id: u32,
+        proto: Proto,
+        window: u32,
+    ) -> Result<(Self, Frame), Error> {
         let flow = Self::new(id, proto, State::Opening, 0, window);
         let frame = flow.frame(Body::Open(window));
-        (flow, frame)
+        Ok((flow, frame))
     }
 
     pub fn offer(open: &Frame, window: u32) -> Result<Self, Error> {
@@ -105,7 +119,7 @@ impl Flow {
         Ok(self.frame(Body::Accept(self.window)))
     }
 
-    pub fn send(&mut self, data: &[u8]) -> Result<(Frame, usize), Error> {
+    pub fn send(&mut self, data: &[u8]) -> Result<usize, Error> {
         if self.sent || self.state == State::Reset {
             return Err(Error::Closed);
         }
@@ -130,7 +144,7 @@ impl Flow {
             return Err(Error::Blocked);
         }
         self.credit -= n as u32;
-        Ok((self.frame(Body::Data(data[..n].to_vec())), n))
+        Ok(n)
     }
 
     pub fn receive(&mut self, frame: Frame) -> Result<Event, Error> {
@@ -146,6 +160,7 @@ impl Flow {
         let open = self.state == State::Open;
         match frame.body {
             Body::Open(_) => Err(Error::State),
+            Body::Stop => todo!(),
             Body::Reset(code) => {
                 self.state = State::Reset;
                 Ok(Event::Reset(code))
@@ -223,6 +238,26 @@ impl Flow {
         Ok(self.frame(Body::Reset(code)))
     }
 
+    pub fn stop(&mut self) -> Result<Frame, Error> {
+        let _ = (self.stopped, self.halted);
+        todo!()
+    }
+
+    pub fn grow(&mut self, window: u32) -> Result<(), Error> {
+        let _ = window;
+        todo!()
+    }
+
+    pub fn mark(&mut self, now: u64) {
+        let _ = now;
+        todo!()
+    }
+
+    pub fn overdue(&self, now: u64, deadline: u64) -> bool {
+        let _ = (now, deadline, self.since);
+        todo!()
+    }
+
     pub fn id(&self) -> u32 {
         self.id
     }
@@ -277,6 +312,13 @@ impl fmt::Display for Error {
             Self::Overflow => write!(f, "window update overflows 2^32-1"),
             Self::Consume { n, held } => {
                 write!(f, "consumed {n} bytes but only {held} are held")
+            }
+            Self::Stopped => write!(f, "the peer stopped reading this flow"),
+            Self::Window(w) => {
+                write!(
+                    f,
+                    "datagram flow window {w} is below one datagram ({MAX})"
+                )
             }
         }
     }
