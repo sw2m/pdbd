@@ -63,85 +63,108 @@ pub enum Mux {
     Multi(Multi),
 }
 
+macro_rules! each {
+    ($self:ident, $m:ident => $e:expr) => {
+        match $self {
+            Mux::Single($m) => $e,
+            Mux::Multi($m) => $e,
+        }
+    };
+}
+
 impl Mux {
     pub fn single() -> Self {
-        todo!()
+        Self::Single(Single::new())
     }
 
     pub fn multi(side: Side, window: u32, cap: Option<u32>) -> Self {
-        let _ = (side, window, cap);
-        todo!()
+        Self::Multi(Multi::new(side, window, cap))
     }
 
     pub fn mode(&self) -> Mode {
-        todo!()
+        match self {
+            Self::Single(_) => Mode::Single,
+            Self::Multi(_) => Mode::Multi,
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        let _ = bytes;
-        todo!()
+        each!(self, m => m.feed(bytes))
     }
 
     pub fn end(&mut self) -> Result<(), Error> {
-        todo!()
+        each!(self, m => m.end())
     }
 
     pub fn fail(&mut self) {
-        todo!()
+        each!(self, m => m.fail())
     }
 
     pub fn poll(&mut self) -> Option<Event> {
-        todo!()
+        each!(self, m => m.poll())
     }
 
     pub fn transmit(&mut self) -> Option<Transmit> {
-        todo!()
+        each!(self, m => m.transmit())
     }
 
     pub fn open(&mut self, proto: Proto) -> Result<u32, Error> {
-        let _ = proto;
-        todo!()
+        each!(self, m => m.open(proto))
     }
 
     pub fn accept(&mut self, id: u32) -> Result<(), Error> {
-        let _ = id;
-        todo!()
+        each!(self, m => m.accept(id))
     }
 
     pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
-        let _ = (id, data);
-        todo!()
+        each!(self, m => m.send(id, data))
     }
 
     pub fn consume(&mut self, id: u32, n: u32) -> Result<(), Error> {
-        let _ = (id, n);
-        todo!()
+        each!(self, m => m.consume(id, n))
     }
 
     pub fn flush(&mut self, id: u32) -> Result<(), Error> {
-        let _ = id;
-        todo!()
+        each!(self, m => m.flush(id))
     }
 
     pub fn close(&mut self, id: u32) -> Result<(), Error> {
-        let _ = id;
-        todo!()
+        each!(self, m => m.close(id))
     }
 
     pub fn reset(&mut self, id: u32, code: u32) -> Result<(), Error> {
-        let _ = (id, code);
-        todo!()
+        each!(self, m => m.reset(id, code))
     }
 
     pub fn done(&self) -> bool {
-        todo!()
+        each!(self, m => m.done())
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        match self {
+            Self::Mode => write!(f, "L4 bridge is single-channel"),
+            Self::Cap(c) => write!(f, "L4 bridge is at its cap of {c} flows"),
+            Self::Exhausted => write!(f, "L4 bridge flow ids exhausted"),
+            Self::Unknown(id) => write!(f, "L4 bridge has no flow {id}"),
+            Self::Flow(id, e) => write!(f, "L4 bridge flow {id}: {e}"),
+            Self::Peer(id, e) => {
+                write!(f, "L4 bridge flow {id}: peer violation: {e}")
+            }
+            Self::Frame(e) => write!(f, "{e}"),
+            Self::Parity(id) => {
+                write!(f, "L4 bridge peer opened flow {id} with our parity")
+            }
+            Self::Duplicate(id) => {
+                write!(f, "L4 bridge peer reopened or reordered flow {id}")
+            }
+            Self::Stray(id) => {
+                write!(f, "L4 bridge peer sent a frame for unopened flow {id}")
+            }
+            Self::Truncated => write!(f, "L4 bridge tunnel ended mid-frame"),
+            Self::Dead => write!(f, "L4 bridge tunnel has ended"),
+        }
     }
 }
 
