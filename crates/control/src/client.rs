@@ -13,7 +13,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Status(s) => write!(f, "L7 (control) RPC failed: {s}"),
+            Self::Status(s) => write!(f, "{:?}: {}", s.code(), s.message()),
             Self::Refusal(r) => write!(f, "L7 (control) Hello refused: {r}"),
         }
     }

@@ -26,6 +26,10 @@ test:datapath:
         [ -n "$bin" ]
         $sudo install -d -m0755 /run/pdbd
         printf 'LINKUP=%s\n' "$bin" | $sudo tee /run/pdbd/linkup.env >/dev/null
+        cargo build -q -p control --example hello # #14
+        hello=$(find "$(cargo metadata --no-deps --format-version 1 | yq -p json .target_directory)" -type f -name hello -path '*debug/examples*' | head -1)
+        [ -n "$hello" ]
+        printf 'HELLO=%s\n' "$hello" | $sudo tee /run/pdbd/hello.env >/dev/null
     - name: fanout
       run: |
         set -eu
@@ -75,6 +79,23 @@ test:attempt:
         timeout 20 $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" socat -t 10 - "TCP:${far}:7777" <"$dir/sent" >"$dir/got" || true
         cmp -s "$dir/sent" "$dir/got" && { echo "slot ${SLOT}: TCP PASS"; exit 0; }
         echo "slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
+        exit 1
+    - name: control # #14
+      run: |
+        set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
+        far="10.0.${SLOT}.2"
+        . /run/pdbd/hello.env
+        log=$(mktemp)
+        timeout 30 "$HELLO" serve "${far}:7778" --feature pty --feature socat </dev/null >/dev/null 2>&1 &
+        srv=$!
+        trap 'kill "$srv" 2>/dev/null || true; rm -f "$log"' EXIT
+        for _ in $(seq 1 50); do [ -n "$(ss -Hltn "src ${far}:7778")" ] && break; sleep 0.1; done
+        if timeout 20 $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" "$HELLO" dial "${far}:7778" --feature socat --feature bind >"$log" 2>&1 \
+          && grep -qxF 'L7 (control) Hello: pdbd at pdbd.v1 revision 1, features {"socat"}' "$log"; then
+          echo "slot ${SLOT}: Hello PASS"; exit 0
+        fi
+        echo "slot ${SLOT}: Hello FAIL"; cat "$log"
         exit 1
     - name: down
       run: |
