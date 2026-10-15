@@ -77,8 +77,8 @@ test:attempt:
         timeout 30 socat "TCP-LISTEN:7777,bind=${far},reuseaddr" EXEC:cat </dev/null >/dev/null 2>&1 &
         for _ in $(seq 1 50); do [ -n "$(ss -Hltn "src ${far}:7777")" ] && break; sleep 0.1; done
         timeout 20 $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" socat -t 10 - "TCP:${far}:7777" <"$dir/sent" >"$dir/got" || true
-        cmp -s "$dir/sent" "$dir/got" && { echo "slot ${SLOT}: TCP PASS"; exit 0; }
-        echo "slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
+        cmp -s "$dir/sent" "$dir/got" && { echo "${PEER} slot ${SLOT}: TCP PASS"; exit 0; }
+        echo "${PEER} slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
         exit 1
     - name: down
       run: |
