@@ -1,5 +1,5 @@
 {
-  description = "pdbd pdbd — crate build env";
+  description = "pdbd pdbd — cargo build repro";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -17,10 +17,12 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
-        rust = pkgs.rust-bin.stable."1.88.0".default;
+        rust = pkgs.rust-bin.stable."1.88.0".minimal;
       in {
-        devShells.default = pkgs.mkShell {
-          packages = [ rust pkgs.pkg-config ];
+        packages.default = import ../../nix/crate.nix {
+          inherit pkgs rust;
+          root = ../..;
+          crate = "pdbd";
         };
       });
 }

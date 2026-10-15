@@ -583,10 +583,13 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 CI is **one definition**, layered by tool:
 
-- **nix** gives build reproducibility — a flake-locked toolchain, and each crate carries
-  its own build flake, so every `build` runs `cargo build` under
-  `nix develop --no-update-lock-file` and flake-lock verification is part of the report.
-  Regenerate stale locks with `lefthook run build:update` (fans out to every crate + the root).
+- **nix** gives build reproducibility — the root flake is the one pinned dev environment,
+  and each crate carries its own build flake that builds the crate as a derivation (the
+  pinned toolchain, the workspace `Cargo.lock`, the nix sandbox; shared builder
+  `nix/crate.nix`). Every `build` builds that derivation, then rebuilds it with
+  `nix build --rebuild`, failing unless the output is bit-identical; flake-lock
+  verification is part of the report. Regenerate stale locks with `lefthook run build:update`
+  (fans out to every crate + the root).
 - **lefthook** is the controller — checks, test fixtures (it installs/reaps the
   datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.

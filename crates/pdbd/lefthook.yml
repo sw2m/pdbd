@@ -1,13 +1,15 @@
 build:
   jobs:
-    - name: cargo
-      root: "crates/pdbd/"
-      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p pdbd --locked'
+    - name: repro # #62
+      run: |
+        set -eu
+        flake="git+file://$(git rev-parse --show-toplevel)?dir=crates/pdbd"
+        nix build --no-update-lock-file --no-link "$flake"
+        nix build --no-update-lock-file --no-link --rebuild "$flake"
 build:update:
   jobs:
-    - name: rebuild
-      root: "crates/pdbd/"
-      run: 'nix develop "path:$PWD" -c cargo build -p pdbd --locked'
+    - name: lock
+      run: 'nix build --no-link "git+file://$(git rev-parse --show-toplevel)?dir=crates/pdbd"'
 test:
   jobs:
     - name: cargo

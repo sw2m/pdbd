@@ -3,15 +3,17 @@ extends:
 
 build:
   jobs:
-    - name: cargo
-      root: "crates/transport/"
-      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p transport --locked'
+    - name: repro # #62
+      run: |
+        set -eu
+        flake="git+file://$(git rev-parse --show-toplevel)?dir=crates/transport"
+        nix build --no-update-lock-file --no-link "$flake"
+        nix build --no-update-lock-file --no-link --rebuild "$flake"
 
 build:update:
   jobs:
-    - name: rebuild
-      root: "crates/transport/"
-      run: 'nix develop "path:$PWD" -c cargo build -p transport --locked'
+    - name: lock
+      run: 'nix build --no-link "git+file://$(git rev-parse --show-toplevel)?dir=crates/transport"'
 
 # Datapath test — #12-A
 test:
