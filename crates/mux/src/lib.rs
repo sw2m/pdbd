@@ -32,6 +32,7 @@ pub enum Event {
     Window(u32, u32),
     Closed(u32),
     Reset(u32, u32),
+    Stopped(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,7 @@ pub enum Error {
     Stray(u32),
     Truncated,
     Dead,
+    Window(u32),
 }
 
 #[derive(Debug)]
@@ -77,8 +79,13 @@ impl Mux {
         Self::Single(Single::new())
     }
 
-    pub fn multi(side: Side, window: u32, cap: Option<u32>) -> Self {
-        Self::Multi(Multi::new(side, window, cap))
+    pub fn multi(
+        side: Side,
+        window: u32,
+        cap: Option<u32>,
+        budget: u64,
+    ) -> Self {
+        Self::Multi(Multi::new(side, window, cap, budget))
     }
 
     pub fn mode(&self) -> Mode {
@@ -136,6 +143,26 @@ impl Mux {
         each!(self, m => m.reset(id, code))
     }
 
+    pub fn stop(&mut self, id: u32) -> Result<(), Error> {
+        each!(self, m => m.stop(id))
+    }
+
+    pub fn grow(&mut self, id: u32, window: u32) -> Result<(), Error> {
+        each!(self, m => m.grow(id, window))
+    }
+
+    pub fn tick(&mut self, now: u64) {
+        each!(self, m => m.tick(now))
+    }
+
+    pub fn expire(&mut self, now: u64, deadline: u64) {
+        each!(self, m => m.expire(now, deadline))
+    }
+
+    pub fn paused(&self) -> bool {
+        each!(self, m => m.paused())
+    }
+
     pub fn done(&self) -> bool {
         each!(self, m => m.done())
     }
@@ -164,6 +191,10 @@ impl fmt::Display for Error {
             }
             Self::Truncated => write!(f, "L4 bridge tunnel ended mid-frame"),
             Self::Dead => write!(f, "L4 bridge tunnel has ended"),
+            Self::Window(w) => write!(
+                f,
+                "L4 bridge datagram flow needs a window of at least 65535, not {w}"
+            ),
         }
     }
 }

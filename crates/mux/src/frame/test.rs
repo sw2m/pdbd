@@ -43,6 +43,10 @@ fn layout() {
             frame(9, Proto::Udp, Body::Data(vec![])),
             vec![0x00, 0x11, 0, 0, 0, 9, 0, 0, 0, 0],
         ),
+        (
+            frame(5, Proto::Tcp, Body::Stop),
+            vec![0x06, 0x06, 0, 0, 0, 5, 0, 0, 0, 0],
+        ),
     ];
     for (f, want) in cases {
         assert_eq!(bytes(&f), want, "{f:?}");
@@ -63,7 +67,7 @@ fn partial() {
 #[test]
 fn rejects() {
     let cases: &[(&[u8], Error)] = &[
-        (&[0x06, 0x06, 0, 0, 0, 1, 0, 0, 0, 0], Error::Type(6)),
+        (&[0x07, 0x06, 0, 0, 0, 1, 0, 0, 0, 0], Error::Type(7)),
         (&[0xff, 0x06, 0, 0, 0, 1, 0, 0, 0, 0], Error::Type(0xff)),
         (&[0x00, 0x01, 0, 0, 0, 1, 0, 0, 0, 0], Error::Proto(1)),
         (&[0x00, 0x06, 0, 0, 0, 0, 0, 0, 0, 0], Error::Flow),
@@ -77,6 +81,8 @@ fn rejects() {
         ),
         (&[0x03, 0x06, 0, 0, 0, 1, 0, 0, 0, 0], Error::Increment),
         (&[0x04, 0x06, 0, 0, 0, 1, 0, 0, 0, 1], Error::Field(1)),
+        (&[0x06, 0x06, 0, 0, 0, 1, 0, 0, 0, 1], Error::Field(1)),
+        (&[0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 0], Error::Empty),
     ];
     for (b, want) in cases {
         assert_eq!(Frame::decode(b).as_ref(), Err(want), "{b:?}");
@@ -107,6 +113,47 @@ fn order() {
     assert_eq!(r.pending(), 0);
 }
 
+// #58 — a stream chunk is never empty; an empty datagram is legal
+#[test]
+fn empty() {
+    let tcp = [0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 0];
+    assert_eq!(Frame::decode(&tcp), Err(Error::Empty));
+    let udp = [0x00, 0x11, 0, 0, 0, 1, 0, 0, 0, 0];
+    let want = frame(1, Proto::Udp, Body::Data(vec![]));
+    assert_eq!(Frame::decode(&udp), Ok(Some((want, 10))));
+}
+
+// #58 — DATA is written from the caller's payload, byte-identical to encode
+#[test]
+fn write() {
+    let mut out = vec![0xaa];
+    Frame::write(&mut out, 7, Proto::Tcp, b"abc");
+    let mut want = vec![0xaa];
+    frame(7, Proto::Tcp, Body::Data(b"abc".to_vec())).encode(&mut want);
+    assert_eq!(out, want);
+}
+
+// #58 — parsing a coalesced burst is linear in its bytes, not quadratic
+#[test]
+fn many() {
+    let n = 200_000;
+    let mut wire = Vec::new();
+    for i in 0..n {
+        frame(1 + i, Proto::Tcp, Body::Window(1)).encode(&mut wire);
+    }
+    let start = std::time::Instant::now();
+    let mut r = Reader::new();
+    r.feed(&wire);
+    let mut got = 0;
+    while let Some(f) = r.pull().unwrap() {
+        assert_eq!(f.flow, 1 + got);
+        got += 1;
+    }
+    assert_eq!((got, r.pending()), (n, 0));
+    let spent = start.elapsed();
+    assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is ~0.1s in debug; quadratic is minutes
+}
+
 // #58
 #[test]
 fn display() {
@@ -128,14 +175,19 @@ fn body() -> impl Strategy<Value = Body> {
         (1..=u32::MAX).prop_map(Body::Window),
         Just(Body::Close),
         any::<u32>().prop_map(Body::Reset),
+        Just(Body::Stop),
     ]
 }
 
 pub fn arbitrary() -> impl Strategy<Value = Frame> {
-    (1..=u32::MAX, proto(), body()).prop_map(|(flow, proto, body)| Frame {
-        flow,
-        proto,
-        body,
+    (1..=u32::MAX, proto(), body()).prop_map(|(flow, proto, body)| {
+        let body = match body {
+            Body::Data(d) if d.is_empty() && proto == Proto::Tcp => {
+                Body::Data(vec![0])
+            }
+            b => b,
+        };
+        Frame { flow, proto, body }
     })
 }
 

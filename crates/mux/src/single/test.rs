@@ -23,6 +23,20 @@ fn one() {
     assert!(transmits(&mut s).is_empty());
 }
 
+// #58 — no read-side stop, window, budget or expiry: the tunnel's TCP is
+// the channel's flow control and its lifetime
+#[test]
+fn extras() {
+    let mut s = Single::new();
+    assert_eq!(s.stop(ID), Err(Error::Mode));
+    assert_eq!(s.grow(ID, 1), Err(Error::Mode));
+    s.tick(5);
+    s.expire(1000, 1);
+    assert!(!s.paused());
+    assert!(events(&mut s).is_empty());
+    assert!(transmits(&mut s).is_empty());
+}
+
 // #58 — bytes pass through bare: no header, no window, no credit limit
 #[test]
 fn bare() {

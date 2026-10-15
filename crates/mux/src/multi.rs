@@ -15,10 +15,14 @@ pub struct Multi {
     events: VecDeque<Event>,
     out: Vec<u8>,
     dead: bool,
+    budget: u64,
+    used: u64,
+    now: u64,
+    paused: bool,
 }
 
 impl Multi {
-    pub fn new(side: Side, window: u32, cap: Option<u32>) -> Self {
+    pub fn new(side: Side, window: u32, cap: Option<u32>, budget: u64) -> Self {
         let first = match side {
             Side::Client => 1,
             Side::Daemon => 2,
@@ -34,6 +38,10 @@ impl Multi {
             events: VecDeque::new(),
             out: Vec::new(),
             dead: false,
+            budget,
+            used: 0,
+            now: 0,
+            paused: false,
         }
     }
 
@@ -109,6 +117,7 @@ impl Multi {
             flow::Event::Window(n) => Event::Window(id, n),
             flow::Event::Closed => Event::Closed(id),
             flow::Event::Reset(code) => Event::Reset(id, code),
+            flow::Event::Stopped | flow::Event::Dropped(_) => todo!(),
         };
         self.events.push_back(event);
         self.reap(id);
@@ -171,7 +180,11 @@ impl Multi {
         }
         let id = self.next.ok_or(Error::Exhausted)?;
         self.next = id.checked_add(2);
-        let (flow, frame) = Flow::open(id, proto, self.window);
+        let (flow, frame) =
+            Flow::open(id, proto, self.window).map_err(|e| match e {
+                flow::Error::Window(w) => Error::Window(w),
+                e => Error::Flow(id, e),
+            })?;
         self.flows.insert(id, flow);
         self.emit(frame);
         Ok(id)
@@ -184,8 +197,13 @@ impl Multi {
     }
 
     pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
-        let (frame, n) =
-            self.get(id)?.send(data).map_err(|e| Error::Flow(id, e))?;
+        let flow = self.get(id)?;
+        let n = flow.send(data).map_err(|e| Error::Flow(id, e))?;
+        let frame = Frame {
+            flow: id,
+            proto: flow.proto(),
+            body: Body::Data(data[..n].to_vec()),
+        };
         self.emit(frame);
         Ok(n)
     }
@@ -218,6 +236,34 @@ impl Multi {
         self.emit(frame);
         self.reap(id);
         Ok(())
+    }
+
+    pub fn stop(&mut self, id: u32) -> Result<(), Error> {
+        let _ = (id, self.budget, self.now);
+        todo!()
+    }
+
+    pub fn grow(&mut self, id: u32, window: u32) -> Result<(), Error> {
+        let _ = (id, window);
+        todo!()
+    }
+
+    pub fn tick(&mut self, now: u64) {
+        let _ = now;
+        todo!()
+    }
+
+    pub fn expire(&mut self, now: u64, deadline: u64) {
+        let _ = (now, deadline);
+        todo!()
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn used(&self) -> u64 {
+        self.used
     }
 
     pub fn flow(&self, id: u32) -> Option<&Flow> {
