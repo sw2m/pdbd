@@ -133,7 +133,7 @@ fn done_flows_are_reaped() {
     assert_eq!(c.open(Proto::Tcp).unwrap().0, 3);
 }
 
-// #19 — RFC 9113 §6.9: a window update racing a flow's teardown is ignored
+// #19 — RFC 9113 §5.1 "closed": frames racing a flow's teardown are ignored
 #[test]
 fn stale_window_is_ignored() {
     let mut c = Mux::new(Side::Client, 10, None);
@@ -155,7 +155,13 @@ fn stale_window_is_ignored() {
         proto: Proto::Tcp,
         body: Body::Data(vec![1]),
     };
-    assert_eq!(d.receive(late).unwrap_err(), Error::Unknown(id));
+    assert_eq!(d.receive(late).unwrap(), (id, Event::Stale));
+    let never = Frame {
+        flow: 5,
+        proto: Proto::Tcp,
+        body: Body::Close,
+    };
+    assert_eq!(d.receive(never).unwrap_err(), Error::Unknown(5));
 }
 
 // #19

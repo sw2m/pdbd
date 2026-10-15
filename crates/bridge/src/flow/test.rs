@@ -364,8 +364,8 @@ proptest! {
                 let (to_me_data, _) = inflight(&ends[me].inbox);
                 let (_, to_peer_window) = inflight(&ends[peer].inbox);
                 prop_assert_eq!(
-                    u64::from(ends[peer].flow.credit()) + to_me_data,
-                    u64::from(f.granted()) + to_peer_window
+                    u64::from(ends[peer].flow.credit()) + to_me_data + to_peer_window,
+                    u64::from(f.granted())
                 );
             }
         }

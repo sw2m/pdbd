@@ -130,7 +130,7 @@ fn body() -> impl Strategy<Value = Body> {
     ]
 }
 
-fn any_frame() -> impl Strategy<Value = Frame> {
+fn arbitrary() -> impl Strategy<Value = Frame> {
     (1..=u32::MAX, proto(), body()).prop_map(|(flow, proto, body)| Frame {
         flow,
         proto,
@@ -141,14 +141,14 @@ fn any_frame() -> impl Strategy<Value = Frame> {
 proptest! {
     // #19 — decode ∘ encode is the identity, consuming exactly the frame
     #[test]
-    fn roundtrip(f in any_frame()) {
+    fn roundtrip(f in arbitrary()) {
         let b = bytes(&f);
         prop_assert_eq!(Frame::decode(&b), Ok(Some((f, b.len()))));
     }
 
     // #19 — trailing bytes are left for the next frame
     #[test]
-    fn trailing(f in any_frame(), tail in prop::collection::vec(any::<u8>(), 0..32)) {
+    fn trailing(f in arbitrary(), tail in prop::collection::vec(any::<u8>(), 0..32)) {
         let mut b = bytes(&f);
         let n = b.len();
         b.extend(tail);
@@ -158,7 +158,7 @@ proptest! {
     // #19 — any split of a frame stream into reads yields the same frames
     #[test]
     fn partial_reads(
-        frames in prop::collection::vec(any_frame(), 0..16),
+        frames in prop::collection::vec(arbitrary(), 0..16),
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..32),
     ) {
         let mut wire = Vec::new();
