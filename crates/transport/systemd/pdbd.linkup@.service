@@ -1,0 +1,10 @@
+[Unit]
+Description=pdbd linkup peer (slot %i)
+Requires=pdbd.socat@%i.service
+After=pdbd.socat@%i.service
+
+[Service]
+EnvironmentFile={{ envfile }}
+EnvironmentFile=/run/pdbd/linkup.env
+ExecStartPre={{ sh }} -c 'until [ -e /run/pdbd/%i/b ]; do sleep 0.1; done'
+ExecStart={{ sh }} -c 'exec ${LINKUP} /run/pdbd/%i/b 10.0.%i.2 10.0.%i.1 pdbd%i'

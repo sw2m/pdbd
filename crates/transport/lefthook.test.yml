@@ -30,10 +30,13 @@ test:datapath:
       run: |
         set -eu
         N=${N:-10} # rig's from-scratch campaign sample
-        pids=""
-        for s in $(seq 0 $(( N - 1 ))); do SLOT=$s lefthook run test:attempt & pids="$pids $!"; done
-        rc=0; for p in $pids; do wait "$p" || rc=1; done
-        N=$N lefthook run test:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
+        rc=0
+        for peer in ${PEERS:-pppd linkup}; do
+          pids=""
+          for s in $(seq 0 $(( N - 1 ))); do PEER=$peer SLOT=$s lefthook run test:attempt & pids="$pids $!"; done
+          for p in $pids; do wait "$p" || rc=1; done
+          N=$N lefthook run test:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
+        done
         [ "$rc" = 0 ]
 
 test:attempt:
@@ -45,9 +48,10 @@ test:attempt:
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
         ns="/var/run/netns/pdbd.${SLOT}"
-        $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.pppd@${SLOT}.service"
-        for _ in $(seq 1 100); do ip link show "ppp${SLOT}" >/dev/null 2>&1 && break; sleep 0.1; done # #24
-        ip link show "ppp${SLOT}" >/dev/null 2>&1 || { echo "slot ${SLOT}: pppd never opened its tty"; exit 1; }
+        case $PEER in pppd) dev="ppp${SLOT}" ;; linkup) dev="pdbd${SLOT}" ;; esac
+        $sudo systemctl start "pdbd.netns@${SLOT}.service" "pdbd.${PEER}@${SLOT}.service"
+        for _ in $(seq 1 100); do ip link show "$dev" >/dev/null 2>&1 && break; sleep 0.1; done # #24
+        ip link show "$dev" >/dev/null 2>&1 || { echo "${PEER} slot ${SLOT}: ${PEER} never opened its tty"; exit 1; }
         $sudo nsenter --net="$ns" ip link set lo up
         . /run/pdbd/linkup.env
         $sudo sh -c 'exec nsenter --net="$1" "$2" "/run/pdbd/$3/a" "10.0.$3.1" "10.0.$3.2" pdbd0 >"/run/pdbd/linkup.$3.log" 2>&1' _ "$ns" "$LINKUP" "$SLOT" </dev/null >/dev/null 2>&1 &
@@ -56,12 +60,12 @@ test:attempt:
         set -eu
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
         for _ in $(seq 1 20); do
-          $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "slot ${SLOT}: PASS"; exit 0; }
+          $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" ping -c1 -W1 "10.0.${SLOT}.2" >/dev/null 2>&1 && { echo "${PEER} slot ${SLOT}: PASS"; exit 0; }
           sleep 0.5
         done
-        echo "slot ${SLOT}: FAIL"
+        echo "${PEER} slot ${SLOT}: FAIL"
         echo "--- slot ${SLOT}: linkup"; $sudo cat "/run/pdbd/linkup.${SLOT}.log" 2>/dev/null || true
-        echo "--- slot ${SLOT}: pppd"; $sudo journalctl --no-pager -u "pdbd.pppd@${SLOT}" 2>/dev/null | tail -60 || true
+        echo "--- slot ${SLOT}: ${PEER}"; $sudo journalctl --no-pager -u "pdbd.${PEER}@${SLOT}" 2>/dev/null | tail -60 || true
         exit 1
     - name: tcp
       run: |
@@ -73,14 +77,14 @@ test:attempt:
         timeout 30 socat "TCP-LISTEN:7777,bind=${far},reuseaddr" EXEC:cat </dev/null >/dev/null 2>&1 &
         for _ in $(seq 1 50); do [ -n "$(ss -Hltn "src ${far}:7777")" ] && break; sleep 0.1; done
         timeout 20 $sudo nsenter --net="/var/run/netns/pdbd.${SLOT}" socat -t 10 - "TCP:${far}:7777" <"$dir/sent" >"$dir/got" || true
-        cmp -s "$dir/sent" "$dir/got" && { echo "slot ${SLOT}: TCP PASS"; exit 0; }
-        echo "slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
+        cmp -s "$dir/sent" "$dir/got" && { echo "${PEER} slot ${SLOT}: TCP PASS"; exit 0; }
+        echo "${PEER} slot ${SLOT}: TCP FAIL (echoed $(wc -c <"$dir/got") of 65536 bytes)"
         exit 1
     - name: down
       run: |
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
         for p in $($sudo ip netns pids "pdbd.${SLOT}" 2>/dev/null); do $sudo kill "$p" 2>/dev/null || true; done # kill the SUT while its netns still exists
-        $sudo systemctl stop "pdbd.pppd@${SLOT}.service" "pdbd.socat@${SLOT}.service" "pdbd.netns@${SLOT}.service" >/dev/null 2>&1 || true
+        $sudo systemctl stop "pdbd.${PEER}@${SLOT}.service" "pdbd.socat@${SLOT}.service" "pdbd.netns@${SLOT}.service" >/dev/null 2>&1 || true
 
 test:teardown:
   jobs:
@@ -90,9 +94,9 @@ test:teardown:
         sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
         for s in $(seq 0 $(( N - 1 ))); do
           for p in $($sudo ip netns pids "pdbd.$s" 2>/dev/null); do $sudo kill "$p" 2>/dev/null || true; done
-          $sudo systemctl stop "pdbd.pppd@$s.service" "pdbd.socat@$s.service" "pdbd.netns@$s.service" >/dev/null 2>&1 || true
+          $sudo systemctl stop "pdbd.pppd@$s.service" "pdbd.linkup@$s.service" "pdbd.socat@$s.service" "pdbd.netns@$s.service" >/dev/null 2>&1 || true
         done
-        $sudo systemctl reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat/pppd exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean
+        $sudo systemctl reset-failed 'pdbd.*' >/dev/null 2>&1 || true # socat and the peers exit non-zero when SIGTERM'd — clear it so the next campaign iteration starts clean
 
 test:privileged:
   jobs:
