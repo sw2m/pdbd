@@ -1,14 +1,6 @@
 extends:
-  - lefthook.repro.yml
+  - nix/lefthook.yml
 
-build:
-  jobs:
-    - name: repro # #62
-      run: lefthook run repro crates/pdb
-build:update:
-  jobs:
-    - name: repro
-      run: lefthook run repro crates/pdb update
 test:
   jobs:
     - name: cargo

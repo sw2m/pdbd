@@ -13,7 +13,7 @@ fanout:
         hook="{1}"
         plan() {
           for f in crates/*/lefthook.yml; do
-            [ "$(yq "has(\"$hook\")" "$f")" = true ] \
+            [ "$(LEFTHOOK_CONFIG="$f" lefthook dump | yq "has(\"$hook\")")" = true ] \
               && printf '%s\t%s\t%s\n' "$hook ($(basename "$(dirname "$f")"))" "$f" "$hook"
           done
           for leaf in lefthook.*.yml; do

@@ -592,13 +592,20 @@ CI is **one definition**, layered by tool:
     its own `flake.lock` and an `output` literal recording the expected output hash per
     system, the same way the flake pins any other hash.
 
-  Every `build` (the `repro` hook, `lefthook.repro.yml`) fails unless the crate's
-  `flake.lock` pins exactly what the root's does and the output hashes to its flake's
-  recorded `output`. So a build that drifts — a new toolchain,
+  Every `build` (`nix/lefthook.yml`, which each crate's config extends) fails unless the
+  crate's `flake.lock` pins exactly what the root's does and the output hashes to its
+  flake's recorded `output`. So a build that drifts — a new toolchain,
   a tampered dependency, nondeterminism — fails CI until `lefthook run build:update`
   re-records it, which shows up in the PR diff. `build:update` refreshes every crate's
   lock against the root's and rewrites the hashes; it never bumps the toolchain (that's
   `nix flake update` on the root, then `build:update`).
+
+  **Merger's duty: check every changed `output` hash.** Output hashes are expected to
+  change, but only where the PR's change reaches: the crates it touches, the crates that
+  depend on them, and the root workspace build (which covers every crate). Any other
+  changed hash must be explained before merging. A PR that only changes `pdb` but moves
+  `transport`'s hash is suspect: something other than the PR's source, such as a
+  dependency, the toolchain, or the build host, changed that build's output.
 - **lefthook** is the controller — checks, test fixtures (it installs/reaps the
   datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.

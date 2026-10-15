@@ -1,12 +1,8 @@
 build:root:
   jobs:
     - name: repro # #62
-      run: lefthook run repro .
-    - name: shell
-      run: 'nix develop --no-update-lock-file "path:$PWD" -c true'
+      run: DIR=. LEFTHOOK_CONFIG=nix/lefthook.yml lefthook run build
 build:update:root:
   jobs:
     - name: repro
-      run: lefthook run repro . update
-    - name: shell
-      run: 'nix develop "path:$PWD" -c true'
+      run: DIR=. LEFTHOOK_CONFIG=nix/lefthook.yml lefthook run build:update
