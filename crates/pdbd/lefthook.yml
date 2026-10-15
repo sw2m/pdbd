@@ -4,8 +4,8 @@ build:
       run: |
         set -eu
         flake="git+file://$(git rev-parse --show-toplevel)?dir=crates/pdbd"
-        nix build --no-update-lock-file --no-link "$flake"
-        nix build --no-update-lock-file --no-link --rebuild "$flake"
+        nix build --no-update-lock-file --no-link --option sandbox-fallback false "$flake"
+        nix build --no-update-lock-file --no-link --option sandbox-fallback false --rebuild "$flake"
 build:update:
   jobs:
     - name: lock

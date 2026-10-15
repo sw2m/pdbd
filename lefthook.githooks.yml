@@ -1,11 +1,14 @@
-# The git common-dir is mounted (absolute) beside the worktree, so the in-container
-# lefthook resolves git in a linked worktree, not only the main checkout.
+# The git common-dir and the worktree's own path are mounted (absolute) beside /pdbd, so
+# in-container git and nix's git fetcher resolve a linked worktree, not only the main checkout.
+# pre-push lifts podman's /proc masks and seccomp filter (still rootless) so nix can sandbox
+# the build-repro check.
 pre-commit:
   jobs:
     - name: autoformat
       run: |
         podman run --rm \
           -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --show-toplevel)":"$(git rev-parse --show-toplevel)" \
           -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
           pdbd-ci sh -c 'cargo fmt && buf format -w . && prettier --write "**/*.{json,yaml,yml,toml}"'
       stage_fixed: true
@@ -13,13 +16,15 @@ pre-commit:
       run: |
         podman run --rm \
           -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --show-toplevel)":"$(git rev-parse --show-toplevel)" \
           -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
           pdbd-ci lefthook run quality
 pre-push:
   jobs:
     - name: ci
       run: |
-        podman run --rm -e LEFTHOOK_EXCLUDE=privileged \
+        podman run --rm -e LEFTHOOK_EXCLUDE=privileged --security-opt unmask=ALL --security-opt seccomp=unconfined \
           -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
+          -v "$(git rev-parse --show-toplevel)":"$(git rev-parse --show-toplevel)" \
           -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \
           pdbd-ci lefthook run ci

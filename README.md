@@ -635,6 +635,10 @@ podman build -t pdbd-ci .
 podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 ```
 
+The `build` check needs nix's sandbox, which rootless podman blocks by default. Add
+`--security-opt unmask=ALL --security-opt seccomp=unconfined` (still rootless) to run it;
+the check refuses to fall back to an unsandboxed build.
+
 **Privilege is gated at run time, not baked into the image.** The image is *capable*
 of the privileged datapath checks (systemd), but routine runs stay unprivileged — you
 grant privilege only to reproduce a remote-CI datapath failure locally. That run boots
