@@ -355,7 +355,7 @@ The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/T
 
 A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so most tunnels are just another kernel socket, demuxed by 4-tuple. The only scenario a general data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a general mux buys nothing the kernel does not already give.
 
-**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge multiplexes **when it carries more than one flow**, by necessity: the `bind`/`forward` aliases forward **both** TCP and UDP, and a `,mux`/`,fork` LISTEN accepts many connections — all riding **one reliable TCP tunnel** over the lossy link (forwarded UDP especially must, since raw UDP would just drop). So such a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. A plain single-connection, single-protocol `LISTEN` carries one flow and needs no frame — a bare stream. Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
+**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge multiplexes **when it carries more than one flow**, by necessity: the `bind`/`forward` aliases forward **both** TCP and UDP, and a `,mux`/`,fork` LISTEN accepts many connections — all riding **one reliable TCP tunnel** over the lossy link (forwarded UDP especially must, since raw UDP would just drop). So such a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. A plain single-connection `LISTEN` runs the mux in **single-channel mode**: permanently one channel whose bytes cross as a bare stream, with no frame or window, so it costs what a raw stream costs, while the mux still owns its open, half-close, close and errors (see *Concurrency & flow control*). Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
 
 ### Concurrency & flow control
 
@@ -365,9 +365,60 @@ Independent implementations (`gopdb`, `jpdb`, a Rust `pdbd`) must interoperate o
 - **The cross-language contract is per-flow windowed flow control** — the convergent design of every mux protocol (SSH channels, RFC 4254; HTTP/2 `WINDOW_UPDATE`, RFC 9113; yamux; smux): a receiver advertises credit, a sender may not exceed it, window-update frames replenish it. It's a *wire* protocol, so it ports regardless of internal concurrency, and it's what propagates backpressure and stops one flow starving others inside a mux.
 - **Where pdbd needs it:**
   - **control plane + IPC** inherit it for free — gRPC's HTTP/2 gives per-stream + per-connection `WINDOW_UPDATE` across all three segments.
-  - **the bridge tunnel** is the one place pdbd authors it — its `(flow-id, proto, window)` frame carries a **per-flow credit**, same pattern, so a mixed-language bridge agrees on backpressure without agreeing on threads.
+  - **the bridge tunnel** is the one place pdbd authors it — its `(flow-id, proto, window)` frame carries a **per-flow credit**, same pattern, so a mixed-language bridge agrees on backpressure without agreeing on threads. Its wire contract is below.
   - **`exec`/`shell`** need none — a serialized single stream per kernel-TCP tunnel; kernel TCP *is* the flow control.
 - **The behavior spec stays event-loop-expressible** — readiness, explicit window credits, explicit close *frames* — never Rust-`async`-specific constructs (Future-drop cancellation, `select!`), so Go / Java / C can match it. The clinching precedent is ssh itself: OpenSSH (C, select loop), `russh` (Rust/tokio), Go's `x/crypto/ssh` (goroutines), Apache MINA (Java) all interoperate because the channel **window protocol** is uniform while each uses its native concurrency.
+
+
+#### The bridge tunnel's wire contract
+
+The bridge's mux runs its tunnel in one of two **modes, fixed when the tunnel is created**. Both ends learn the mode out of band, from the `Socat` request that set the tunnel up; which mode a bridge uses is the bridge's call, not the mux's. Neither mode sends a preamble or a version byte: `Hello`'s `wire_version` already versions this contract.
+
+**Single-channel mode** is permanently one channel. The tunnel's bytes *are* the channel's bytes: no header, no window, no credit. A single-channel end is therefore wire-identical to a raw TCP stream, and a plain `socat` on the far end interoperates. The channel's lifecycle rides the tunnel's TCP:
+
+- **open** — the tunnel's establishment. There is no other channel to open, ever.
+- **half-close** — a write shutdown (`shutdown(SHUT_WR)`, a TCP FIN). The peer reads EOF as the channel's close in that direction. Each direction closes on its own; the channel is finished once both have.
+- **reset** — abort the tunnel (a TCP RST, e.g. `SO_LINGER` 0); unsent bytes are dropped. A read or write error on the tunnel is a reset.
+- It carries a **byte stream only**. Datagram boundaries don't survive a bare stream, so a datagram endpoint needs multi-channel mode.
+
+**Multi-channel mode** carries framed flows: TCP stream flows and UDP datagrams, each with its own credit. It runs from one flow up to the cap; a multi-channel tunnel that drops to one flow stays multi-channel and keeps framing.
+
+Every frame is a 10-byte header in network byte order, followed by a payload on DATA only:
+
+```
+ 0        1        2               6               10
++--------+--------+---------------+---------------+=================+
+|  type  | proto  |  flow (u32)   |  field (u32)  | payload (DATA)  |
++--------+--------+---------------+---------------+=================+
+```
+
+| `type` | Frame | `field` |
+| --- | --- | --- |
+| 0 | DATA | payload length, 0–65535; exactly that many payload bytes follow |
+| 1 | OPEN | the opener's initial receive window, any u32 |
+| 2 | ACCEPT | the acceptor's initial receive window, any u32 |
+| 3 | WINDOW | credit increment, ≥ 1 |
+| 4 | CLOSE | 0 |
+| 5 | RESET | code: 0 refused, 1 aborted; any other value is read as aborted |
+
+- `proto` is the IANA protocol number: **6** TCP (a byte stream) or **17** UDP (datagrams). It is fixed by the OPEN and repeated on every frame of the flow.
+- A decoder rejects, as soon as the 10 header bytes arrive: an unknown `type` or `proto`, `flow` 0, a DATA length above 65535, a WINDOW of 0, and a CLOSE with a nonzero field. 65535 is one UDP datagram; it also bounds what a peer can make the receiver allocate.
+
+**Flow ids.** A flow id is a nonzero u32. The client side opens odd ids from 1 and the daemon side even ids from 2, each rising by 2 and never reused. An OPEN with the receiver's own parity, or with an id not greater than every id that peer opened before, is a violation. When the next id would pass 2³²−1, that side can open no more flows.
+
+**Handshake.** The opener sends `OPEN(w)`, stating its initial receive window. The acceptor answers `ACCEPT(w')` with its own, or `RESET(code)` to refuse. Until ACCEPT, the opener may send only RESET (to abandon the open) and the acceptor only ACCEPT or RESET. An acceptor at its cap (`max-children`: live flows on that side, opening and pending included) answers `RESET(0)` at once.
+
+**Credit.** Credit is counted in DATA payload bytes, separately for each direction of each flow.
+
+- A sender's credit starts at the window the peer stated (from ACCEPT for the opener, from OPEN for the acceptor). Each DATA it sends spends its payload length; each WINDOW it receives adds its increment.
+- A sender never sends more than its credit. A TCP DATA frame carries 1 to min(credit, 65535) bytes of the stream, never 0. A UDP DATA frame carries exactly one datagram, 0–65535 bytes, never split or coalesced, and needs its whole length in credit: without it, the sender waits or drops the datagram.
+- A receiver sends `WINDOW(n)` only for n bytes it has consumed (handed on to the flow's endpoint). So for each direction, *sender credit + DATA in flight + WINDOW in flight = the receive room the receiver still grants*. When to send it is local policy; the reference sends once the consumed bytes reach half the window.
+- DATA longer than the credit the receiver granted is a violation. So is a WINDOW that would take the sender's credit above 2³²−1.
+- A window of 0 is legal: that direction can carry nothing (zero-length datagrams aside) and never earns WINDOW.
+
+**Close and reset.** CLOSE is a half-close: its sender sends no more DATA on the flow, and its receiver sends no more WINDOW for it. DATA after a CLOSE, or a second CLOSE in the same direction, is a violation. RESET ends both directions at once, from any state. A flow is finished once CLOSE has crossed both ways, or once a RESET has crossed either way, and its id is retired.
+
+**Races and violations.** Frames for a retired id, or for an id that was refused, are ignored: an honest peer can race a WINDOW or DATA against the teardown (as in HTTP/2's *closed* state). A frame for an id that was never opened is a violation. Every decode error and every violation is fatal to the tunnel: the receiver aborts it, and each live flow ends as if reset with code 1. A tunnel EOF also ends each live flow that way; an EOF in the middle of a frame is a violation.
 
 ---
 

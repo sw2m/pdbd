@@ -36,15 +36,87 @@ pub enum Error {
     Field(u32),
 }
 
+impl Proto {
+    fn parse(b: u8) -> Result<Self, Error> {
+        match b {
+            6 => Ok(Self::Tcp),
+            17 => Ok(Self::Udp),
+            _ => Err(Error::Proto(b)),
+        }
+    }
+}
+
+impl Body {
+    fn kind(&self) -> u8 {
+        match self {
+            Self::Data(_) => 0,
+            Self::Open(_) => 1,
+            Self::Accept(_) => 2,
+            Self::Window(_) => 3,
+            Self::Close => 4,
+            Self::Reset(_) => 5,
+        }
+    }
+
+    fn field(&self) -> u32 {
+        match self {
+            Self::Data(d) => d.len() as u32,
+            Self::Open(n)
+            | Self::Accept(n)
+            | Self::Window(n)
+            | Self::Reset(n) => *n,
+            Self::Close => 0,
+        }
+    }
+}
+
 impl Frame {
     pub fn encode(&self, out: &mut Vec<u8>) {
-        let _ = out;
-        todo!()
+        out.push(self.body.kind());
+        out.push(self.proto as u8);
+        out.extend_from_slice(&self.flow.to_be_bytes());
+        out.extend_from_slice(&self.body.field().to_be_bytes());
+        if let Body::Data(d) = &self.body {
+            out.extend_from_slice(d);
+        }
     }
 
     pub fn decode(buf: &[u8]) -> Result<Option<(Frame, usize)>, Error> {
-        let _ = buf;
-        todo!()
+        let Some(head) = buf.get(..HEADER) else {
+            return Ok(None);
+        };
+        let word = |i: usize| {
+            u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]])
+        };
+        let (kind, flow, field) = (head[0], word(2), word(6));
+        if kind > 5 {
+            return Err(Error::Type(kind));
+        }
+        let proto = Proto::parse(head[1])?;
+        if flow == 0 {
+            return Err(Error::Flow);
+        }
+        let body = match kind {
+            0 if field > MAX => return Err(Error::Oversize(field)),
+            0 => {
+                let Some(d) = buf.get(HEADER..HEADER + field as usize) else {
+                    return Ok(None);
+                };
+                Body::Data(d.to_vec())
+            }
+            1 => Body::Open(field),
+            2 => Body::Accept(field),
+            3 if field == 0 => return Err(Error::Increment),
+            3 => Body::Window(field),
+            4 if field != 0 => return Err(Error::Field(field)),
+            4 => Body::Close,
+            _ => Body::Reset(field),
+        };
+        let n = match &body {
+            Body::Data(d) => HEADER + d.len(),
+            _ => HEADER,
+        };
+        Ok(Some((Frame { flow, proto, body }, n)))
     }
 }
 
@@ -59,12 +131,15 @@ impl Reader {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        let _ = bytes;
-        todo!()
+        self.buf.extend_from_slice(bytes);
     }
 
     pub fn pull(&mut self) -> Result<Option<Frame>, Error> {
-        todo!()
+        let Some((frame, n)) = Frame::decode(&self.buf)? else {
+            return Ok(None);
+        };
+        self.buf.drain(..n);
+        Ok(Some(frame))
     }
 
     pub fn pending(&self) -> usize {
@@ -74,8 +149,18 @@ impl Reader {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = f;
-        todo!()
+        match self {
+            Self::Type(t) => write!(f, "L4 bridge frame type {t:#04x} unknown"),
+            Self::Proto(p) => write!(f, "L4 bridge flow proto {p} unknown"),
+            Self::Flow => write!(f, "L4 bridge flow id 0 is reserved"),
+            Self::Oversize(n) => {
+                write!(f, "L4 bridge frame payload {n} exceeds {MAX}")
+            }
+            Self::Increment => write!(f, "L4 bridge window increment of 0"),
+            Self::Field(v) => {
+                write!(f, "L4 bridge CLOSE frame carries nonzero field {v}")
+            }
+        }
     }
 }
 
