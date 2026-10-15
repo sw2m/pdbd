@@ -1,0 +1,14 @@
+build:
+  jobs:
+    - name: cargo
+      root: "crates/socat/"
+      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p socat --locked'
+build:update:
+  jobs:
+    - name: rebuild
+      root: "crates/socat/"
+      run: 'nix develop "path:$PWD" -c cargo build -p socat --locked'
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p socat --locked

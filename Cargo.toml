@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/pdbd", "crates/pdb", "crates/transport"]
+members = [
+  "crates/proto",
+  "crates/pdbd",
+  "crates/pdb",
+  "crates/transport",
+  "crates/socat",
+  "crates/bridge",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -16,6 +23,7 @@ prost-types = "0.14"
 tonic-prost-build = "0.14"
 protox = "0.9"
 clap = { version = "4", features = ["derive", "env"] }  # env feature enables #[arg(env = ...)]
+proptest = "1"
 dotenvy = "0.15"  # loads .env into the process env for clap's #[arg(env)] to read
 
 [patch.crates-io]
