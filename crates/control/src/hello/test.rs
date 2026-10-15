@@ -329,14 +329,16 @@ proptest! {
         match server.answer(&client.request()) {
             Ok(agreed) => {
                 let seen = client.accept(&server.response(&agreed));
-                prop_assert_eq!(
-                    seen,
+                let expected = if agreed.wire < client.floor {
+                    Err(Refusal::Version { wire: agreed.wire, range: client.floor..=client.wire })
+                } else {
                     Ok(Agreement {
                         implementation: server.implementation.clone(),
                         wire: agreed.wire,
                         features: agreed.features.clone(),
                     })
-                );
+                };
+                prop_assert_eq!(seen, expected);
                 prop_assert!(agreed.features.is_subset(&client.features));
                 prop_assert!(agreed.features.is_subset(&server.features));
             }
