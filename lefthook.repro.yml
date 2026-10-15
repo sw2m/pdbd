@@ -1,0 +1,33 @@
+# {1}=flake dir (`.` = root), {2}=update to re-lock and re-record, else check. #62
+repro:
+  jobs:
+    - name: repro
+      run: |
+        set -eu
+        top=$(git rev-parse --show-toplevel)
+        dir="{1}"
+        flake="git+file://$top?shallow=1"
+        [ "$dir" = . ] || flake="$flake&dir=$dir"
+        manifest=$top/$dir/flake.nix
+        system=$(nix eval --impure --raw --expr builtins.currentSystem)
+        build() { nix build --no-link --print-out-paths --option sandbox-fallback false "$@" "$flake"; }
+        case "{2}" in
+          update)
+            if [ "$dir" = . ]; then nix flake lock "$flake"; else nix flake update --flake "$flake"; fi
+            sum=$(nix hash path "$(build)")
+            if grep -q "\"$system\" = \"sha256-" "$manifest"; then
+              sed -i "s|\"$system\" = \"sha256-[^\"]*\";|\"$system\" = \"$sum\";|" "$manifest"
+            else
+              sed -i "/output = {/a \"$system\" = \"$sum\";" "$manifest"
+            fi
+            ;;
+          *)
+            pins() { yq -p json -o tsv '.nodes[].locked.narHash // ""' "$1" | sort -u; }
+            [ "$dir" = . ] || [ "$(pins "$top/$dir/flake.lock")" = "$(pins "$top/flake.lock")" ] \
+              || { echo "$dir: flake.lock pins differ from the root's; run build:update" >&2; exit 1; }
+            out=$(build --no-update-lock-file)
+            sum=$(nix hash path "$out")
+            want=$(nix eval --no-update-lock-file --raw "$flake#output.$system" 2>/dev/null || true)
+            [ "$sum" = "$want" ] || { echo "$dir: output $sum != flake's ${want:-<none>} for $system" >&2; exit 1; }
+            ;;
+        esac

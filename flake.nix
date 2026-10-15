@@ -82,5 +82,9 @@
             pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
           ];
         };
-      });
+      }) // {
+        output = { # expected build output per system; `lefthook run build:update` rewrites it
+          "x86_64-linux" = "sha256-A7IAgwPexItPGUJ82XBw2M9IGwc2xDlBzX3sobs6rZU=";
+        };
+      };
 }

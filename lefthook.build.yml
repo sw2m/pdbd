@@ -1,12 +1,12 @@
 build:root:
   jobs:
     - name: repro # #62
-      run: sh nix/repro.sh .
+      run: lefthook run repro .
     - name: shell
       run: 'nix develop --no-update-lock-file "path:$PWD" -c true'
 build:update:root:
   jobs:
     - name: repro
-      run: sh nix/repro.sh . update
+      run: lefthook run repro . update
     - name: shell
       run: 'nix develop "path:$PWD" -c true'

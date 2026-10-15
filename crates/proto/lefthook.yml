@@ -1,11 +1,14 @@
+extends:
+  - lefthook.repro.yml
+
 build:
   jobs:
     - name: repro # #62
-      run: sh nix/repro.sh crates/proto
+      run: lefthook run repro crates/proto
 build:update:
   jobs:
     - name: repro
-      run: sh nix/repro.sh crates/proto update
+      run: lefthook run repro crates/proto update
 test:
   jobs:
     - name: cargo

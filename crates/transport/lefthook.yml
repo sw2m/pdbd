@@ -1,15 +1,16 @@
 extends:
+  - lefthook.repro.yml
   - crates/transport/lefthook.*.yml
 
 build:
   jobs:
     - name: repro # #62
-      run: sh nix/repro.sh crates/transport
+      run: lefthook run repro crates/transport
 
 build:update:
   jobs:
     - name: repro
-      run: sh nix/repro.sh crates/transport update
+      run: lefthook run repro crates/transport update
 
 # Datapath test — #12-A
 test:

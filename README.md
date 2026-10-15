@@ -589,11 +589,12 @@ CI is **one definition**, layered by tool:
   - **build** — the root flake builds the whole workspace, and each crate's own flake
     (`crates/<crate>/flake.nix`) builds that crate with the root's toolchain, as a
     sandboxed derivation (shared builder `nix/crate.nix`). Every one of these flakes has
-    its own `flake.lock` and an `output.sha256` recording the expected output per system.
+    its own `flake.lock` and an `output` literal recording the expected output hash per
+    system, the same way the flake pins any other hash.
 
-  Every `build` (`nix/repro.sh`) fails unless: the crate's `flake.lock` pins exactly what
-  the root's does; the build rebuilds bit-identically (`nix build --rebuild`); and the
-  output hashes to the recorded `output.sha256`. So a build that drifts — a new toolchain,
+  Every `build` (the `repro` hook, `lefthook.repro.yml`) fails unless the crate's
+  `flake.lock` pins exactly what the root's does and the output hashes to its flake's
+  recorded `output`. So a build that drifts — a new toolchain,
   a tampered dependency, nondeterminism — fails CI until `lefthook run build:update`
   re-records it, which shows up in the PR diff. `build:update` refreshes every crate's
   lock against the root's and rewrites the hashes; it never bumps the toolchain (that's
