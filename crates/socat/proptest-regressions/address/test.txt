@@ -7,3 +7,4 @@
 cc 93447f87ad790fe418151090c763f1dc64d822706a8362572f92aa6561071283 # shrinks to a = "", c = "/", b = ""
 cc ac5eef719b668cc325a085d01e292c62a355b29b14b2bca0e8be43d9dc0e36f3 # shrinks to s = ""
 cc cc694d495c078c78bb3add3945abdc72fef1d2d07225f08e9dae7caf302008b3 # shrinks to h = "a", p = 65536
+cc 861e4ae6162199c80c8c70473eb017f07f48c07b8fe5e0dc19d9d024af540f2e # shrinks to a = Address { target: Vsock(Connect { cid: 100000000, port: 1000000000 }), options: Options { mux: false, cap: None, rest: Unchecked([Opt { name: "a00_a__", value: Some("") }]) } }, e = Substitute(10788579352055408099, 128)

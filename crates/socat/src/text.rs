@@ -3,8 +3,8 @@ pub struct Text(String);
 
 impl Text {
     pub fn new(s: impl Into<String>) -> Option<Self> {
-        let _ = s.into();
-        todo!()
+        let s = s.into();
+        (!s.is_empty()).then_some(Self(s))
     }
 
     pub fn as_str(&self) -> &str {
