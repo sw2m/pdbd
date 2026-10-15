@@ -1,17 +1,6 @@
 extends:
+  - nix/lefthook.yml
   - crates/transport/lefthook.*.yml
-
-build:
-  jobs:
-    - name: cargo
-      root: "crates/transport/"
-      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p transport --locked'
-
-build:update:
-  jobs:
-    - name: rebuild
-      root: "crates/transport/"
-      run: 'nix develop "path:$PWD" -c cargo build -p transport --locked'
 
 # Datapath test — #12-A
 test:

@@ -1,13 +1,6 @@
-build:
-  jobs:
-    - name: cargo
-      root: "crates/pdb/"
-      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p pdb --locked'
-build:update:
-  jobs:
-    - name: rebuild
-      root: "crates/pdb/"
-      run: 'nix develop "path:$PWD" -c cargo build -p pdb --locked'
+extends:
+  - nix/lefthook.yml
+
 test:
   jobs:
     - name: cargo

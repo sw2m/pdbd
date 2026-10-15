@@ -583,10 +583,29 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 CI is **one definition**, layered by tool:
 
-- **nix** gives build reproducibility — a flake-locked toolchain, and each crate carries
-  its own build flake, so every `build` runs `cargo build` under
-  `nix develop --no-update-lock-file` and flake-lock verification is part of the report.
-  Regenerate stale locks with `lefthook run build:update` (fans out to every crate + the root).
+- **nix** gives build security and reproducibility, in two layers:
+  - **toolchain** — the root flake pins the repo's one toolchain (nixpkgs + rust-overlay,
+    by narHash in the root `flake.lock`); it is also the one dev environment.
+  - **build** — the root flake builds the whole workspace, and each crate's own flake
+    (`crates/<crate>/flake.nix`) builds that crate with the root's toolchain, as a
+    sandboxed derivation (shared builder `nix/crate.nix`). Every one of these flakes has
+    its own `flake.lock` and an `output` literal recording the expected output hash per
+    system, the same way the flake pins any other hash.
+
+  Every `build` (`nix/lefthook.yml`, which each crate's config extends) fails unless the
+  crate's `flake.lock` pins exactly what the root's does and the output hashes to its
+  flake's recorded `output`. So a build that drifts — a new toolchain,
+  a tampered dependency, nondeterminism — fails CI until `lefthook run build:update`
+  re-records it, which shows up in the PR diff. `build:update` refreshes every crate's
+  lock against the root's and rewrites the hashes; it never bumps the toolchain (that's
+  `nix flake update` on the root, then `build:update`).
+
+  **Merger's duty: check every changed `output` hash.** Output hashes are expected to
+  change, but only where the PR's change reaches: the crates it touches, the crates that
+  depend on them, and the root workspace build (which covers every crate). Any other
+  changed hash must be explained before merging. A PR that only changes `pdb` but moves
+  `transport`'s hash is suspect: something other than the PR's source, such as a
+  dependency, the toolchain, or the build host, changed that build's output.
 - **lefthook** is the controller — checks, test fixtures (it installs/reaps the
   datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.
@@ -631,6 +650,10 @@ its repro is asserted. Build and use it:
 podman build -t pdbd-ci .
 podman run --rm -v "$PWD":/pdbd -w /pdbd pdbd-ci lefthook run quality
 ```
+
+The `build` check needs nix's sandbox, which rootless podman blocks by default. Add
+`--security-opt unmask=ALL --security-opt seccomp=unconfined` (still rootless) to run it;
+the check refuses to fall back to an unsandboxed build.
 
 **Privilege is gated at run time, not baked into the image.** The image is *capable*
 of the privileged datapath checks (systemd), but routine runs stay unprivileged — you

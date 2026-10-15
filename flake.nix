@@ -17,7 +17,9 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
-        rust = pkgs.rust-bin.stable."1.88.0".default; # kept in step with the crate toolchain
+        rust = pkgs.rust-bin.stable."1.88.0".default; # the repo's one toolchain; crate flakes take it from here (#62)
+        build = crate: import ./nix/crate.nix { inherit pkgs rust crate; root = ./.; };
+        crates = map baseNameOf (pkgs.lib.importTOML ./Cargo.toml).workspace.members;
         # pinned to the rig's portable tooling/bin/lefthook (byte-identical release binary) so CI and the git-hook shims run one lefthook
         lefthook = let
           v = "2.1.15";
@@ -58,6 +60,10 @@
             --add-flags "--plugin=${pluginModules}/node_modules/prettier-plugin-toml/lib/index.cjs"
         '';
       in {
+        packages = pkgs.lib.genAttrs crates build // {
+          default = build null;
+          toolchain = rust;
+        };
         devShells.default = pkgs.mkShell {
           packages = [
             rust
@@ -76,5 +82,9 @@
             pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
           ];
         };
-      });
+      }) // {
+        output = { # expected build output per system; `lefthook run build:update` rewrites it
+          "x86_64-linux" = "sha256-A7IAgwPexItPGUJ82XBw2M9IGwc2xDlBzX3sobs6rZU=";
+        };
+      };
 }

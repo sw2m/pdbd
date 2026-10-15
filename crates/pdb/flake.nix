@@ -1,26 +1,14 @@
 {
-  description = "pdbd pdb — crate build env";
+  description = "pdbd pdb — cargo build repro";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
+  inputs.root.url = "path:../..";
+
+  outputs = { root, ... }: {
+    output = { # expected build output per system; `lefthook run build:update` rewrites it
+      "x86_64-linux" = "sha256-DH3hqMK7UBZWlFIM4f8ZNJAMt0Cep/RZzBv7arng/yI=";
     };
+    packages = builtins.mapAttrs (system: packages: {
+      default = packages.pdb;
+    }) root.packages;
   };
-
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ (import rust-overlay) ];
-        };
-        rust = pkgs.rust-bin.stable."1.88.0".default;
-      in {
-        devShells.default = pkgs.mkShell {
-          packages = [ rust pkgs.pkg-config ];
-        };
-      });
 }
