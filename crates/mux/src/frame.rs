@@ -75,18 +75,21 @@ impl Body {
 
 impl Frame {
     pub fn write(out: &mut Vec<u8>, flow: u32, proto: Proto, payload: &[u8]) {
-        let _ = (out, flow, proto, payload);
-        todo!()
+        out.push(0);
+        out.push(proto as u8);
+        out.extend_from_slice(&flow.to_be_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(payload);
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
+        if let Body::Data(d) = &self.body {
+            return Self::write(out, self.flow, self.proto, d);
+        }
         out.push(self.body.kind());
         out.push(self.proto as u8);
         out.extend_from_slice(&self.flow.to_be_bytes());
         out.extend_from_slice(&self.body.field().to_be_bytes());
-        if let Body::Data(d) = &self.body {
-            out.extend_from_slice(d);
-        }
     }
 
     pub fn decode(buf: &[u8]) -> Result<Option<(Frame, usize)>, Error> {
@@ -97,7 +100,7 @@ impl Frame {
             u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]])
         };
         let (kind, flow, field) = (head[0], word(2), word(6));
-        if kind > 5 {
+        if kind > 6 {
             return Err(Error::Type(kind));
         }
         let proto = Proto::parse(head[1])?;
@@ -106,6 +109,7 @@ impl Frame {
         }
         let body = match kind {
             0 if field > MAX => return Err(Error::Oversize(field)),
+            0 if field == 0 && proto == Proto::Tcp => return Err(Error::Empty),
             0 => {
                 let Some(d) = buf.get(HEADER..HEADER + field as usize) else {
                     return Ok(None);
@@ -118,7 +122,9 @@ impl Frame {
             3 => Body::Window(field),
             4 if field != 0 => return Err(Error::Field(field)),
             4 => Body::Close,
-            _ => Body::Reset(field),
+            5 => Body::Reset(field),
+            _ if field != 0 => return Err(Error::Field(field)),
+            _ => Body::Stop,
         };
         let n = match &body {
             Body::Data(d) => HEADER + d.len(),
@@ -128,9 +134,12 @@ impl Frame {
     }
 }
 
+const SLACK: usize = 1 << 16; // consumed bytes kept before compacting the read buffer
+
 #[derive(Debug, Default)]
 pub struct Reader {
     buf: Vec<u8>,
+    at: usize,
 }
 
 impl Reader {
@@ -139,19 +148,31 @@ impl Reader {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        if self.at == self.buf.len() {
+            self.buf.clear();
+            self.at = 0;
+        }
         self.buf.extend_from_slice(bytes);
     }
 
     pub fn pull(&mut self) -> Result<Option<Frame>, Error> {
-        let Some((frame, n)) = Frame::decode(&self.buf)? else {
+        let Some((frame, n)) = Frame::decode(self.peek())? else {
             return Ok(None);
         };
-        self.buf.drain(..n);
+        self.at += n;
+        if self.at > SLACK && self.at * 2 > self.buf.len() {
+            self.buf.drain(..self.at);
+            self.at = 0;
+        }
         Ok(Some(frame))
     }
 
+    pub fn peek(&self) -> &[u8] {
+        &self.buf[self.at..]
+    }
+
     pub fn pending(&self) -> usize {
-        self.buf.len()
+        self.buf.len() - self.at
     }
 }
 

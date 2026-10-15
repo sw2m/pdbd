@@ -56,6 +56,13 @@ pub struct Flow {
 }
 
 impl Flow {
+    fn floor(proto: Proto, window: u32) -> Result<(), Error> {
+        match proto {
+            Proto::Udp if window < MAX => Err(Error::Window(window)),
+            _ => Ok(()),
+        }
+    }
+
     fn new(
         id: u32,
         proto: Proto,
@@ -93,6 +100,7 @@ impl Flow {
         proto: Proto,
         window: u32,
     ) -> Result<(Self, Frame), Error> {
+        Self::floor(proto, window)?;
         let flow = Self::new(id, proto, State::Opening, 0, window);
         let frame = flow.frame(Body::Open(window));
         Ok((flow, frame))
@@ -102,6 +110,7 @@ impl Flow {
         let Body::Open(credit) = open.body else {
             return Err(Error::State);
         };
+        Self::floor(open.proto, credit)?;
         Ok(Self::new(
             open.flow,
             open.proto,
@@ -115,6 +124,7 @@ impl Flow {
         if self.state != State::Pending {
             return Err(Error::State);
         }
+        Self::floor(self.proto, self.window)?;
         self.state = State::Open;
         Ok(self.frame(Body::Accept(self.window)))
     }
@@ -122,6 +132,9 @@ impl Flow {
     pub fn send(&mut self, data: &[u8]) -> Result<usize, Error> {
         if self.sent || self.state == State::Reset {
             return Err(Error::Closed);
+        }
+        if self.halted {
+            return Err(Error::Stopped);
         }
         if self.state == State::Pending {
             return Err(Error::State);
@@ -160,18 +173,26 @@ impl Flow {
         let open = self.state == State::Open;
         match frame.body {
             Body::Open(_) => Err(Error::State),
-            Body::Stop => todo!(),
             Body::Reset(code) => {
                 self.state = State::Reset;
-                Ok(Event::Reset(code))
+                Ok(Event::Reset(match code {
+                    REFUSED => REFUSED,
+                    _ => ABORTED,
+                }))
             }
             Body::Accept(window) if self.state == State::Opening => {
+                Self::floor(self.proto, window)?;
                 self.credit = window;
                 self.state = State::Open;
                 Ok(Event::Accepted)
             }
             _ if !open => Err(Error::State),
             Body::Accept(_) => Err(Error::State),
+            Body::Stop if self.halted => Err(Error::State),
+            Body::Stop => {
+                self.halted = true;
+                Ok(Event::Stopped)
+            }
             Body::Data(_) if self.received => Err(Error::Closed),
             Body::Data(d) => {
                 let len = d.len() as u32;
@@ -182,6 +203,9 @@ impl Flow {
                     });
                 }
                 self.granted -= len;
+                if self.stopped {
+                    return Ok(Event::Dropped(len));
+                }
                 self.held += len;
                 Ok(Event::Data(d))
             }
@@ -211,7 +235,11 @@ impl Flow {
     }
 
     pub fn flush(&mut self) -> Option<Frame> {
-        if self.freed == 0 || self.received || self.state != State::Open {
+        if self.freed == 0
+            || self.received
+            || self.stopped
+            || self.state != State::Open
+        {
             return None;
         }
         let inc = std::mem::take(&mut self.freed);
@@ -239,23 +267,44 @@ impl Flow {
     }
 
     pub fn stop(&mut self) -> Result<Frame, Error> {
-        let _ = (self.stopped, self.halted);
-        todo!()
+        if self.state == State::Reset || self.stopped || self.received {
+            return Err(Error::Closed);
+        }
+        if self.state != State::Open {
+            return Err(Error::State);
+        }
+        self.stopped = true;
+        self.held = 0;
+        Ok(self.frame(Body::Stop))
     }
 
     pub fn grow(&mut self, window: u32) -> Result<(), Error> {
-        let _ = window;
-        todo!()
+        if window < self.window {
+            return Err(Error::State);
+        }
+        match self.state {
+            State::Pending => self.granted += window - self.window,
+            _ => self.freed += window - self.window,
+        }
+        self.window = window;
+        Ok(())
     }
 
     pub fn mark(&mut self, now: u64) {
-        let _ = now;
-        todo!()
+        self.since = now;
     }
 
     pub fn overdue(&self, now: u64, deadline: u64) -> bool {
-        let _ = (now, deadline, self.since);
-        todo!()
+        let stuck = match self.state {
+            State::Opening | State::Pending => true,
+            State::Open => self.sent != self.received,
+            State::Reset => false,
+        };
+        stuck && now.saturating_sub(self.since) >= deadline
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped
     }
 
     pub fn id(&self) -> u32 {

@@ -212,6 +212,16 @@ fn grow() {
     assert_eq!(b.flush(), None);
 }
 
+// #58 — growing before the ACCEPT goes out enlarges the initial grant
+#[test]
+fn early() {
+    let (_, open) = Flow::open(1, Proto::Tcp, 10).unwrap();
+    let mut b = Flow::offer(&open, 10).unwrap();
+    b.grow(25).unwrap();
+    assert_eq!((b.granted(), b.freed()), (25, 0));
+    assert_eq!(b.accept(), Ok(frame(Proto::Tcp, Body::Accept(25))));
+}
+
 // #58 — RFC 4254 §5.2: the window never exceeds 2^32-1
 #[test]
 fn overflow() {

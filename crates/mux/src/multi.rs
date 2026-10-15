@@ -1,24 +1,28 @@
-use crate::flow::{self, Flow, ABORTED, REFUSED};
-use crate::frame::{Body, Frame, Proto, Reader};
+use crate::flow::{self, Flow, State, ABORTED, REFUSED};
+use crate::frame::{Body, Frame, Proto, Reader, HEADER, MAX};
 use crate::{Error, Event, Side, Transmit};
 use std::collections::{BTreeMap, VecDeque};
+
+const QUANTUM: usize = HEADER + MAX as usize; // one full DATA frame per flow per transmit
 
 #[derive(Debug)]
 pub struct Multi {
     side: Side,
     window: u32,
     cap: Option<u32>,
+    budget: u64,
+    used: u64,
+    now: u64,
+    paused: bool,
     next: Option<u32>,
     peer: u32,
     flows: BTreeMap<u32, Flow>,
     reader: Reader,
     events: VecDeque<Event>,
-    out: Vec<u8>,
+    control: Vec<u8>,
+    lanes: BTreeMap<u32, Vec<u8>>,
+    ring: VecDeque<u32>,
     dead: bool,
-    budget: u64,
-    used: u64,
-    now: u64,
-    paused: bool,
 }
 
 impl Multi {
@@ -31,17 +35,19 @@ impl Multi {
             side,
             window,
             cap,
+            budget,
+            used: 0,
+            now: 0,
+            paused: false,
             next: Some(first),
             peer: 0,
             flows: BTreeMap::new(),
             reader: Reader::new(),
             events: VecDeque::new(),
-            out: Vec::new(),
+            control: Vec::new(),
+            lanes: BTreeMap::new(),
+            ring: VecDeque::new(),
             dead: false,
-            budget,
-            used: 0,
-            now: 0,
-            paused: false,
         }
     }
 
@@ -61,25 +67,64 @@ impl Multi {
         self.cap.filter(|c| self.flows.len() as u32 >= *c)
     }
 
-    fn emit(&mut self, frame: Frame) {
-        frame.encode(&mut self.out);
-    }
-
     fn get(&mut self, id: u32) -> Result<&mut Flow, Error> {
         self.flows.get_mut(&id).ok_or(Error::Unknown(id))
     }
 
+    fn signal(&mut self, frame: Frame) {
+        frame.encode(&mut self.control);
+    }
+
+    fn lane(&mut self, id: u32) -> &mut Vec<u8> {
+        if !self.lanes.contains_key(&id) {
+            self.ring.push_back(id);
+        }
+        self.lanes.entry(id).or_default()
+    }
+
+    fn discard(&mut self, id: u32) {
+        if self.lanes.remove(&id).is_some() {
+            self.ring.retain(|&x| x != id);
+        }
+    }
+
     fn reap(&mut self, id: u32) {
-        if self.flows.get(&id).is_some_and(Flow::done) {
+        if let Some(flow) = self.flows.get(&id).filter(|f| f.done()) {
+            self.used -= u64::from(flow.held());
             self.flows.remove(&id);
+        }
+    }
+
+    fn mark(&mut self, id: u32) {
+        let now = self.now;
+        if let Some(flow) = self.flows.get_mut(&id) {
+            flow.mark(now);
         }
     }
 
     fn abort(&mut self) {
         self.dead = true;
+        self.used = 0;
+        self.control.clear();
+        self.lanes.clear();
+        self.ring.clear();
         let flows = std::mem::take(&mut self.flows);
         self.events
             .extend(flows.into_keys().map(|id| Event::Reset(id, ABORTED)));
+    }
+
+    fn blocked(&self) -> bool {
+        let head = self.reader.peek();
+        if head.len() < HEADER || head[0] != 0 || self.used == 0 {
+            return false;
+        }
+        let id = u32::from_be_bytes([head[2], head[3], head[4], head[5]]);
+        let len = u32::from_be_bytes([head[6], head[7], head[8], head[9]]);
+        let held = self
+            .flows
+            .get(&id)
+            .is_some_and(|f| f.state() == State::Open && !f.stopped());
+        held && self.used + u64::from(len) > self.budget
     }
 
     fn route(&mut self, frame: Frame) -> Result<(), Error> {
@@ -93,14 +138,15 @@ impl Multi {
             }
             self.peer = id;
             if self.full().is_some() {
-                self.emit(Frame {
+                self.signal(Frame {
                     body: Body::Reset(REFUSED),
                     ..frame
                 });
                 return Ok(());
             }
-            let flow = Flow::offer(&frame, self.window)
+            let mut flow = Flow::offer(&frame, self.window)
                 .map_err(|e| Error::Peer(id, e))?;
+            flow.mark(self.now);
             self.flows.insert(id, flow);
             self.events.push_back(Event::Open(id, frame.proto));
             return Ok(());
@@ -112,12 +158,32 @@ impl Multi {
             };
         };
         let event = match flow.receive(frame).map_err(|e| Error::Peer(id, e))? {
-            flow::Event::Accepted => Event::Accepted(id),
-            flow::Event::Data(d) => Event::Data(id, d),
+            flow::Event::Accepted => {
+                flow.mark(self.now);
+                Event::Accepted(id)
+            }
+            flow::Event::Data(d) => {
+                self.used += d.len() as u64;
+                Event::Data(id, d)
+            }
+            flow::Event::Dropped(_) => return Ok(()),
             flow::Event::Window(n) => Event::Window(id, n),
-            flow::Event::Closed => Event::Closed(id),
-            flow::Event::Reset(code) => Event::Reset(id, code),
-            flow::Event::Stopped | flow::Event::Dropped(_) => todo!(),
+            flow::Event::Closed => {
+                flow.mark(self.now);
+                Event::Closed(id)
+            }
+            flow::Event::Reset(code) => {
+                self.discard(id);
+                Event::Reset(id, code)
+            }
+            flow::Event::Stopped => {
+                if let Ok(close) = flow.close() {
+                    flow.mark(self.now);
+                    self.discard(id);
+                    close.encode(self.lane(id));
+                }
+                Event::Stopped(id)
+            }
         };
         self.events.push_back(event);
         self.reap(id);
@@ -130,6 +196,10 @@ impl Multi {
         }
         self.reader.feed(bytes);
         loop {
+            self.paused = self.blocked();
+            if self.paused {
+                return Ok(());
+            }
             let frame = match self.reader.pull() {
                 Ok(Some(frame)) => frame,
                 Ok(None) => return Ok(()),
@@ -150,9 +220,9 @@ impl Multi {
             return Err(Error::Dead);
         }
         self.abort();
-        match self.reader.pending() {
-            0 => Ok(()),
-            _ => Err(Error::Truncated),
+        match self.reader.pending() == 0 || self.paused {
+            true => Ok(()),
+            false => Err(Error::Truncated),
         }
     }
 
@@ -167,8 +237,38 @@ impl Multi {
     }
 
     pub fn transmit(&mut self) -> Option<Transmit> {
-        (!self.out.is_empty())
-            .then(|| Transmit::Bytes(std::mem::take(&mut self.out)))
+        let mut out = std::mem::take(&mut self.control);
+        for _ in 0..self.ring.len() {
+            let Some(id) = self.ring.pop_front() else {
+                break;
+            };
+            let Some(lane) = self.lanes.get_mut(&id) else {
+                continue;
+            };
+            let mut k = 0;
+            while k < lane.len() {
+                let size = HEADER
+                    + match lane[k] {
+                        0 => u32::from_be_bytes([
+                            lane[k + 6],
+                            lane[k + 7],
+                            lane[k + 8],
+                            lane[k + 9],
+                        ]) as usize,
+                        _ => 0,
+                    };
+                if k > 0 && k + size > QUANTUM {
+                    break;
+                }
+                k += size;
+            }
+            out.extend(lane.drain(..k));
+            match lane.is_empty() {
+                true => _ = self.lanes.remove(&id),
+                false => self.ring.push_back(id),
+            }
+        }
+        (!out.is_empty()).then_some(Transmit::Bytes(out))
     }
 
     pub fn open(&mut self, proto: Proto) -> Result<u32, Error> {
@@ -179,53 +279,53 @@ impl Multi {
             return Err(Error::Cap(cap));
         }
         let id = self.next.ok_or(Error::Exhausted)?;
-        self.next = id.checked_add(2);
-        let (flow, frame) =
+        let (mut flow, frame) =
             Flow::open(id, proto, self.window).map_err(|e| match e {
                 flow::Error::Window(w) => Error::Window(w),
                 e => Error::Flow(id, e),
             })?;
+        self.next = id.checked_add(2);
+        flow.mark(self.now);
         self.flows.insert(id, flow);
-        self.emit(frame);
+        self.signal(frame);
         Ok(id)
     }
 
     pub fn accept(&mut self, id: u32) -> Result<(), Error> {
         let frame = self.get(id)?.accept().map_err(|e| Error::Flow(id, e))?;
-        self.emit(frame);
+        self.mark(id);
+        self.signal(frame);
         Ok(())
     }
 
     pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
         let flow = self.get(id)?;
         let n = flow.send(data).map_err(|e| Error::Flow(id, e))?;
-        let frame = Frame {
-            flow: id,
-            proto: flow.proto(),
-            body: Body::Data(data[..n].to_vec()),
-        };
-        self.emit(frame);
+        let proto = flow.proto();
+        Frame::write(self.lane(id), id, proto, &data[..n]);
         Ok(n)
     }
 
     pub fn consume(&mut self, id: u32, n: u32) -> Result<(), Error> {
         let frame = self.get(id)?.consume(n).map_err(|e| Error::Flow(id, e))?;
+        self.used -= u64::from(n);
         if let Some(frame) = frame {
-            self.emit(frame);
+            self.signal(frame);
         }
         Ok(())
     }
 
     pub fn flush(&mut self, id: u32) -> Result<(), Error> {
         if let Some(frame) = self.get(id)?.flush() {
-            self.emit(frame);
+            self.signal(frame);
         }
         Ok(())
     }
 
     pub fn close(&mut self, id: u32) -> Result<(), Error> {
         let frame = self.get(id)?.close().map_err(|e| Error::Flow(id, e))?;
-        self.emit(frame);
+        self.mark(id);
+        frame.encode(self.lane(id));
         self.reap(id);
         Ok(())
     }
@@ -233,29 +333,42 @@ impl Multi {
     pub fn reset(&mut self, id: u32, code: u32) -> Result<(), Error> {
         let frame =
             self.get(id)?.reset(code).map_err(|e| Error::Flow(id, e))?;
-        self.emit(frame);
+        self.discard(id);
+        self.signal(frame);
         self.reap(id);
         Ok(())
     }
 
     pub fn stop(&mut self, id: u32) -> Result<(), Error> {
-        let _ = (id, self.budget, self.now);
-        todo!()
+        let flow = self.get(id)?;
+        let held = flow.held();
+        let frame = flow.stop().map_err(|e| Error::Flow(id, e))?;
+        self.used -= u64::from(held);
+        self.signal(frame);
+        Ok(())
     }
 
     pub fn grow(&mut self, id: u32, window: u32) -> Result<(), Error> {
-        let _ = (id, window);
-        todo!()
+        self.get(id)?.grow(window).map_err(|e| Error::Flow(id, e))
     }
 
     pub fn tick(&mut self, now: u64) {
-        let _ = now;
-        todo!()
+        self.now = now;
     }
 
     pub fn expire(&mut self, now: u64, deadline: u64) {
-        let _ = (now, deadline);
-        todo!()
+        self.tick(now);
+        let overdue: Vec<u32> = self
+            .flows
+            .iter()
+            .filter(|(_, f)| f.overdue(now, deadline))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in overdue {
+            if self.reset(id, ABORTED).is_ok() {
+                self.events.push_back(Event::Reset(id, ABORTED));
+            }
+        }
     }
 
     pub fn paused(&self) -> bool {
