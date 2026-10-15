@@ -7,6 +7,7 @@ pub enum Part {
     Path,
     Command,
     Cid,
+    Name,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,9 @@ pub enum Kind {
     Value(String),
     Duplicate(String),
     Cap,
+    Dual,
+    Base(String),
+    Resource(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +51,7 @@ impl fmt::Display for Part {
             Self::Path => "path",
             Self::Command => "command",
             Self::Cid => "vsock cid",
+            Self::Name => "name",
         })
     }
 }
@@ -68,6 +73,11 @@ impl fmt::Display for Kind {
             Self::Value(o) => write!(f, "invalid value for option {o:?}"),
             Self::Duplicate(o) => write!(f, "duplicate option {o:?}"),
             Self::Cap => write!(f, "max-children without mux"),
+            Self::Dual => write!(f, "dual address \"!!\" is not supported"),
+            Self::Base(n) => {
+                write!(f, "ambiguous number {n:?}: write it in plain decimal")
+            }
+            Self::Resource(r) => write!(f, "invalid resource path {r:?}"),
         }
     }
 }
