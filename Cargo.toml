@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/pdbd", "crates/pdb", "crates/transport"]
+members = [
+  "crates/proto",
+  "crates/pdbd",
+  "crates/pdb",
+  "crates/socat",
+  "crates/transport"
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -17,6 +23,7 @@ tonic-prost-build = "0.14"
 protox = "0.9"
 clap = { version = "4", features = ["derive", "env"] }  # env feature enables #[arg(env = ...)]
 dotenvy = "0.15"  # loads .env into the process env for clap's #[arg(env)] to read
+proptest = "1"
 
 [patch.crates-io]
 ppproto = { git = "https://github.com/sw2m/ppproto", rev = "2a608947e49aa0c35ca8195dddf1d7167751c8aa" }  # #45: peer-input panics; drop once embassy-rs/ppproto#8 is released
