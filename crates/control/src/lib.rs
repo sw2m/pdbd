@@ -1,4 +1,4 @@
-// The control channel — see README §"Control plane" and §"Topology & lifecycle".
+// see README §"Control plane" and §"Topology & lifecycle"
 pub mod client;
 pub mod hello;
 pub mod server;

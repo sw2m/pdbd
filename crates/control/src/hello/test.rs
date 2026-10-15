@@ -283,7 +283,7 @@ fn valid() -> impl Strategy<Value = Offer> {
     })
 }
 
-fn wire() -> impl Strategy<Value = HelloRequest> {
+fn greeting() -> impl Strategy<Value = HelloRequest> {
     (id(), 0u32..6, prop::collection::vec(token(), 0..6)).prop_map(
         |(implementation, wire_version, features)| HelloRequest {
             implementation,
@@ -296,7 +296,7 @@ fn wire() -> impl Strategy<Value = HelloRequest> {
 proptest! {
     // #14
     #[test]
-    fn answer_matches_the_reference(o in valid(), r in wire()) {
+    fn answer_matches_the_reference(o in valid(), r in greeting()) {
         let theirs: BTreeSet<String> = r.features.iter().cloned().collect();
         let expected = if r.implementation.is_empty() {
             Err(Refusal::Implementation)
@@ -349,7 +349,7 @@ proptest! {
 
     // #14
     #[test]
-    fn accept_never_widens_the_offer(o in valid(), r in wire()) {
+    fn accept_never_widens_the_offer(o in valid(), r in greeting()) {
         let answer = HelloResponse {
             implementation: r.implementation,
             wire_version: r.wire_version,

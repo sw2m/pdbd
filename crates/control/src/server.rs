@@ -12,7 +12,7 @@ use tonic::codegen::BoxStream;
 use tonic::transport::server::Connected;
 use tonic::{Request, Response, Status};
 
-const UNSERVED: &str = "L7 (control): only Hello is served so far"; // #15, #16 add the rest
+const UNSERVED: &str = "L7 (control): only Hello is served so far"; // #15 #16 #17 #18 #19
 
 pub struct Server {
     offer: Offer,
