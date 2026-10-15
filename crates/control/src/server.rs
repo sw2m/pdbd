@@ -12,6 +12,8 @@ use tonic::codegen::BoxStream;
 use tonic::transport::server::Connected;
 use tonic::{Request, Response, Status};
 
+const UNSERVED: &str = "L7 (control): only Hello is served so far"; // #15, #16 add the rest
+
 pub struct Server {
     offer: Offer,
 }
@@ -39,7 +41,11 @@ impl Server {
 
 impl From<Refusal> for Status {
     fn from(refusal: Refusal) -> Self {
-        todo!()
+        let message = format!("L7 (control) Hello refused: {refusal}");
+        match refusal {
+            Refusal::Version { .. } => Status::failed_precondition(message),
+            _ => Status::invalid_argument(message),
+        }
     }
 }
 
@@ -52,48 +58,49 @@ impl ControlService for Server {
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloResponse>, Status> {
-        todo!()
+        let agreed = self.offer.answer(request.get_ref())?;
+        Ok(Response::new(self.offer.response(&agreed)))
     }
 
     async fn exec(
         &self,
         _: Request<ExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 
     async fn shell(
         &self,
         _: Request<ShellRequest>,
     ) -> Result<Response<Self::ShellStream>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 
     async fn resize(
         &self,
         _: Request<ResizeRequest>,
     ) -> Result<Response<ResizeResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 
     async fn socat(
         &self,
         _: Request<SocatRequest>,
     ) -> Result<Response<SocatResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 
     async fn drop(
         &self,
         _: Request<DropRequest>,
     ) -> Result<Response<DropResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 
     async fn list(
         &self,
         _: Request<ListRequest>,
     ) -> Result<Response<ListResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(UNSERVED))
     }
 }

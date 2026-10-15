@@ -1,5 +1,4 @@
-#![allow(dead_code, unused_variables)] // Red Gate stubs, lifted by the implementation
-                                       // The control channel — see README §"Control plane" and §"Topology & lifecycle".
+// The control channel — see README §"Control plane" and §"Topology & lifecycle".
 pub mod client;
 pub mod hello;
 pub mod server;
