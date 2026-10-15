@@ -89,10 +89,13 @@ impl Net {
     }
 
     fn name(self) -> &'static str {
-        NETS.iter()
-            .find(|(_, n, _)| *n == self)
-            .map(|(name, ..)| *name)
-            .unwrap_or_default()
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+            Self::Ws => "WS",
+            Self::Wss => "WSS",
+            Self::Webtransport => "WEBTRANSPORT",
+        }
     }
 }
 
