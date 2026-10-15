@@ -5,7 +5,8 @@ members = [
   "crates/pdbd",
   "crates/pdb",
   "crates/socat",
-  "crates/transport"
+  "crates/transport",
+  "crates/mux"
 ]
 
 [workspace.package]
