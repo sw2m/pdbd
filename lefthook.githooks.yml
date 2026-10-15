@@ -1,7 +1,4 @@
-# The git common-dir and the worktree's own path are mounted (absolute) beside /pdbd, so
-# in-container git and nix's git fetcher resolve a linked worktree, not only the main checkout.
-# pre-push lifts podman's /proc masks and seccomp filter (still rootless) so nix can sandbox
-# the build-repro check.
+# see README "The environment contract"
 pre-commit:
   jobs:
     - name: autoformat

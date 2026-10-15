@@ -4,16 +4,12 @@ extends:
 build:
   jobs:
     - name: repro # #62
-      run: |
-        set -eu
-        flake="git+file://$(git rev-parse --show-toplevel)?dir=crates/transport"
-        nix build --no-update-lock-file --no-link --option sandbox-fallback false "$flake"
-        nix build --no-update-lock-file --no-link --option sandbox-fallback false --rebuild "$flake"
+      run: sh nix/repro.sh crates/transport
 
 build:update:
   jobs:
-    - name: lock
-      run: 'nix build --no-link "git+file://$(git rev-parse --show-toplevel)?dir=crates/transport"'
+    - name: repro
+      run: sh nix/repro.sh crates/transport update
 
 # Datapath test — #12-A
 test:

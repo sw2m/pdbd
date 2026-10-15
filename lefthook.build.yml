@@ -1,8 +1,12 @@
 build:root:
   jobs:
-    - name: lock
+    - name: repro # #62
+      run: sh nix/repro.sh .
+    - name: shell
       run: 'nix develop --no-update-lock-file "path:$PWD" -c true'
 build:update:root:
   jobs:
-    - name: rebuild
+    - name: repro
+      run: sh nix/repro.sh . update
+    - name: shell
       run: 'nix develop "path:$PWD" -c true'

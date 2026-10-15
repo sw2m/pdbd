@@ -1,15 +1,11 @@
 build:
   jobs:
     - name: repro # #62
-      run: |
-        set -eu
-        flake="git+file://$(git rev-parse --show-toplevel)?dir=crates/pdb"
-        nix build --no-update-lock-file --no-link --option sandbox-fallback false "$flake"
-        nix build --no-update-lock-file --no-link --option sandbox-fallback false --rebuild "$flake"
+      run: sh nix/repro.sh crates/pdb
 build:update:
   jobs:
-    - name: lock
-      run: 'nix build --no-link "git+file://$(git rev-parse --show-toplevel)?dir=crates/pdb"'
+    - name: repro
+      run: sh nix/repro.sh crates/pdb update
 test:
   jobs:
     - name: cargo

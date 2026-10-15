@@ -583,13 +583,21 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 
 CI is **one definition**, layered by tool:
 
-- **nix** gives build reproducibility — the root flake is the one pinned dev environment,
-  and each crate carries its own build flake that builds the crate as a derivation (the
-  pinned toolchain, the workspace `Cargo.lock`, the nix sandbox; shared builder
-  `nix/crate.nix`). Every `build` builds that derivation, then rebuilds it with
-  `nix build --rebuild`, failing unless the output is bit-identical; flake-lock
-  verification is part of the report. Regenerate stale locks with `lefthook run build:update`
-  (fans out to every crate + the root).
+- **nix** gives build security and reproducibility, in two layers:
+  - **toolchain** — the root flake pins the repo's one toolchain (nixpkgs + rust-overlay,
+    by narHash in the root `flake.lock`); it is also the one dev environment.
+  - **build** — the root flake builds the whole workspace, and each crate's own flake
+    (`crates/<crate>/flake.nix`) builds that crate with the root's toolchain, as a
+    sandboxed derivation (shared builder `nix/crate.nix`). Every one of these flakes has
+    its own `flake.lock` and an `output.sha256` recording the expected output per system.
+
+  Every `build` (`nix/repro.sh`) fails unless: the crate's `flake.lock` pins exactly what
+  the root's does; the build rebuilds bit-identically (`nix build --rebuild`); and the
+  output hashes to the recorded `output.sha256`. So a build that drifts — a new toolchain,
+  a tampered dependency, nondeterminism — fails CI until `lefthook run build:update`
+  re-records it, which shows up in the PR diff. `build:update` refreshes every crate's
+  lock against the root's and rewrites the hashes; it never bumps the toolchain (that's
+  `nix flake update` on the root, then `build:update`).
 - **lefthook** is the controller — checks, test fixtures (it installs/reaps the
   datapath's systemd units), reports, fanout, and the git hooks.
 - **podman** supplies the runner environment when the host isn't already one.
