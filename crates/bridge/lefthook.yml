@@ -1,0 +1,14 @@
+build:
+  jobs:
+    - name: cargo
+      root: "crates/bridge/"
+      run: 'nix develop --no-update-lock-file "path:$PWD" -c cargo build -p bridge --locked'
+build:update:
+  jobs:
+    - name: rebuild
+      root: "crates/bridge/"
+      run: 'nix develop "path:$PWD" -c cargo build -p bridge --locked'
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p bridge --locked

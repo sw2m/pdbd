@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7b55630f3af3574312e2900867209000cb9e497ea3af1a1fdffaa7df44278085 # shrinks to s = "client:"
+cc cb06c125cb41fb8ace3349204933608ac13d8bce747e5a371e364c7d0a62611b # shrinks to bind = Socket { host: Some("a"), port: 0 }, forward = Socket { host: Some("a"), port: 0 }, ingress = Client
+cc 9ccb7cb1a7f038e45699db8ee2c32455b5a56dccee216690e5bdcc612aefa93a # shrinks to side = Client, spec = Alias(Bind, Socket { host: Some("a"), port: 0 })
+cc 4ad6a74879891db8873614f738f5a72c9f80332281263d521bde8b58eb6c8903 # shrinks to side = Client, a = Alias(Bind, Socket { host: Some("a"), port: 0 }), b = Alias(Bind, Socket { host: Some("a"), port: 0 })
