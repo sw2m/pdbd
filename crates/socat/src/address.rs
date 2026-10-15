@@ -1,4 +1,5 @@
-use crate::{Error, Mode, Options, Target};
+use crate::lex::Lexed;
+use crate::{Error, Kind, Mode, Options, Target};
 use std::fmt;
 use std::str::FromStr;
 
@@ -10,8 +11,13 @@ pub struct Address {
 
 impl Address {
     pub fn parse(s: &str) -> Result<Self, Error> {
-        let _ = s;
-        todo!()
+        if s.is_empty() {
+            return Err(Error::new(0, Kind::Empty));
+        }
+        let Lexed { params, options } = Lexed::lex(s)?;
+        let target = Target::parse(&params)?;
+        let options = Options::parse(&options, target.mode())?;
+        Ok(Self { target, options })
     }
 
     pub fn mode(&self) -> Option<Mode> {
@@ -28,8 +34,8 @@ impl FromStr for Address {
 }
 
 impl fmt::Display for Address {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.target, self.options)
     }
 }
 

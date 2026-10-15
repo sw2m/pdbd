@@ -50,7 +50,7 @@ fn plain(target: Target, rest: Vec<Opt>) -> Address {
     }
 }
 
-// #57 — README §"L1 — the transport" `--socket` block
+// #57
 #[test]
 fn readme_transports() {
     let any = Ipv4Addr::UNSPECIFIED;
@@ -103,7 +103,7 @@ fn readme_transports() {
     }
 }
 
-// #57 — every other address form the README names, with its canonical print
+// #57
 #[test]
 fn readme_forms() {
     let cases = [
@@ -173,7 +173,7 @@ fn readme_forms() {
     }
 }
 
-// #57 — socat(1): keywords and option names are case-insensitive, with synonyms
+// #57
 #[test]
 fn synonyms_and_case() {
     let same = [
@@ -222,7 +222,7 @@ fn listen_host_is_optional() {
     );
 }
 
-// #57 — socat(1): IPv6 hosts are bracketed; printing compresses them
+// #57
 #[test]
 fn ipv6_brackets() {
     assert_eq!(
@@ -239,7 +239,7 @@ fn ipv6_brackets() {
     );
 }
 
-// #57 — an unquoted command or path keeps its colons
+// #57
 #[test]
 fn rest_keeps_colons() {
     assert_eq!(
@@ -250,7 +250,7 @@ fn rest_keeps_colons() {
     assert_eq!(parse("FILE:/a:b").to_string(), "FILE:'/a:b'");
 }
 
-// #57 — socat(1) ≥1.5.0 lexical rules
+// #57
 #[test]
 fn quoting() {
     assert_eq!(
@@ -274,7 +274,7 @@ fn quoting() {
     );
 }
 
-// #57 — README §"Control plane": `,mux`, its alias `,fork`, max-children
+// #57
 #[test]
 fn mux_and_cap() {
     let none = parse("TCP-LISTEN:8080").options;
@@ -295,7 +295,7 @@ fn mux_and_cap() {
     assert_eq!(parse("PTY").mode(), None);
 }
 
-// #57 — precise errors, byte offset into the address
+// #57
 #[test]
 fn errors_carry_positions() {
     let cases: &[(&str, usize, Kind)] = &[
@@ -574,14 +574,14 @@ fn respell(a: &Address, sp: &Spelling) -> String {
 }
 
 proptest! {
-    // #57 — parse ∘ print is the identity on typed addresses
+    // #57
     #[test]
     fn roundtrip(a in address()) {
         let s = a.to_string();
         prop_assert_eq!(Address::parse(&s), Ok(a), "{}", s);
     }
 
-    // #57 — print(parse(s)) is canonical for every spelling of an address
+    // #57
     #[test]
     fn canonical(a in address(), sp in spelling()) {
         let s = respell(&a, &sp);
@@ -590,16 +590,31 @@ proptest! {
         prop_assert_eq!(parsed, Ok(a), "{}", s);
     }
 
-    // #57 — arbitrary input never panics, and anything accepted re-prints
+    // #57
     #[test]
     fn arbitrary_input(s in "[ -~]{0,40}") {
-        if let Ok(a) = Address::parse(&s) {
-            let p = a.to_string();
-            prop_assert_eq!(Address::parse(&p), Ok(a), "{} → {}", s, p);
-        }
+        check(&s)?;
     }
 
-    // #57 — an out-of-range port is rejected at the port's offset
+    // #57
+    #[test]
+    fn mutated(a in address(), at in any::<usize>(), c in "[ -~]?") {
+        let mut s = a.to_string();
+        let mut at = at % (s.len() + 1);
+        while !s.is_char_boundary(at) {
+            at -= 1;
+        }
+        match c.chars().next() {
+            Some(c) => s.insert(at, c),
+            None if at < s.len() => {
+                s.remove(at);
+            }
+            None => {}
+        }
+        check(&s)?;
+    }
+
+    // #57
     #[test]
     fn port_out_of_range(h in "[a-z]{1,8}", p in 65536u64..) {
         let s = format!("TCP:{h}:{p}");
@@ -609,17 +624,17 @@ proptest! {
         );
     }
 
-    // #57 — an unknown address type is rejected at byte 0
+    // #57
     #[test]
     fn unknown_keyword(k in "[A-Z][A-Z0-9-]{0,10}") {
-        prop_assume!(!synonyms_all().contains(&k));
+        prop_assume!(!keywords().contains(&k));
         prop_assert_eq!(
             Address::parse(&format!("{k}:x")),
             Err(Error::new(0, Kind::Keyword(k.clone())))
         );
     }
 
-    // #57 — a host with a character outside the hostname set is rejected at the host
+    // #57
     #[test]
     fn invalid_host(a in "[a-z]{0,4}", c in "[@#$%^&*+~/]", b in "[a-z]{0,4}") {
         let h = format!("{a}{c}{b}");
@@ -629,7 +644,7 @@ proptest! {
         );
     }
 
-    // #57 — an unterminated quote is rejected at the quote's offset
+    // #57
     #[test]
     fn unterminated_quote(a in address(), body in "[^']{0,8}") {
         let s = format!("{a},x='{body}");
@@ -637,7 +652,7 @@ proptest! {
         prop_assert_eq!(Address::parse(&s), Err(Error::new(at, Kind::Quote)));
     }
 
-    // #57 — an unclosed bracket is rejected at the bracket's offset
+    // #57
     #[test]
     fn unclosed_bracket(a in address(), open in "[\\[({]", body in "[a-z]{0,8}") {
         let s = format!("{a},x={open}{body}");
@@ -646,7 +661,21 @@ proptest! {
     }
 }
 
-fn synonyms_all() -> Vec<String> {
+fn check(s: &str) -> Result<(), TestCaseError> {
+    match Address::parse(s) {
+        Ok(a) => {
+            let p = a.to_string();
+            prop_assert_eq!(Address::parse(&p), Ok(a), "{} → {}", s, p);
+        }
+        Err(e) => {
+            prop_assert!(e.at <= s.len(), "{:?}: {}", s, e);
+            prop_assert!(s.is_char_boundary(e.at), "{:?}: {}", s, e);
+        }
+    }
+    Ok(())
+}
+
+fn keywords() -> Vec<String> {
     let mut all = vec![
         "FILE", "OPEN", "GOPEN", "EXEC", "STDIO", "PTY", "TCP", "UDP",
     ]
