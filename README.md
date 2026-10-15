@@ -321,6 +321,25 @@ Independent implementations (`gopdb`, `jpdb`, a Rust `pdbd`) must interoperate o
   - **`exec`/`shell`** need none — a serialized single stream per kernel-TCP tunnel; kernel TCP *is* the flow control.
 - **The behavior spec stays event-loop-expressible** — readiness, explicit window credits, explicit close *frames* — never Rust-`async`-specific constructs (Future-drop cancellation, `select!`), so Go / Java / C can match it. The clinching precedent is ssh itself: OpenSSH (C, select loop), `russh` (Rust/tokio), Go's `x/crypto/ssh` (goroutines), Apache MINA (Java) all interoperate because the channel **window protocol** is uniform while each uses its native concurrency.
 
+### The bridge frame
+
+A framed bridge (an alias, or a `,mux`/`,fork` LISTEN) speaks this on its one reliable tunnel; a single-connection raw bridge carries a bare stream instead. It is raw binary, not protobuf — the tunnel is not an RPC — so the contract lives here, not in `pdbd.proto`. Every frame is a 10-byte header, big-endian (network order), then a payload only on `DATA`:
+
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 1 | `type` | `0` DATA · `1` OPEN · `2` ACCEPT · `3` WINDOW · `4` CLOSE · `5` RESET |
+| 1 | 1 | `proto` | the flow's protocol, by IANA number: `6` TCP (a byte stream) · `17` UDP (datagrams) |
+| 2 | 4 | `flow` | flow id; `0` is reserved. The `client` side allocates odd ids, the `daemon` side even, each strictly increasing and never reused |
+| 6 | 4 | `field` | DATA: payload length (≤ 65535) · OPEN / ACCEPT: the sender's initial receive window · WINDOW: credit increment (≥ 1) · CLOSE: `0` · RESET: a code (`0` = refused) |
+| 10 | `field` | payload | DATA only: TCP stream bytes, or exactly one UDP datagram (never split, never coalesced) |
+
+Flow control is per flow, in bytes of DATA payload only, RFC 4254 §5.2-style:
+
+- **Open.** The opener sends `OPEN(window)`, granting the peer that much credit; the peer answers `ACCEPT(window)` granting its own, or `RESET(0)` to refuse (e.g. at the `max-children` cap). The opener may not send DATA before `ACCEPT`.
+- **Credit.** A sender's credit starts at the peer's advertised window, drops by each DATA payload, and rises by each WINDOW increment. A sender never exceeds it; a receiver that sees DATA beyond the credit it granted treats it as a flow-control error. A window never exceeds 2³²−1; an update that would overflow it is an error.
+- **Replenish.** The receiver returns credit with `WINDOW(n)` as the application consumes bytes; *when* is local policy (the reference sends once half the window is freed). Updates replenish exactly: credit is conserved across the wire.
+- **Close.** `CLOSE` half-closes the sender's direction (no more DATA from it); a flow ends once both directions have closed. `RESET` ends it at once in both directions. Frames racing a flow's end are ignored, as in HTTP/2's *closed* state.
+
 ---
 
 ## The `pdb` / `pdbd` CLI
