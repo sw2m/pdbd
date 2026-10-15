@@ -116,28 +116,20 @@ impl Single {
         Ok(())
     }
 
-    pub fn stop(&mut self, id: u32) -> Result<(), Error> {
-        let _ = id;
-        todo!()
+    pub fn stop(&mut self, _: u32) -> Result<(), Error> {
+        Err(Error::Mode)
     }
 
-    pub fn grow(&mut self, id: u32, window: u32) -> Result<(), Error> {
-        let _ = (id, window);
-        todo!()
+    pub fn grow(&mut self, _: u32, _: u32) -> Result<(), Error> {
+        Err(Error::Mode)
     }
 
-    pub fn tick(&mut self, now: u64) {
-        let _ = now;
-        todo!()
-    }
+    pub fn tick(&mut self, _: u64) {}
 
-    pub fn expire(&mut self, now: u64, deadline: u64) {
-        let _ = (now, deadline);
-        todo!()
-    }
+    pub fn expire(&mut self, _: u64, _: u64) {}
 
     pub fn paused(&self) -> bool {
-        todo!()
+        false
     }
 
     pub fn done(&self) -> bool {

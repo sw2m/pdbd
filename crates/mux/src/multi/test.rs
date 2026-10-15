@@ -585,7 +585,7 @@ fn many() {
     c.feed(&burst).unwrap();
     assert_eq!(events(&mut c).len(), n);
     let spent = start.elapsed();
-    assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is well under 1s in debug
+    assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is well under 1s in debug; the quadratic parser took ~20s
 }
 
 #[derive(Debug, Clone)]

@@ -151,7 +151,7 @@ fn many() {
     }
     assert_eq!((got, r.pending()), (n, 0));
     let spent = start.elapsed();
-    assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is ~0.1s in debug; quadratic is minutes
+    assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is ~0.1s in debug; the quadratic parser took ~24s
 }
 
 // #58

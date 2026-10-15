@@ -347,30 +347,43 @@ Every frame is a 10-byte header in network byte order, followed by a payload on 
 | `type` | Frame | `field` |
 | --- | --- | --- |
 | 0 | DATA | payload length, 0–65535; exactly that many payload bytes follow |
-| 1 | OPEN | the opener's initial receive window, any u32 |
-| 2 | ACCEPT | the acceptor's initial receive window, any u32 |
+| 1 | OPEN | the opener's initial receive window |
+| 2 | ACCEPT | the acceptor's initial receive window |
 | 3 | WINDOW | credit increment, ≥ 1 |
 | 4 | CLOSE | 0 |
-| 5 | RESET | code: 0 refused, 1 aborted; any other value is read as aborted |
+| 5 | RESET | code: 0 refused, 1 aborted; a receiver reads any other value as aborted |
+| 6 | STOP | 0 |
 
 - `proto` is the IANA protocol number: **6** TCP (a byte stream) or **17** UDP (datagrams). It is fixed by the OPEN and repeated on every frame of the flow.
-- A decoder rejects, as soon as the 10 header bytes arrive: an unknown `type` or `proto`, `flow` 0, a DATA length above 65535, a WINDOW of 0, and a CLOSE with a nonzero field. 65535 is one UDP datagram; it also bounds what a peer can make the receiver allocate.
+- A decoder rejects, as soon as the 10 header bytes arrive: an unknown `type` or `proto`, `flow` 0, a DATA length above 65535, an empty TCP DATA, a WINDOW of 0, and a CLOSE or STOP with a nonzero field. 65535 is one UDP datagram; it also bounds what a peer can make the receiver allocate.
 
-**Flow ids.** A flow id is a nonzero u32. The client side opens odd ids from 1 and the daemon side even ids from 2, each rising by 2 and never reused. An OPEN with the receiver's own parity, or with an id not greater than every id that peer opened before, is a violation. When the next id would pass 2³²−1, that side can open no more flows.
+**Flow ids.** A flow id is a nonzero u32. The client side opens odd ids from 1 and the daemon side even ids from 2. Each side's ids rise and are never reused, but a side may skip ids. An OPEN with the receiver's own parity, or with an id not greater than every id that peer opened before, is a violation. An OPEN of id X **retires every lower id of the opener's parity that was never opened** (as HTTP/2 does, RFC 9113 §5.1.1): frames for those ids are ignored like any retired id's, never answered as strays. When the next id would pass 2³²−1, that side can open no more flows.
 
-**Handshake.** The opener sends `OPEN(w)`, stating its initial receive window. The acceptor answers `ACCEPT(w')` with its own, or `RESET(code)` to refuse. Until ACCEPT, the opener may send only RESET (to abandon the open) and the acceptor only ACCEPT or RESET. An acceptor at its cap (`max-children`: live flows on that side, opening and pending included) answers `RESET(0)` at once.
+**Handshake.** The opener sends `OPEN(w)`, stating its initial receive window. The acceptor answers `ACCEPT(w')` with its own, or `RESET(code)` to refuse. Until ACCEPT, the opener may send only RESET (to abandon the open) and the acceptor only ACCEPT or RESET. An acceptor at its cap (`max-children`: live flows on that side, opening and pending included) answers `RESET(0)` at once. A UDP flow's OPEN and ACCEPT each state a window of **at least 65535**, so the largest datagram can always be sent; a smaller one is a violation.
 
 **Credit.** Credit is counted in DATA payload bytes, separately for each direction of each flow.
 
 - A sender's credit starts at the window the peer stated (from ACCEPT for the opener, from OPEN for the acceptor). Each DATA it sends spends its payload length; each WINDOW it receives adds its increment.
 - A sender never sends more than its credit. A TCP DATA frame carries 1 to min(credit, 65535) bytes of the stream, never 0. A UDP DATA frame carries exactly one datagram, 0–65535 bytes, never split or coalesced, and needs its whole length in credit: without it, the sender waits or drops the datagram.
-- A receiver sends `WINDOW(n)` only for n bytes it has consumed (handed on to the flow's endpoint). So for each direction, *sender credit + DATA in flight + WINDOW in flight = the receive room the receiver still grants*. When to send it is local policy; the reference sends once the consumed bytes reach half the window.
+- A receiver sends `WINDOW(n)` for bytes it has consumed (handed on to the flow's endpoint). It **may also over-grant** — send WINDOW beyond what it consumed — to enlarge its window; it never shrinks one. So for each direction, *sender credit + DATA in flight + WINDOW in flight = the receive room the receiver grants*. When to send WINDOW, and whether to grow the window, is local policy; the reference sends once the consumed bytes reach half the window.
 - DATA longer than the credit the receiver granted is a violation. So is a WINDOW that would take the sender's credit above 2³²−1.
-- A window of 0 is legal: that direction can carry nothing (zero-length datagrams aside) and never earns WINDOW.
+- A TCP window of 0 is legal: that direction carries nothing until the receiver over-grants.
 
-**Close and reset.** CLOSE is a half-close: its sender sends no more DATA on the flow, and its receiver sends no more WINDOW for it. DATA after a CLOSE, or a second CLOSE in the same direction, is a violation. RESET ends both directions at once, from any state. A flow is finished once CLOSE has crossed both ways, or once a RESET has crossed either way, and its id is retired.
+**Close, stop and reset.** Each direction of a flow ends on its own.
 
-**Races and violations.** Frames for a retired id, or for an id that was refused, are ignored: an honest peer can race a WINDOW or DATA against the teardown (as in HTTP/2's *closed* state). A frame for an id that was never opened is a violation. Every decode error and every violation is fatal to the tunnel: the receiver aborts it, and each live flow ends as if reset with code 1. A tunnel EOF also ends each live flow that way; an EOF in the middle of a frame is a violation.
+- **CLOSE** is the sender's half-close: it sends no more DATA on the flow. DATA after a CLOSE, or a second CLOSE in the same direction, is a violation. Receiving CLOSE stops the receiver making *new* grants for that direction; a WINDOW it already sent may still cross or follow the CLOSE, and the CLOSE's sender accepts it (RFC 9113 §6.9).
+- **STOP** is the receiver's half-close of the other direction: its sender stops reading (QUIC `STOP_SENDING`). On receiving STOP, the peer sends no more DATA on the flow: it discards whatever it hasn't sent yet and sends CLOSE, unless it already has. DATA that arrives after a STOP was sent is discarded, but it is still checked against credit, and an overrun is still a violation. A STOP sender makes no further grants. STOP is legal only after ACCEPT, at most once per direction, and may cross the peer's CLOSE; a second STOP in the same direction is a violation.
+- **RESET** ends both directions at once, from any state, and its sender discards unsent data.
+- A flow is finished once CLOSE has crossed both ways, or once a RESET has crossed either way, and its id is retired.
+
+**Races and violations.** Frames for a retired id, or for an id that was refused, are ignored: an honest peer can race a WINDOW or DATA against the teardown (as in HTTP/2's *closed* state). A frame for an id not opened yet (above the peer's last OPEN, or one of this side's ids it hasn't allocated) is a violation. Every decode error and every violation is fatal to the tunnel: the receiver aborts it, and each live flow ends as if reset with code 1. A tunnel EOF also ends each live flow that way; an EOF in the middle of a frame is a violation.
+
+**Local policy, not wire.** These bind one implementation, not the protocol, and the reference ships them as follows:
+
+- **A receive budget across all flows** (smux's `MaxReceiveBuffer`): bytes delivered but not yet consumed, summed over every flow, are bounded by a budget the caller must choose. When the next DATA would exceed it, the mux stops decoding and the caller stops reading the tunnel until consumption, a stop, a close or a reset refunds room. It is local because a shared *window* on the wire would let one unread flow stall every other one (yamux has none; Nerdbank.Streams v2 moved to per-channel windows for this reason).
+- **Expiry.** A flow left opening, pending or half-closed longer than the caller's deadline is reset with code 1, freeing its cap slot (yamux's stream open and close timeouts). The caller supplies the clock.
+- **Scheduling.** Control frames are sent before any DATA, and flows with queued DATA take turns, one bounded chunk each.
+- **No ping, keepalive or drain frame.** Liveness is L2's (LCP echo), and a graceful drain or teardown is the control plane's (`Drop`); the tunnel adds neither.
 
 ---
 
