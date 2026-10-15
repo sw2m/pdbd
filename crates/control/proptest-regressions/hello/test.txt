@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cc551b77f01a74a3b46f011dd7321d2b44409bcd40c56f4e4c080b051e570847 # shrinks to o = Offer { implementation: "pdbd", wire: 1, floor: 1, features: {} }, r = HelloRequest { implementation: "", wire_version: 0, features: [] }
+cc 72f31e0e26d24a93a0195abd0f0b4f693f4f2fc430f142419ccee9d1db091627 # shrinks to a = Offer { implementation: "pdbd", wire: 1, floor: 1, features: {} }, b = Offer { implementation: "pdbd", wire: 1, floor: 1, features: {} }
+cc 9b54060ff277ef05212e7e02f36cdfb0a27df2fe7faa90a956def43576fca86b # shrinks to o = Offer { implementation: "pdbd", wire: 1, floor: 1, features: {} }, r = HelloRequest { implementation: "", wire_version: 0, features: [] }
