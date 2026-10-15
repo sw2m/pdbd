@@ -1,5 +1,5 @@
 // see README §"Why the data plane needs no muxer at all" (the bridge
-// exception) and §"Concurrency & flow control"; wire layout in #19
+// exception), §"Concurrency & flow control" and §"The bridge frame"
 
 pub mod endpoint;
 pub mod flow;
