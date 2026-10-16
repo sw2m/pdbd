@@ -8,25 +8,3 @@ publish = false  # internal crate
 
 [dev-dependencies]
 proptest = "1"
-criterion = { version = "=0.8.2", default-features = false, features = [
-  "cargo_bench_support"
-] }
-tokio = { version = "1", features = [
-  "rt-multi-thread",
-  "net",
-  "io-util",
-  "macros",
-  "sync",
-  "time"
-] }
-tokio-util = { version = "0.7", features = ["compat"] }
-futures = "0.3"
-bytes = "1"
-http = "1"
-yamux = "=0.14.1"  # #58 comparator, pinned
-async_smux = "=0.4.0"  # #58 comparator, pinned
-h2 = "=0.4.19"  # #58 comparator, pinned
-
-[[bench]]
-name = "compare"
-harness = false

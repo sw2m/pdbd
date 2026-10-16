@@ -10,4 +10,6 @@ test:
 benchmark:
   jobs:
     - name: compare
-      run: nix develop --no-update-lock-file "$(git rev-parse --show-toplevel)#benchmark" -c sh crates/mux/peers/compare.sh
+      run: |
+        pkgs=github:NixOS/nixpkgs/nixpkgs-unstable # unlocked on purpose: the benchmark races the latest toolchains
+        nix shell "$pkgs#go" "$pkgs#dotnet-sdk" "$pkgs#cargo" "$pkgs#rustc" "$pkgs#gcc" -c sh crates/mux/peers/compare.sh

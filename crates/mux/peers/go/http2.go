@@ -40,7 +40,7 @@ func (f *Outbound) Read(p []byte) (int, error)  { return f.resp.Read(p) }
 func (f *Outbound) Write(p []byte) (int, error) { return f.body.Write(p) }
 func (f *Outbound) Close() error                { return f.body.Close() }
 
-var h2 = Mux{"x/net/http2 v0.58.0 (go)", func(near, far net.Conn) (Session, error) {
+var h2 = Mux{"x/net/http2 " + version("golang.org/x/net") + " (go)", func(near, far net.Conn) (Session, error) {
 	found := make(chan Flow, 4096)
 	srv := &http2.Server{
 		MaxConcurrentStreams:         4096, // the largest scenario's flow count

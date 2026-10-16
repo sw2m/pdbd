@@ -120,6 +120,30 @@ fn theirs<O, A, S>(
     }
 }
 
+fn resolved(name: &str) -> String {
+    let lock = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/Cargo.lock"
+    ))
+    .unwrap_or_default();
+    let want = format!("name = \"{name}\"");
+    let mut lines = lock.lines();
+    while let Some(line) = lines.next() {
+        if line == want {
+            if let Some(v) =
+                lines.next().and_then(|l| l.strip_prefix("version = "))
+            {
+                return v.trim_matches('"').to_string();
+            }
+        }
+    }
+    "?".to_string()
+}
+
+fn label(name: &str) -> &'static str {
+    Box::leak(format!("{name} {} (rust)", resolved(name)).into_boxed_str())
+}
+
 fn main() {
     let results = Arc::new(Results::default());
     let rt = Runtime::new().unwrap();
@@ -130,15 +154,9 @@ fn main() {
         .measurement_time(Duration::from_secs(2));
     ours(&mut c, &results, false);
     ours(&mut c, &results, true);
-    theirs(&mut c, &rt, &results, "yamux 0.14.1 (rust)", yamux::session);
-    theirs(
-        &mut c,
-        &rt,
-        &results,
-        "async_smux 0.4.0 (rust)",
-        smux::session,
-    );
-    theirs(&mut c, &rt, &results, "h2 0.4.19 (rust)", h2::session);
+    theirs(&mut c, &rt, &results, label("yamux"), yamux::session);
+    theirs(&mut c, &rt, &results, label("async_smux"), smux::session);
+    theirs(&mut c, &rt, &results, label("h2"), h2::session);
     c.final_summary();
     if let Ok(dir) = std::env::var("MUX_PEERS") {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {

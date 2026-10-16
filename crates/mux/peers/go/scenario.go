@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -71,6 +72,17 @@ func pair() (net.Conn, net.Conn) {
 	near.(*net.TCPConn).SetNoDelay(true)
 	far.c.(*net.TCPConn).SetNoDelay(true)
 	return near, far.c
+}
+
+func version(path string) string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, d := range info.Deps {
+			if d.Path == path {
+				return d.Version
+			}
+		}
+	}
+	return "?"
 }
 
 func must(err error) {

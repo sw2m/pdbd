@@ -7,7 +7,7 @@ import (
 	hashi "github.com/hashicorp/yamux"
 )
 
-var hashicorp = Mux{"hashicorp/yamux v0.1.2 (go)", func(near, far net.Conn) (Session, error) {
+var hashicorp = Mux{"hashicorp/yamux " + version("github.com/hashicorp/yamux") + " (go)", func(near, far net.Conn) (Session, error) {
 	cfg := hashi.DefaultConfig()
 	cfg.MaxStreamWindowSize = window
 	cfg.AcceptBacklog = 4096 // the largest scenario's flow count

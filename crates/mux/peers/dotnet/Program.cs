@@ -4,7 +4,11 @@ using System.Net;
 using System.Net.Sockets;
 using Nerdbank.Streams;
 
-const string Name = "Nerdbank.Streams 2.14.405, v3 (c#)";
+var version = typeof(MultiplexingStream).Assembly
+    .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+    .FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "?";
+var name = $"Nerdbank.Streams {version}, v3 (c#)";
 const int Runs = 5; // see crates/mux/CLAUDE.md §"Benchmarks": every harness runs these same numbers
 
 for (var i = 0; i <= Runs; i++)
@@ -14,7 +18,7 @@ for (var i = 0; i <= Runs; i++)
     {
         if (keep)
         {
-            Console.WriteLine($"{Name}\t{key}\t{v.ToString("R", CultureInfo.InvariantCulture)}");
+            Console.WriteLine($"{name}\t{key}\t{v.ToString("R", CultureInfo.InvariantCulture)}");
         }
     }
     Report("bulk", await Run.Measure(r => r.Bulk()));

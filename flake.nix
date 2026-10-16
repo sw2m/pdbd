@@ -59,36 +59,32 @@
           makeWrapper ${pkgs.prettier}/bin/prettier $out/bin/prettier \
             --add-flags "--plugin=${pluginModules}/node_modules/prettier-plugin-toml/lib/index.cjs"
         '';
-        tools = [
-          rust
-          pkgs.buf
-          lefthook
-          prettier
-          pkgs.git
-          pkgs.pkg-config
-          pkgs.yq-go
-          pkgs.minijinja
-          pkgs.iproute2
-          pkgs.iputils
-          pkgs.socat
-          pkgs.ppp
-          pkgs.bash
-          pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
-          ];
       in {
         packages = pkgs.lib.genAttrs crates build // {
           default = build null;
           toolchain = rust;
         };
-        devShells.default = pkgs.mkShell { packages = tools; };
-        devShells.benchmark = pkgs.mkShell { # #58: the crates/mux comparators' toolchains, out of the default shell
-          packages = tools ++ [ pkgs.go pkgs.dotnet-sdk_8 ];
-          DOTNET_CLI_TELEMETRY_OPTOUT = "1";
-          DOTNET_NOLOGO = "1";
+        devShells.default = pkgs.mkShell {
+          packages = [
+            rust
+            pkgs.buf
+            lefthook
+            prettier
+            pkgs.git
+            pkgs.pkg-config
+            pkgs.yq-go
+            pkgs.minijinja
+            pkgs.iproute2
+            pkgs.iputils
+            pkgs.socat
+            pkgs.ppp
+            pkgs.bash
+            pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
+          ];
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-RHn4ku80Wzjnwzk9lVrRrjl24C/UhKWMjR16MhaeaN4=";
+          "x86_64-linux" = "sha256-/0riPoqPSeypmwib9NyrOP/u6Soj/cck6BnI46DyMdA=";
         };
       };
 }

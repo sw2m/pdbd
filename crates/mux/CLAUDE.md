@@ -75,25 +75,26 @@ Swept 2026-10-15 (Claude and Kimi k3 osint passes), with a Rust pass on 2026-10-
 
 ## Benchmarks
 
-`lefthook run benchmark` (the crate's `benchmark:` hook, #71's namespace) enters the root flake's `benchmark` dev shell, which adds pinned Go and .NET to the default shell's tools, and runs `peers/compare.sh`:
+**We race the latest prior art.** Every comparator, and every toolchain that builds one, floats to its newest release at run time. Nothing about them is locked in the repo, so the root `Cargo.lock`, the root `flake.lock` and the build-repro `output` hashes never move for a benchmark. Each run prints what it raced: the table labels every comparator with its resolved version, and the summary ends with the toolchains.
 
-1. `peers/go`: `go run .` (`GOTOOLCHAIN=local`; versions pinned in `go.mod`/`go.sum`).
-2. `peers/dotnet`: `dotnet run -c Release` (the version pinned in `peers.csproj` and locked in `packages.lock.json`; restore is always locked).
-3. `cargo bench -p mux --bench compare` (criterion; the Rust comparators are exact-pinned dev-dependencies, never dependencies of the crate). It reads the peers' TSV rows (`mux⇥scenario⇥value`) from `$MUX_PEERS`, prints one table of medians, and appends it to `$GITHUB_STEP_SUMMARY` when that is set.
+`lefthook run benchmark` (the crate's `benchmark:` hook, in #71's namespace) runs `peers/compare.sh` inside `nix shell` of an **unlocked** `github:NixOS/nixpkgs/nixpkgs-unstable` (go, dotnet-sdk, cargo, rustc, gcc). It doesn't use the root flake's shell, whose lock #70 freezes. The script:
 
-| Comparator | Pin | Where |
+1. `peers/go`: copies the harness to a scratch dir, runs `go get` on every line of `versions` (all `@latest`), then `go run .` (`GOTOOLCHAIN=auto`, so a newer module's `go` directive fetches its toolchain).
+2. `peers/dotnet`: `dotnet restore --force-evaluate` re-resolves the floating `Version="*"`, then `dotnet run -c Release` (`RollForward=LatestMajor`, so it runs on whatever runtime the SDK brings).
+3. `peers/rust`: its own Cargo project (`[workspace]` of its own, so it's not a root workspace member; its `Cargo.lock` and `target/` are gitignored). `cargo update`, then `cargo bench --bench compare` (criterion). This crate is a path dependency. The bench merges the Go and C# rows (`mux⇥scenario⇥value`), prints one table of medians, and appends it to `$GITHUB_STEP_SUMMARY` when that is set.
+
+**The "stop racing" switch.** Pinning a comparator is a deliberate, recorded choice, never the default. Each peer has exactly one place for it:
+
+| Peer | Comparators | Pin here |
 | --- | --- | --- |
-| ours, sans-IO core (two `Multi`s fed into each other) and over the loopback pair | this crate | `benches/compare/ours.rs` |
-| `yamux` (libp2p) | `=0.14.1` | `benches/compare/yamux.rs` |
-| `async_smux` | `=0.4.0` | `benches/compare/smux.rs` |
-| `h2` | `=0.4.19` (the version tonic already locks) | `benches/compare/h2.rs` |
-| hashicorp/yamux | v0.1.2 | `peers/go/hashicorp.go` |
-| libp2p/go-yamux (auto-tuned windows) | v5.1.0 | `peers/go/libp2p.go` |
-| xtaci/smux (protocol v2) | v1.5.57 | `peers/go/xtaci.go` |
-| `x/net/http2` | v0.58.0 (the newest that builds on the shell's Go 1.25) | `peers/go/http2.go` |
-| Nerdbank.Streams `MultiplexingStream` (protocol v3) | 2.14.405 | `peers/dotnet/Program.cs` |
+| `peers/rust` | ours (sans-IO core, and over a loopback pair), `yamux` (libp2p), `async_smux`, `h2` | `peers/rust/Cargo.toml`: `"*"` → `"=x.y.z"` |
+| `peers/go` | hashicorp/yamux, libp2p/go-yamux (auto-tuned windows; the `/v5` major is in the module path), xtaci/smux (protocol v2), `x/net/http2` | `peers/go/versions`: `@latest` → `@vX.Y.Z` |
+| `peers/dotnet` | Nerdbank.Streams `MultiplexingStream` (protocol v3) | `peers/dotnet/peers.csproj`: `Version="*"` → `Version="[x.y.z]"` |
+| toolchains | Go, .NET SDK, Rust | `crates/mux/lefthook.yml`: replace `nixpkgs-unstable` with a commit |
 
-**The scenarios.** Every harness uses these numbers (`benches/compare/scenario.rs`, `peers/go/scenario.go`, `peers/dotnet/Program.cs`). Both ends of a fresh session run in one process over a loopback TCP pair (`127.0.0.1`, `TCP_NODELAY`). Each value is the median of its runs (criterion's samples in Rust; 5 runs after a warm-up in Go and C#).
+Record why next to the pin, and in this file.
+
+**The scenarios.** Every harness uses these numbers (`peers/rust/benches/compare/scenario.rs`, `peers/go/scenario.go`, `peers/dotnet/Program.cs`). Both ends of a fresh session run in one process over a loopback TCP pair (`127.0.0.1`, `TCP_NODELAY`). Each value is the median of its runs (criterion's samples in Rust; 5 runs after a warm-up in Go and C#).
 
 - **Window:** 256 KiB per flow wherever the comparator lets us set it. Session-wide limits are raised out of the way (`budget`, yamux's connection window, smux `MaxReceiveBuffer`, HTTP/2's connection window), because per-flow credit is what's compared.
 - **bulk:** one flow; 64 MiB written in 64 KiB writes; MiB/s from the first write to the last byte read.
@@ -108,7 +109,7 @@ Swept 2026-10-15 (Claude and Kimi k3 osint passes), with a Rust pass on 2026-10-
 - Ours delivers each DATA frame as an owned `Vec`; the others hand out borrowed buffers.
 - `x/net/http2`'s client stream window is its built-in 4 MiB (not settable), so its server→client direction isn't at 256 KiB. Only ping-pong, open → close and idle send anything server→client, and only a few bytes.
 - go-yamux auto-tunes windows from 256 KiB upward (that's the point of including it).
-- Nerdbank.Streams 2.14.405 hits an internal assertion ("Sending ContentReadingCompleted frame … which we've already sent termination for") when channels are disposed abruptly at churn rates. Its harness closes gracefully (complete output, drain input, dispose), as its API intends.
+- Nerdbank.Streams (2.14.405 when this was written) hits an internal assertion ("Sending ContentReadingCompleted frame … which we've already sent termination for") when channels are disposed abruptly at churn rates. Its harness closes gracefully (complete output, drain input, dispose), as its API intends.
 
 ## Tests: the tripwires
 

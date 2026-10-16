@@ -6,7 +6,7 @@ import (
 	"github.com/xtaci/smux"
 )
 
-var xtaci = Mux{"xtaci/smux v1.5.57, v2 (go)", func(near, far net.Conn) (Session, error) {
+var xtaci = Mux{"xtaci/smux " + version("github.com/xtaci/smux") + ", v2 (go)", func(near, far net.Conn) (Session, error) {
 	cfg := smux.DefaultConfig()
 	cfg.Version = 2 // per-stream windows; v1 has only the session bucket
 	cfg.KeepAliveDisabled = true
