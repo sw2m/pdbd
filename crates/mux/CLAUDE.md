@@ -73,6 +73,43 @@ Swept 2026-10-15 (Claude and Kimi k3 osint passes), with a Rust pass on 2026-10-
 - **TCP head-of-line blocking is accepted.** Per-flow credit stops one *slow reader* from blocking others, but a lost segment on the one TCP tunnel still delays every flow. Fixing that takes a different transport (QUIC), not another frame type.
 - **Sans-IO** removes the writer/mutex deadlock class seen in yamux and smux. It doesn't give fairness, deadlines or buffer bounds for free, which is why the control queue, round-robin lanes, `tick`/`expire` and `budget` exist.
 
+## Benchmarks
+
+`lefthook run benchmark` (the crate's `benchmark:` hook, #71's namespace) enters the root flake's `benchmark` dev shell, which adds pinned Go and .NET to the default shell's tools, and runs `peers/compare.sh`:
+
+1. `peers/go`: `go run .` (`GOTOOLCHAIN=local`; versions pinned in `go.mod`/`go.sum`).
+2. `peers/dotnet`: `dotnet run -c Release` (the version pinned in `peers.csproj` and locked in `packages.lock.json`; restore is always locked).
+3. `cargo bench -p mux --bench compare` (criterion; the Rust comparators are exact-pinned dev-dependencies, never dependencies of the crate). It reads the peers' TSV rows (`mux⇥scenario⇥value`) from `$MUX_PEERS`, prints one table of medians, and appends it to `$GITHUB_STEP_SUMMARY` when that is set.
+
+| Comparator | Pin | Where |
+| --- | --- | --- |
+| ours, sans-IO core (two `Multi`s fed into each other) and over the loopback pair | this crate | `benches/compare/ours.rs` |
+| `yamux` (libp2p) | `=0.14.1` | `benches/compare/yamux.rs` |
+| `async_smux` | `=0.4.0` | `benches/compare/smux.rs` |
+| `h2` | `=0.4.19` (the version tonic already locks) | `benches/compare/h2.rs` |
+| hashicorp/yamux | v0.1.2 | `peers/go/hashicorp.go` |
+| libp2p/go-yamux (auto-tuned windows) | v5.1.0 | `peers/go/libp2p.go` |
+| xtaci/smux (protocol v2) | v1.5.57 | `peers/go/xtaci.go` |
+| `x/net/http2` | v0.58.0 (the newest that builds on the shell's Go 1.25) | `peers/go/http2.go` |
+| Nerdbank.Streams `MultiplexingStream` (protocol v3) | 2.14.405 | `peers/dotnet/Program.cs` |
+
+**The scenarios.** Every harness uses these numbers (`benches/compare/scenario.rs`, `peers/go/scenario.go`, `peers/dotnet/Program.cs`). Both ends of a fresh session run in one process over a loopback TCP pair (`127.0.0.1`, `TCP_NODELAY`). Each value is the median of its runs (criterion's samples in Rust; 5 runs after a warm-up in Go and C#).
+
+- **Window:** 256 KiB per flow wherever the comparator lets us set it. Session-wide limits are raised out of the way (`budget`, yamux's connection window, smux `MaxReceiveBuffer`, HTTP/2's connection window), because per-flow credit is what's compared.
+- **bulk:** one flow; 64 MiB written in 64 KiB writes; MiB/s from the first write to the last byte read.
+- **flows 16 / 256:** that many flows opened (each carries one byte so lazy-opening muxes materialize it) and accepted, then each writes 64 MiB / N concurrently. Aggregate MiB/s, and *spread*: the coefficient of variation (%) of per-flow throughput, where each flow's throughput is its share over its own finish time. Lower spread is fairer.
+- **ping-pong:** one flow; 64-byte message out and back; 2000 round trips after 100 warm-up; median µs.
+- **open → close:** 1000 cycles of open, 1 byte each way, close both ways; cycles per second.
+- **idle:** 1000 flows opened and touched (1 byte each way), then held; heap bytes per flow, both ends together. Rust counts live bytes through a counting global allocator; Go uses `HeapAlloc + StackInuse` after GC; C# uses `GC.GetTotalMemory(true)`. Runtimes differ, so compare within a language before across them.
+- **UDP:** ours only; one UDP flow, 200 000 datagrams of 512 B; datagrams per second.
+
+**Caveats to keep in mind when reading the table.**
+- Our loopback driver is a single-threaded busy-poll loop over nonblocking sockets (the sans-IO core has no runtime of its own; #59 owns the real one). The comparators run on tokio, goroutines and the .NET thread pool. Our loopback latency and churn numbers are therefore a lower bound for what #59's event loop will see.
+- Ours delivers each DATA frame as an owned `Vec`; the others hand out borrowed buffers.
+- `x/net/http2`'s client stream window is its built-in 4 MiB (not settable), so its server→client direction isn't at 256 KiB. Only ping-pong, open → close and idle send anything server→client, and only a few bytes.
+- go-yamux auto-tunes windows from 256 KiB upward (that's the point of including it).
+- Nerdbank.Streams 2.14.405 hits an internal assertion ("Sending ContentReadingCompleted frame … which we've already sent termination for") when channels are disposed abruptly at churn rates. Its harness closes gracefully (complete output, drain input, dispose), as its API intends.
+
 ## Tests: the tripwires
 
 Keep covered:

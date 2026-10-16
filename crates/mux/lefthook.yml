@@ -5,3 +5,9 @@ test:
   jobs:
     - name: cargo
       run: cargo test -p mux --locked
+
+# #58 — see crates/mux/CLAUDE.md §"Benchmarks"
+benchmark:
+  jobs:
+    - name: compare
+      run: nix develop --no-update-lock-file "$(git rev-parse --show-toplevel)#benchmark" -c sh crates/mux/peers/compare.sh
