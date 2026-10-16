@@ -28,9 +28,9 @@ jobs:
       - id: list
         run: |
           checks=$(
-            for x in $(nix develop -c yq '.ci.jobs[].name' lefthook.yml); do
-              LEFTHOOK_OUTPUT=execution_out nix develop -c lefthook run fanout "$x" plan --no-auto-install 2>/dev/null
-            done | { printf 'name\tconfig\thook\n'; cat; } | nix develop -c yq -p=tsv -o=json -I=0
+            for x in $(nix develop --no-update-lock-file -c yq '.ci.jobs[].name' lefthook.yml); do
+              LEFTHOOK_OUTPUT=execution_out nix develop --no-update-lock-file -c lefthook run fanout "$x" plan --no-auto-install 2>/dev/null
+            done | { printf 'name\tconfig\thook\n'; cat; } | nix develop --no-update-lock-file -c yq -p=tsv -o=json -I=0
           )
           echo "checks=$checks" >> "$GITHUB_OUTPUT"
 
@@ -55,7 +55,7 @@ jobs:
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — component reuse means build pollution is possible"
       - env:
           LEFTHOOK_CONFIG: ${{ matrix.check.config }}
-        run: nix develop -c lefthook run ${{ matrix.check.hook }}
+        run: nix develop --no-update-lock-file -c lefthook run ${{ matrix.check.hook }}
 
   # The one status to mark required — #65
   mergeable:
