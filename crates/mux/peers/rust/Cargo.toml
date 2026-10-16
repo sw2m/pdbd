@@ -8,7 +8,7 @@ publish = false
 # its own workspace: kept out of the root one, so its floating versions never touch the root Cargo.lock
 [workspace]
 
-# the comparators float to the newest release; to stop racing one, pin it here (`=x.y.z`); see crates/mux/CLAUDE.md §"Benchmarks"
+# the comparators float to the newest release; to stop racing one, add it to ./pins; see crates/mux/CLAUDE.md §"Benchmarks"
 [dev-dependencies]
 yamux = "*"
 async_smux = "*"

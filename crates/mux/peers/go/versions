@@ -1,5 +1,0 @@
-# the comparators float to the newest release; to stop racing one, replace its @latest with a version; see crates/mux/CLAUDE.md §"Benchmarks"
-github.com/hashicorp/yamux@latest
-github.com/libp2p/go-yamux/v5@latest
-github.com/xtaci/smux@latest
-golang.org/x/net@latest

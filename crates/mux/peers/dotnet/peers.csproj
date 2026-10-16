@@ -6,9 +6,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <Pin Condition="'$(Pin)' == ''">*</Pin>
   </PropertyGroup>
   <ItemGroup>
-    <!-- the comparator floats to the newest release; to stop racing it, set an exact [x.y.z] here; see crates/mux/CLAUDE.md §"Benchmarks" -->
-    <PackageReference Include="Nerdbank.Streams" Version="*" />
+    <!-- floats to the newest release unless ./pins sets $(Pin); see crates/mux/CLAUDE.md §"Benchmarks" -->
+    <PackageReference Include="Nerdbank.Streams" Version="$(Pin)" />
   </ItemGroup>
 </Project>

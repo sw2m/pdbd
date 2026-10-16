@@ -167,13 +167,7 @@ fn main() {
     }
     let table = results.table();
     println!("\n{table}");
-    if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path)
-            .unwrap();
-        writeln!(f, "### mux benchmarks\n\n{table}").unwrap();
+    if let Ok(path) = std::env::var("MUX_TABLE") {
+        std::fs::write(path, &table).unwrap();
     }
 }

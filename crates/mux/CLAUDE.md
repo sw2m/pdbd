@@ -75,24 +75,26 @@ Swept 2026-10-15 (Claude and Kimi k3 osint passes), with a Rust pass on 2026-10-
 
 ## Benchmarks
 
-**We race the latest prior art.** Every comparator, and every toolchain that builds one, floats to its newest release at run time. Nothing about them is locked in the repo, so the root `Cargo.lock`, the root `flake.lock` and the build-repro `output` hashes never move for a benchmark. Each run prints what it raced: the table labels every comparator with its resolved version, and the summary ends with the toolchains.
+**We race the latest prior art.** Every comparator, and every toolchain that builds one, floats to its newest release at run time. Nothing about them is locked in the repo, so the root `Cargo.lock`, the root `flake.lock` and the build-repro `output` hashes never move for a benchmark. Each run says what it raced: the table labels every comparator with its resolved version, and the report ends with the toolchains.
 
-`lefthook run benchmark` (the crate's `benchmark:` hook, in #71's namespace) runs `peers/compare.sh` inside `nix shell` of an **unlocked** `github:NixOS/nixpkgs/nixpkgs-unstable` (go, dotnet-sdk, cargo, rustc, gcc). It doesn't use the root flake's shell, whose lock #70 freezes. The script:
+`lefthook run benchmark` (the crate's `benchmark:` hook; README §"Benchmarks" is the contract) runs `peers/compare.sh` inside `nix shell` of an **unlocked** `github:NixOS/nixpkgs/nixpkgs-unstable` (go, dotnet-sdk, cargo, rustc, gcc). It doesn't use the root flake's shell, whose lock #70 freezes. The script:
 
-1. `peers/go`: copies the harness to a scratch dir, runs `go get` on every line of `versions` (all `@latest`), then `go run .` (`GOTOOLCHAIN=auto`, so a newer module's `go` directive fetches its toolchain).
-2. `peers/dotnet`: `dotnet restore --force-evaluate` re-resolves the floating `Version="*"`, then `dotnet run -c Release` (`RollForward=LatestMajor`, so it runs on whatever runtime the SDK brings).
-3. `peers/rust`: its own Cargo project (`[workspace]` of its own, so it's not a root workspace member; its `Cargo.lock` and `target/` are gitignored). `cargo update`, then `cargo bench --bench compare` (criterion). This crate is a path dependency. The bench merges the Go and C# rows (`mux⇥scenario⇥value`), prints one table of medians, and appends it to `$GITHUB_STEP_SUMMARY` when that is set.
+1. `peers/go`: in a scratch copy, applies `go/pins` with `go get`, then runs `go mod tidy` (every other import resolves at its latest) and `go run .`, with `GOTOOLCHAIN=auto` so a newer module's `go` directive can fetch its toolchain.
+2. `peers/dotnet`: `dotnet restore --force-evaluate -p:Pin=…` (`Version="$(Pin)"`, `*` unless `dotnet/pins` sets it), then `dotnet run -c Release`. `RollForward=LatestMajor` lets it run on whatever runtime the SDK brings.
+3. `peers/rust`: a Cargo project with a `[workspace]` of its own, so it's not a root member. Its `Cargo.lock` and `target/` are gitignored, the comparators are `"*"`, and this crate is a path dependency. The script runs `cargo update`, applies `rust/pins` with `cargo update -p … --precise …`, then `cargo bench --bench compare` (criterion). The bench merges the Go and C# rows (`mux⇥scenario⇥value`) into one table of medians.
+4. It appends a `### mux` section (the table and the toolchains) to `${BENCHMARK_REPORT:-/dev/stdout}`. CI copies that into the job summary and the sticky PR comment.
 
-**The "stop racing" switch.** Pinning a comparator is a deliberate, recorded choice, never the default. Each peer has exactly one place for it:
+**It never gates.** No expectations are committed, so the check exits 0 whenever its measurements were taken. Only an error fails it: a harness that doesn't build, a crash, a broken connection. `compare.sh` runs under `set -eu`, and the harnesses panic or throw only on I/O errors, never on a number.
 
-| Peer | Comparators | Pin here |
+**The "stop racing" switch.** Pinning a comparator is a deliberate, recorded choice, never the default. Each peer has one pin file, **absent by default**. Each line is `<name> <version>`, and `#` starts a comment; record the reason there and in this file.
+
+| Pin file | Comparators it can pin | Line |
 | --- | --- | --- |
-| `peers/rust` | ours (sans-IO core, and over a loopback pair), `yamux` (libp2p), `async_smux`, `h2` | `peers/rust/Cargo.toml`: `"*"` → `"=x.y.z"` |
-| `peers/go` | hashicorp/yamux, libp2p/go-yamux (auto-tuned windows; the `/v5` major is in the module path), xtaci/smux (protocol v2), `x/net/http2` | `peers/go/versions`: `@latest` → `@vX.Y.Z` |
-| `peers/dotnet` | Nerdbank.Streams `MultiplexingStream` (protocol v3) | `peers/dotnet/peers.csproj`: `Version="*"` → `Version="[x.y.z]"` |
-| toolchains | Go, .NET SDK, Rust | `crates/mux/lefthook.yml`: replace `nixpkgs-unstable` with a commit |
+| `peers/rust/pins` | `yamux`, `async_smux`, `h2` | `yamux 0.13.10` |
+| `peers/go/pins` | `github.com/hashicorp/yamux`, `github.com/libp2p/go-yamux/v5` (the major is in the path), `github.com/xtaci/smux`, `golang.org/x/net` | `golang.org/x/net v0.58.0` |
+| `peers/dotnet/pins` | `Nerdbank.Streams` | `Nerdbank.Streams 2.14.405` |
 
-Record why next to the pin, and in this file.
+The toolchains float with `nixpkgs-unstable`; to stop racing them, replace that ref in `crates/mux/lefthook.yml` with a commit.
 
 **The scenarios.** Every harness uses these numbers (`peers/rust/benches/compare/scenario.rs`, `peers/go/scenario.go`, `peers/dotnet/Program.cs`). Both ends of a fresh session run in one process over a loopback TCP pair (`127.0.0.1`, `TCP_NODELAY`). Each value is the median of its runs (criterion's samples in Rust; 5 runs after a warm-up in Go and C#).
 
@@ -109,7 +111,18 @@ Record why next to the pin, and in this file.
 - Ours delivers each DATA frame as an owned `Vec`; the others hand out borrowed buffers.
 - `x/net/http2`'s client stream window is its built-in 4 MiB (not settable), so its server→client direction isn't at 256 KiB. Only ping-pong, open → close and idle send anything server→client, and only a few bytes.
 - go-yamux auto-tunes windows from 256 KiB upward (that's the point of including it).
-- Nerdbank.Streams (2.14.405 when this was written) hits an internal assertion ("Sending ContentReadingCompleted frame … which we've already sent termination for") when channels are disposed abruptly at churn rates. Its harness closes gracefully (complete output, drain input, dispose), as its API intends.
+
+## Findings
+
+Observed while building the benchmarks. They're not reported upstream; the Architect decides on external reports.
+
+**Nerdbank.Streams 2.14.405 faults on abrupt channel disposal.** At churn rates, disposing a channel right after its last write sometimes trips an internal assertion and faults the whole `MultiplexingStream`, so every later `OfferChannelAsync` throws `ObjectDisposedException`. The assertion reads: "Microsoft.Assumes+InternalErrorException: Sending ContentReadingCompleted frame for channel N (Local), which we've already sent termination for".
+- Reproduce: in `peers/dotnet/Program.cs`, change `Churn` to dispose the stream right after the 1-byte exchange (`f.Dispose()` on both ends) instead of `Finish(c)`. Then run `dotnet run -c Release` in `peers/dotnet` with `Version` pinned to `[2.14.405]` (protocol v3, 1000 cycles per run). It failed within the second run of six here.
+- The harness avoids it the way the API intends: complete output, drain input to completion, then dispose.
+
+**`x/net/http2` holds ~540 KB per idle flow.** That's 541 101–541 341 B per flow (both ends, 1000 flows), steady across four runs with x/net v0.58.0 and v0.61.0. The next highest is go-yamux's ~2.2 KB.
+- Reproduce: run the `idle` scenario of `peers/go` (`Run.Idle` with the `h2` mux), which reports `HeapAlloc + StackInuse` after GC.
+- Not profiled. The likely source is the per-stream server handler goroutine (it parks until the flow closes) plus the request/response body buffers.
 
 ## Tests: the tripwires
 
