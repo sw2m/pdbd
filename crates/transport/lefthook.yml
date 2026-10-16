@@ -7,3 +7,8 @@ test:
   jobs:
     - { name: unit, run: cargo test -p transport --locked }
     - { name: datapath, run: lefthook run test:datapath, tags: [privileged] }
+
+benchmark:
+  jobs:
+    - name: stub
+      run: 'echo "benchmark: reserved — see #72"'
