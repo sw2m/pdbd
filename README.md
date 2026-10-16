@@ -710,6 +710,13 @@ comment**, found by its `<!-- pdbd-benchmark -->` marker and edited in place on 
 `report` is not in `mergeable`'s needs, so a failed post never blocks a merge. Fork PRs
 get a read-only token, so `report` skips them; the job summaries still carry the results.
 
+**Comparators float.** A benchmark that races another implementation resolves that
+comparator's latest release at run time, outside the workspace `Cargo.lock` and the root
+`flake.lock`, and reports the version it raced. Pinning one is a deliberate "stop racing
+it" decision, made by committing a pin file beside the benchmark. `transport` races
+`pppd` from nixpkgs-unstable; a `crates/transport/pppd.pin` holding a nixpkgs flake ref
+(e.g. `github:NixOS/nixpkgs/<rev>`) pins it.
+
 ### Git hooks
 
 `pre-commit` and `pre-push` are defined in `lefthook.githooks.yml` and **dispatch into
