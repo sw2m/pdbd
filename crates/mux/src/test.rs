@@ -1,6 +1,8 @@
 use super::*;
 use crate::flow::ABORTED;
 
+const ALL: u32 = u32::MAX; // a cap that never refuses
+
 fn bytes(m: &mut Mux) -> Vec<u8> {
     let mut out = Vec::new();
     while let Some(t) = m.transmit() {
@@ -16,7 +18,7 @@ fn bytes(m: &mut Mux) -> Vec<u8> {
 #[test]
 fn modes() {
     assert_eq!(Mux::single().mode(), Mode::Single);
-    let mut m = Mux::multi(Side::Client, 10, Some(4), 1 << 20);
+    let mut m = Mux::multi(Side::Client, 10, 4, 1 << 20).unwrap();
     assert_eq!(m.mode(), Mode::Multi);
     m.open(Proto::Tcp).unwrap();
     assert_eq!(m.mode(), Mode::Multi);
@@ -41,8 +43,8 @@ fn single() {
 // #58 — a multi-channel mux down to one flow stays multi-channel: still framed
 #[test]
 fn multi() {
-    let mut c = Mux::multi(Side::Client, 10, None, 1 << 20);
-    let mut d = Mux::multi(Side::Daemon, 10, None, 1 << 20);
+    let mut c = Mux::multi(Side::Client, 10, ALL, 1 << 20).unwrap();
+    let mut d = Mux::multi(Side::Daemon, 10, ALL, 1 << 20).unwrap();
     let a = c.open(Proto::Tcp).unwrap();
     let b = c.open(Proto::Tcp).unwrap();
     d.feed(&bytes(&mut c)).unwrap();

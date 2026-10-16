@@ -9,7 +9,7 @@ const QUANTUM: usize = HEADER + MAX as usize; // one full DATA frame per flow pe
 pub struct Multi {
     side: Side,
     window: u32,
-    cap: Option<u32>,
+    cap: u32,
     budget: u64,
     used: u64,
     now: u64,
@@ -26,12 +26,17 @@ pub struct Multi {
 }
 
 impl Multi {
-    pub fn new(side: Side, window: u32, cap: Option<u32>, budget: u64) -> Self {
+    pub fn new(
+        side: Side,
+        window: u32,
+        cap: u32,
+        budget: u64,
+    ) -> Result<Self, Error> {
         let first = match side {
             Side::Client => 1,
             Side::Daemon => 2,
         };
-        Self {
+        Ok(Self {
             side,
             window,
             cap,
@@ -48,7 +53,7 @@ impl Multi {
             lanes: BTreeMap::new(),
             ring: VecDeque::new(),
             dead: false,
-        }
+        })
     }
 
     fn mine(&self, id: u32) -> bool {
@@ -64,7 +69,7 @@ impl Multi {
     }
 
     fn full(&self) -> Option<u32> {
-        self.cap.filter(|c| self.flows.len() as u32 >= *c)
+        (self.flows.len() as u32 >= self.cap).then_some(self.cap)
     }
 
     fn get(&mut self, id: u32) -> Result<&mut Flow, Error> {
@@ -302,7 +307,8 @@ impl Multi {
         let flow = self.get(id)?;
         let n = flow.send(data).map_err(|e| Error::Flow(id, e))?;
         let proto = flow.proto();
-        Frame::write(self.lane(id), id, proto, &data[..n]);
+        Frame::write(self.lane(id), id, proto, &data[..n])
+            .map_err(Error::Frame)?;
         Ok(n)
     }
 

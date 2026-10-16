@@ -127,10 +127,31 @@ fn empty() {
 #[test]
 fn write() {
     let mut out = vec![0xaa];
-    Frame::write(&mut out, 7, Proto::Tcp, b"abc");
+    Frame::write(&mut out, 7, Proto::Tcp, b"abc").unwrap();
     let mut want = vec![0xaa];
     frame(7, Proto::Tcp, Body::Data(b"abc".to_vec())).encode(&mut want);
     assert_eq!(out, want);
+}
+
+// #58 — write refuses a frame the decoder would reject, writing nothing
+#[test]
+fn checked() {
+    let mut out = vec![0xaa];
+    let big = vec![0u8; MAX as usize + 1];
+    assert_eq!(
+        Frame::write(&mut out, 7, Proto::Udp, &big),
+        Err(Error::Oversize(MAX + 1))
+    );
+    assert_eq!(
+        Frame::write(&mut out, 7, Proto::Tcp, b""),
+        Err(Error::Empty)
+    );
+    assert_eq!(
+        Frame::write(&mut out, 0, Proto::Tcp, b"x"),
+        Err(Error::Flow)
+    );
+    assert_eq!(out, vec![0xaa]);
+    assert_eq!(Frame::write(&mut out, 7, Proto::Udp, b""), Ok(()));
 }
 
 // #58 — parsing a coalesced burst is linear in its bytes, not quadratic

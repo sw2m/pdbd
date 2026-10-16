@@ -341,6 +341,15 @@ fn overdue() {
     assert!(acceptor.overdue(250, 50));
     acceptor.close().unwrap();
     assert!(!acceptor.overdue(10_000, 50));
+
+    let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
+    b.stop().unwrap();
+    b.mark(300);
+    assert!(!b.overdue(349, 50));
+    assert!(b.overdue(350, 50));
+    b.receive(a.close().unwrap()).unwrap();
+    b.mark(400);
+    assert!(b.overdue(450, 50));
 }
 
 // #58
