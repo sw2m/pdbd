@@ -72,6 +72,69 @@ The four reports are in the session scratchpad (Claude and k3 sweeps, 2026-10-15
 
 No source expression was imported, only behaviour and types (clean-room). No patent flags.
 
+## Benchmark
+
+**A differential race against the prior-art parsers** (#57; README §"Benchmarks"). Each oracle is asked whether a string parses, we try to parse the same string, and the answers are compared with a committed expected-results matrix. The matrix is this benchmark's published expectation, so any difference fails the `benchmark (socat)` check, and a developer decides what it means.
+
+**Running it.** `LEFTHOOK_CONFIG=crates/socat/lefthook.yml lefthook run benchmark` (GitHub CI runs it through the fanout). The hook runs `peers/compare.sh` inside `nix shell` of an **unlocked** `nixpkgs-unstable` (go, cargo, rustc, gcc, curl, cacert, util-linux), the same mechanism as `crates/mux`. Nothing it resolves touches the root `Cargo.lock`, the root `flake.lock` or any `output` hash. `peers/rust` is its own Cargo workspace, and its `Cargo.lock` and `target/` are gitignored. `compare.sh`:
+
+1. resolves and fetches each oracle (pin files below) and prints the versions it raced;
+2. builds `peers/rust`, the harness that holds the corpus, the oracle runners, the check and the report; it depends on this crate by path and on `tocat-core`;
+3. runs the harness inside an **empty network namespace** (`unshare -rn`, falling back to `sudo -n unshare -n` with `setpriv` back to the caller), so no oracle can reach a network.
+
+**The corpus is generated from the prior art at run time.** A new oracle release therefore brings its new forms with it.
+
+| Source | Entries |
+| --- | --- |
+| socat `-hhh` | every address type and alias, as a minimal valid form (`<host>` → `127.0.0.1`, `<port>` → `1`, `<filename>` → `f`, …); every option and alias, with a sample value by its `type=`, riding on the first type whose `groups=` fit. That host type is one we parse where possible, and a LISTEN type for `fork`/`max-children`. |
+| oittaa/socat `-hhh` | its own type list (aliases take their target's signature), and its options riding on a host chosen by their help heading |
+| oittaa/socat tests | every string literal passed to `ParseChannel`/`ParseSpec` in `internal/parse/*_test.go` (`peers/go`, a `go/ast` walk) |
+| websocat `--help=full` + its `doc.md` | every address type and overlay, using a doc example where one exists; every doc alias; every doc example specifier |
+| tocat | every scheme in `EndpointSpec::from_str`'s `match normalize(scheme)` table, scraped from the resolved crate's source, with a sample body |
+| `peers/hand.txt` | lexer edges, the #67 review probes, the README's forms, and forms that wrapper tools generate (socatui, testcontainers, SocatTUI). Lines are escaped as in the matrix (`\\`, `\t`, `\u{b}`). |
+
+**The oracles**, each asked without opening anything real:
+
+- **socat** (from nixpkgs) and **oittaa/socat** (its CLI, `go install …/cmd/socat`) run as `-d -d <entry> /dev/null` with `PATH=/nonexistent`, in a scratch cwd. A **syntax** error is a rejection: unknown address, wrong parameter count, unknown or inapplicable option, missing numeric value, `not allowed without`, `parse left address`. Everything else counts as acceptance: a runtime failure (unreachable, ENOENT, `execvp` failing on the empty `PATH`), exit 0, or still running after 400 ms (a LISTEN blocked in accept). oittaa mirrors socat's messages, so one classifier serves both. oittaa's latest release (v1.0.3) has none of master's `xio.PrepareChannel`, which is why it is raced through its CLI and not its internal packages.
+- **websocat** (the GitHub release binary): `-t -E --dump-spec <entry> -`, where exit 0 is acceptance. It resolves host names while building the spec, and in the empty namespace that blocks until its resolver times out, so a dump still running after 3 s has parsed the spec and counts as accepted.
+- **tocat**: `entry.parse::<tocat_core::endpoint::EndpointSpec>()`, in process. A panic counts as rejection.
+
+**The matrix** (`peers/matrix.tsv`, sorted by family and then entry) has one row per corpus entry: `entry · family · socat · websocat · oittaa · tocat · class · ours`.
+- Each oracle cell is `ok@<version>` or `err@<version>`: the verdict and the release that gave it.
+- The class is one of:
+  - `supported`: we parse it, and `ours` is our canonical print;
+  - `rejected`: a deliberate rejection (README §L1, and the deliberate list under §"Coverage" above), with `ours` set to `-`;
+  - `alternative`: we reject it, and `ours` is the form we accept instead. The check confirms that form still parses.
+- Families are `<origin>:<kind>[:<family>]`, e.g. `socat:type:TCP`, `socat:option:SOCKET`, `websocat:overlay`, `hand:lexer`.
+
+**The check fails** (exit 1) when an entry is new, when a row is no longer in the corpus, when an oracle's verdict differs from the recorded one (only the verdict is compared, not the version), or when our result contradicts the class. Each mismatched row is named in a `### socat` section appended to `"${BENCHMARK_REPORT:-/dev/stdout}"`, with the oracle version. That section also reports the versions raced, the upstream socat when nixpkgs lags it, the class counts per corpus, and coverage. Coverage is socat's address types per family, and socat's options per group as *typed* (`mux`/`fork`/`max-children`), *unchecked* (carried in `rest` for #59/#60) or rejected. The coverage numbers only report.
+
+**Resolving a failure is a developer decision.**
+1. Run with `BENCHMARK_BLESS=1`. That rewrites the matrix from the run. Rows that still match keep their class; new or contradicted rows get a default class: `supported` if we parse it, otherwise `alternative` when `matrix.rs`'s `alternative()` maps it onto a form we parse (for example `TCP4` → `TCP`, tocat's `tcplisten` → `TCP-LISTEN`, `SYSTEM:cmd` → `EXEC:'sh -c …'`, `OPENSSL:h:p` → `EXEC:'openssl s_client …'`), otherwise `rejected`.
+2. Read the diff. Decide each changed row: support it (a spec change: README L1 plus a crate change), reject it deliberately, or record an alternative.
+3. Edit the class and the `ours` field, and commit the matrix with the reason in the commit message.
+
+**The "stop racing" switch.** Every oracle floats by default. Pinning one is deliberate and recorded in exactly one place:
+
+| Oracle | Pin here |
+| --- | --- |
+| socat | `peers/socat/nixpkgs`: replace `github:NixOS/nixpkgs/nixpkgs-unstable` with a nixpkgs commit. socat comes from nixpkgs because upstream's downloads are plain http without signatures (its https certificate is self-signed). |
+| websocat | `peers/websocat/version`: replace `latest` with a release tag |
+| oittaa/socat | `peers/go/versions`: replace `@latest` with `@vX.Y.Z` |
+| tocat | `peers/rust/Cargo.toml`: `tocat-core = "*"` → `"=x.y.z"` |
+| toolchains | `crates/socat/lefthook.yml`: replace `nixpkgs-unstable` with a commit |
+
+Record why next to the pin, and in this file.
+
+**Caveats.**
+- An oracle verdict means "accepted its syntax", inferred from errors. It never proves the string would work.
+- socat's lexer runs an unterminated quote into its next argument (`EXEC:'abc` executes `abc/dev/null`), so some of socat's acceptances of malformed input are artefacts of that.
+- `EXEC`/`SYSTEM` entries do run, but with an empty `PATH` inside the empty namespace.
+
+**Gaps the first run surfaced** (listed, not implemented; each needs a spec decision):
+- bare `VSOCK` (socat 1.8.1.3's alias for `VSOCK-CONNECT`, like `UNIX`/`LOCAL`): recorded as `alternative` → `VSOCK-CONNECT`;
+- socat 1.8.1's `TEXT:`, `STALL`, `ECHO`, `SOCKETPAIR` test types: `rejected`, but not yet in the deliberate list above.
+
 ## Tests
 
 - `src/address/test.rs` holds the contract tests. `proptest-regressions/address/test.txt` is proptest's own seed file: it saves the shrunk inputs of past failures and replays them before new cases. Commit it, and don't edit it by hand.
