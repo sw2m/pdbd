@@ -29,6 +29,8 @@ pub enum Kind {
     Dual,
     Base(String),
     Resource(String),
+    Nul,
+    Blank,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +80,8 @@ impl fmt::Display for Kind {
                 write!(f, "ambiguous number {n:?}: write it in plain decimal")
             }
             Self::Resource(r) => write!(f, "invalid resource path {r:?}"),
+            Self::Nul => write!(f, "\\0 escape (socat truncates there)"),
+            Self::Blank => write!(f, "empty parameter"),
         }
     }
 }
