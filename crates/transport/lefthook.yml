@@ -13,6 +13,7 @@ test:
 
 benchmark:
   jobs:
-    - name: stub
-      run: |
-        printf '### transport\n\nbenchmark: reserved — see #72\n' >> "${BENCHMARK_REPORT:-/dev/stdout}"
+    - name: link
+      run: lefthook run benchmark:link
+      tags:
+        - privileged
