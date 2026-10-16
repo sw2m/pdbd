@@ -404,3 +404,6 @@ impl fmt::Display for Target {
         }
     }
 }
+
+#[cfg(test)]
+mod test;

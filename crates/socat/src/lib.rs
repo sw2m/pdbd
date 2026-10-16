@@ -2,11 +2,15 @@
 
 mod address;
 mod error;
+#[cfg(test)]
+mod fixture;
 mod host;
 mod lex;
 mod option;
 mod port;
 mod resource;
+#[cfg(test)]
+mod strategy;
 mod target;
 mod text;
 
