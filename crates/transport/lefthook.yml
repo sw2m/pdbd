@@ -10,5 +10,4 @@ test:
 
 benchmark:
   jobs:
-    - name: stub
-      run: 'echo "benchmark: reserved — see #72"'
+    - { name: stub, run: 'echo "benchmark: reserved — see #72"' }
