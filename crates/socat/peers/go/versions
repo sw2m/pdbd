@@ -1,0 +1,2 @@
+# the comparator floats to the newest release; to stop racing it, replace @latest with a version; see crates/socat/CLAUDE.md §"Benchmark"
+github.com/oittaa/socat@latest

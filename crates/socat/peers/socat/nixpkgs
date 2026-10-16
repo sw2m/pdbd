@@ -1,0 +1,2 @@
+# the nixpkgs socat is taken from; floats with nixpkgs-unstable. To stop racing it, replace with a nixpkgs commit; see crates/socat/CLAUDE.md §"Benchmark"
+github:NixOS/nixpkgs/nixpkgs-unstable
