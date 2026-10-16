@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ac5eef719b668cc325a085d01e292c62a355b29b14b2bca0e8be43d9dc0e36f3 # shrinks to s = ""
+cc 861e4ae6162199c80c8c70473eb017f07f48c07b8fe5e0dc19d9d024af540f2e # shrinks to a = Address { target: Vsock(Connect { cid: 100000000, port: 1000000000 }), options: Options { mux: false, cap: None, rest: Unchecked([Opt { name: "a00_a__", value: Some("") }]) } }, e = Substitute(10788579352055408099, 128)

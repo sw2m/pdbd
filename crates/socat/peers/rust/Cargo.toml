@@ -1,0 +1,14 @@
+[package]
+name = "peers"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# its own workspace: kept out of the root one, so its floating versions never touch the root Cargo.lock
+[workspace]
+
+# tocat floats to its newest release; to stop racing it, pin it here (`=x.y.z`); see crates/socat/CLAUDE.md §"Benchmark"
+[dependencies]
+tocat-core = "*"
+socat = { path = "../.." }

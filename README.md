@@ -82,6 +82,19 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 
 Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `pdbd` implements this socat-style address dialect **natively** — the inject-and-play goal is **one** binary on the target, never `pdbd` *plus* a `socat` binary. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe — but it runs *whatever program is already there*; it is never a dependency on `socat` being present. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
 
+**The address dialect is a supported subset of socat's, not all of it** (crate `socat`, #57). Supported:
+
+| Type | Forms |
+| --- | --- |
+| TCP / UDP | `TCP`/`UDP` (connect), `-CONNECT`/`-LISTEN`; host is a name, IPv4, or bracketed IPv6 with an optional `%zone`; port is decimal or a service name |
+| `WS` / `WSS` / `WEBTRANSPORT` | `-CONNECT`/`-LISTEN` with an optional resource path (`WS-CONNECT:host:443/socket`), and `ws://`, `wss://`, `https://` (WebTransport) URLs |
+| `UNIX` / `ABSTRACT` | `-CONNECT`/`-LISTEN` (`UNIX`/`LOCAL` alone = connect) |
+| `VSOCK` | `VSOCK-CONNECT:cid:port`, `VSOCK-LISTEN:port` |
+| files | `FILE`, `OPEN`, `GOPEN` (distinct), or a bare path (= `GOPEN`) |
+| `EXEC`, `STDIO` (`-`), `PTY` | as in socat |
+
+Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address. **Deliberately unsupported, and rejected with a positioned error:** `TCP4`/`TCP6` and the other socat address families (`UDP-SENDTO`, `UDP-RECVFROM`, `UNIX-CLIENT`, `OPENSSL`, `SOCKS4`, `PROXY`, `SCTP`, `PIPE`, `SYSTEM`, `TUN`, …), `FD` and the numeric-FD shorthand, `!!` dual addresses, the `\0` escape (socat truncates there), and socat's base-0 numbers (`010`, `0x50`) for VSOCK ids and `max-children`.
+
 ### L2 — PPP, in userspace
 
 [`ppproto`](https://docs.rs/ppproto)-style **sans-IO PPP** runs HDLC framing (+FCS), LCP, and IPCP entirely in userspace. This is the part that makes a *lossy* serial usable:
@@ -281,9 +294,9 @@ The artifact that makes cross-language real is a **published, versioned `pdbd.pr
 - **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
 - **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
 - **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
-- **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is any socat-style address — or the alias **`bind`** (= listen) / **`forward`** (= connect):
+- **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is an address in the dialect above (*L1 — the transport*) — or the alias **`bind`** (= listen) / **`forward`** (= connect):
   - **port-forward** (the common case): `pdb client:bind:<ip>:<port> daemon:forward:<ip>:<port>` (swap the sides for reverse; either order). The alias carries **no proto** — it forwards **both TCP and UDP**; for a single protocol, drop to a raw `TCP-LISTEN:` / `UDP-LISTEN:` address. `bind` and `forward` come as a **pair** — a bridge has exactly two ends, one ingress + one egress, never two of a kind.
-  - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any socat address types, for the cases a TCP port-forward can't express.
+  - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any address type the dialect supports (*L1 — the transport*), for the cases a TCP port-forward can't express.
   - **One tunnel; muxed on demand.** A bridge rides **one reliable TCP tunnel** owned by a sole **pdb/pdbd worker pair** — ssh's architecture (the worker's internal model is implementation-defined, the shared backpressure contract is not — see *Concurrency & flow control*). A raw `LISTEN` bridges **one connection by default**; append **`,mux`** — pdbd-native, with **`,fork`** as its socat-adoption alias — to **multiplex many connections over the one tunnel** (emulated in the event loop, never a process fork; a socat `max-children` becomes a mux cap). The `bind`/`forward` aliases are always muxed and carry both protocols, so a single port-forward multiplexes all its TCP and UDP flows over that one tunnel. Raw *lossy* UDP, if ever wanted, crosses natively over the general-purpose PPP network instead.
 - **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
 
@@ -360,7 +373,7 @@ pdb list                                                       # show the tunnel
     pdb daemon:bind:0.0.0.0:8080  client:forward:127.0.0.1:3000  # reverse — just swap the sides
     ```
 
-  - **raw socat** — any address type, for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
+  - **raw socat** — any address type the dialect supports (*L1 — the transport*; not all of socat's), for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
 
     ```
     pdb client:TCP-LISTEN:8080      daemon:EXEC:'/usr/local/bin/sensor'  # one connection, bridged, done
