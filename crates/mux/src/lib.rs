@@ -57,6 +57,7 @@ pub enum Error {
     Truncated,
     Dead,
     Window(u32),
+    Budget(u64),
 }
 
 #[derive(Debug)]
@@ -82,10 +83,10 @@ impl Mux {
     pub fn multi(
         side: Side,
         window: u32,
-        cap: Option<u32>,
+        cap: u32,
         budget: u64,
-    ) -> Self {
-        Self::Multi(Multi::new(side, window, cap, budget))
+    ) -> Result<Self, Error> {
+        Multi::new(side, window, cap, budget).map(Self::Multi)
     }
 
     pub fn mode(&self) -> Mode {
@@ -194,6 +195,10 @@ impl fmt::Display for Error {
             Self::Window(w) => write!(
                 f,
                 "L4 bridge datagram flow needs a window of at least 65535, not {w}"
+            ),
+            Self::Budget(b) => write!(
+                f,
+                "L4 bridge receive budget {b} is below one frame (65535)"
             ),
         }
     }

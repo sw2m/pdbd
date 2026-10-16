@@ -74,22 +74,28 @@ impl Body {
 }
 
 impl Frame {
-    pub fn write(out: &mut Vec<u8>, flow: u32, proto: Proto, payload: &[u8]) {
+    pub fn write(
+        out: &mut Vec<u8>,
+        flow: u32,
+        proto: Proto,
+        payload: &[u8],
+    ) -> Result<(), Error> {
         out.push(0);
         out.push(proto as u8);
         out.extend_from_slice(&flow.to_be_bytes());
         out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         out.extend_from_slice(payload);
+        Ok(())
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
-        if let Body::Data(d) = &self.body {
-            return Self::write(out, self.flow, self.proto, d);
-        }
         out.push(self.body.kind());
         out.push(self.proto as u8);
         out.extend_from_slice(&self.flow.to_be_bytes());
         out.extend_from_slice(&self.body.field().to_be_bytes());
+        if let Body::Data(d) = &self.body {
+            out.extend_from_slice(d);
+        }
     }
 
     pub fn decode(buf: &[u8]) -> Result<Option<(Frame, usize)>, Error> {

@@ -5,6 +5,7 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 
 const ROOM: u64 = u64::MAX; // a budget that never pauses
+const ALL: u32 = u32::MAX; // a cap that never refuses
 
 fn wire(m: &mut Multi) -> Vec<u8> {
     let mut out = Vec::new();
@@ -50,8 +51,8 @@ fn tcp(flow: u32, body: Body) -> Frame {
 
 fn pair(wc: u32, wd: u32) -> (Multi, Multi) {
     (
-        Multi::new(Side::Client, wc, None, ROOM),
-        Multi::new(Side::Daemon, wd, None, ROOM),
+        Multi::new(Side::Client, wc, ALL, ROOM).unwrap(),
+        Multi::new(Side::Daemon, wd, ALL, ROOM).unwrap(),
     )
 }
 
@@ -112,7 +113,7 @@ fn handshake() {
 fn small() {
     let (mut c, mut d) = pair(MAX - 1, MAX - 1);
     assert_eq!(c.open(Proto::Udp), Err(Error::Window(MAX - 1)));
-    let mut big = Multi::new(Side::Client, MAX, None, ROOM);
+    let mut big = Multi::new(Side::Client, MAX, ALL, ROOM).unwrap();
     let id = big.open(Proto::Udp).unwrap();
     link(&mut big, &mut d);
     assert_eq!(
@@ -125,7 +126,7 @@ fn small() {
         proto: Proto::Udp,
         body: Body::Open(9),
     }]);
-    let mut d = Multi::new(Side::Daemon, MAX, None, ROOM);
+    let mut d = Multi::new(Side::Daemon, MAX, ALL, ROOM).unwrap();
     assert_eq!(d.feed(&liar), Err(Error::Peer(1, flow::Error::Window(9))));
 }
 
@@ -155,8 +156,8 @@ fn codes() {
 // #58 — socat `max-children` is the cap; peer opens beyond it are refused
 #[test]
 fn cap() {
-    let mut c = Multi::new(Side::Client, 10, None, ROOM);
-    let mut d = Multi::new(Side::Daemon, 10, Some(1), ROOM);
+    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 10, 1, ROOM).unwrap();
     let a = c.open(Proto::Tcp).unwrap();
     let b = c.open(Proto::Tcp).unwrap();
     link(&mut c, &mut d);
@@ -172,7 +173,7 @@ fn cap() {
 // #58
 #[test]
 fn local() {
-    let mut c = Multi::new(Side::Client, 10, Some(2), ROOM);
+    let mut c = Multi::new(Side::Client, 10, 2, ROOM).unwrap();
     let a = c.open(Proto::Tcp).unwrap();
     c.open(Proto::Tcp).unwrap();
     assert_eq!(c.open(Proto::Tcp), Err(Error::Cap(2)));
@@ -209,7 +210,7 @@ fn violations() {
         ),
     ];
     for (bytes, want) in cases {
-        let mut d = Multi::new(Side::Daemon, 4, None, ROOM);
+        let mut d = Multi::new(Side::Daemon, 4, ALL, ROOM).unwrap();
         assert_eq!(d.feed(&bytes), Err(want.clone()), "{want:?}");
         assert_eq!(d.feed(&[]), Err(Error::Dead));
         assert_eq!(d.open(Proto::Tcp), Err(Error::Dead));
@@ -235,7 +236,7 @@ fn empty() {
 // parity, so frames for them are ignored, not strays
 #[test]
 fn retire() {
-    let mut d = Multi::new(Side::Daemon, 10, None, ROOM);
+    let mut d = Multi::new(Side::Daemon, 10, ALL, ROOM).unwrap();
     d.feed(&encode(&[tcp(3, Body::Open(10))])).unwrap();
     assert_eq!(events(&mut d), vec![Event::Open(3, Proto::Tcp)]);
     d.feed(&encode(&[tcp(1, Body::Close)])).unwrap();
@@ -309,8 +310,8 @@ fn stale() {
 // #58 — a refused id is past, so the opener's racing frames are stale
 #[test]
 fn race() {
-    let mut c = Multi::new(Side::Client, 10, None, ROOM);
-    let mut d = Multi::new(Side::Daemon, 10, Some(0), ROOM);
+    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 10, 0, ROOM).unwrap();
     let id = c.open(Proto::Tcp).unwrap();
     link(&mut c, &mut d);
     assert!(events(&mut d).is_empty());
@@ -324,7 +325,7 @@ fn race() {
 // #58
 #[test]
 fn exhausted() {
-    let mut c = Multi::new(Side::Client, 10, None, ROOM);
+    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
     c.next = Some(u32::MAX);
     assert_eq!(c.open(Proto::Tcp), Ok(u32::MAX));
     assert_eq!(c.open(Proto::Tcp), Err(Error::Exhausted));
@@ -449,30 +450,167 @@ fn discard() {
 // flows; when it is spent, decoding pauses until consumption refunds it
 #[test]
 fn budget() {
-    let mut c = Multi::new(Side::Client, 100, None, ROOM);
-    let mut d = Multi::new(Side::Daemon, 100, None, 250);
+    let mut c = Multi::new(Side::Client, 40_000, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 40_000, ALL, 70_000).unwrap();
     let ids: Vec<u32> = (0..4)
         .map(|_| established(&mut c, &mut d, Proto::Tcp))
         .collect();
     for &id in &ids {
-        assert_eq!(c.send(id, &[7; 100]), Ok(100));
+        assert_eq!(c.send(id, &[7; 30_000]), Ok(30_000));
     }
     link(&mut c, &mut d);
     let got = events(&mut d);
     assert_eq!(got.len(), 2);
-    assert_eq!((d.used(), d.paused()), (200, true));
+    assert_eq!((d.used(), d.paused()), (60_000, true));
     d.feed(&[]).unwrap();
     assert!(events(&mut d).is_empty());
-    d.consume(ids[0], 100).unwrap();
-    assert_eq!((d.used(), d.paused()), (100, true));
+    d.consume(ids[0], 30_000).unwrap();
+    assert_eq!((d.used(), d.paused()), (30_000, true));
     d.feed(&[]).unwrap();
-    assert_eq!(events(&mut d), vec![Event::Data(ids[2], vec![7; 100])]);
-    assert_eq!((d.used(), d.paused()), (200, true));
+    assert_eq!(events(&mut d), vec![Event::Data(ids[2], vec![7; 30_000])]);
+    assert_eq!((d.used(), d.paused()), (60_000, true));
     d.reset(ids[1], ABORTED).unwrap();
-    assert_eq!(d.used(), 100);
+    assert_eq!(d.used(), 30_000);
     d.feed(&[]).unwrap();
-    assert_eq!(events(&mut d), vec![Event::Data(ids[3], vec![7; 100])]);
-    assert_eq!((d.used(), d.paused()), (200, false));
+    assert_eq!(events(&mut d), vec![Event::Data(ids[3], vec![7; 30_000])]);
+    assert_eq!((d.used(), d.paused()), (60_000, false));
+}
+
+// #58 — a budget below one maximum frame could never admit one
+#[test]
+fn floor() {
+    let b = u64::from(MAX) - 1;
+    let err = Multi::new(Side::Client, 10, ALL, b).unwrap_err();
+    assert_eq!(err, Error::Budget(b));
+    assert!(Multi::new(Side::Client, 10, ALL, u64::from(MAX)).is_ok());
+}
+
+fn spent() -> (Multi, Multi, u32) {
+    let mut c = Multi::new(Side::Client, 30_000, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 30_000, ALL, 70_000).unwrap();
+    let ids: Vec<u32> = (0..3)
+        .map(|_| established(&mut c, &mut d, Proto::Tcp))
+        .collect();
+    for &id in &ids[..2] {
+        c.send(id, &[1; 30_000]).unwrap();
+    }
+    let b = ids[2];
+    link(&mut c, &mut d);
+    events(&mut d);
+    assert_eq!(d.used(), 60_000);
+    (c, d, b)
+}
+
+// #58 — a header the decoder rejects is fatal at the header, even while
+// the budget is spent: it never pauses the tunnel
+#[test]
+fn poison() {
+    let (_, mut d, b) = spent();
+    let mut head = vec![0x00, 0x06];
+    head.extend(b.to_be_bytes());
+    head.extend(70_000u32.to_be_bytes());
+    assert_eq!(
+        d.feed(&head),
+        Err(Error::Frame(frame::Error::Oversize(70_000)))
+    );
+    assert!(!d.paused() && d.done());
+}
+
+// #58 — DATA after CLOSE, or beyond credit, is fatal even behind a spent
+// budget; DATA within credit waits for room
+#[test]
+fn guilty() {
+    let (mut c, mut d, b) = spent();
+    c.close(b).unwrap();
+    link(&mut c, &mut d);
+    events(&mut d);
+    let late = encode(&[tcp(b, Body::Data(vec![2; 20_000]))]);
+    assert_eq!(d.feed(&late), Err(Error::Peer(b, flow::Error::Closed)));
+
+    let (_, mut d, b) = spent();
+    let over = encode(&[tcp(b, Body::Data(vec![2; 35_000]))]);
+    let credit = flow::Error::Credit {
+        len: 35_000,
+        credit: 30_000,
+    };
+    assert_eq!(d.feed(&over), Err(Error::Peer(b, credit)));
+
+    let (_, mut d, b) = spent();
+    let fair = encode(&[tcp(b, Body::Data(vec![2; 20_000]))]);
+    assert_eq!(d.feed(&fair), Ok(()));
+    assert!(d.paused() && !d.done());
+}
+
+// #58 — EOF while paused mid-frame is still a torn frame
+#[test]
+fn torn() {
+    let (mut c, mut d, b) = spent();
+    c.send(b, &[3; 20_000]).unwrap();
+    let bytes = wire(&mut c);
+    d.feed(&bytes[..HEADER + 100]).unwrap();
+    assert!(d.paused());
+    assert_eq!(d.end(), Err(Error::Truncated));
+
+    let (mut c, mut d, b) = spent();
+    c.send(b, &[3; 20_000]).unwrap();
+    let bytes = wire(&mut c);
+    d.feed(&bytes).unwrap();
+    assert!(d.paused());
+    assert_eq!(d.end(), Ok(()));
+}
+
+// #58 — growing a flow before its ACCEPT arrives grants the extra once it opens
+#[test]
+fn opening() {
+    let (mut c, mut d) = pair(10, 10);
+    let id = c.open(Proto::Tcp).unwrap();
+    c.grow(id, 50).unwrap();
+    link(&mut c, &mut d);
+    events(&mut d);
+    d.accept(id).unwrap();
+    link(&mut d, &mut c);
+    assert_eq!(events(&mut c), vec![Event::Accepted(id)]);
+    let grant = frames(&wire(&mut c));
+    assert_eq!(grant, vec![tcp(id, Body::Window(40))]);
+    d.feed(&encode(&grant)).unwrap();
+    assert_eq!(d.flow(id).unwrap().credit(), 50);
+}
+
+// #58 — once the tunnel is dead, every call says so
+#[test]
+fn dead() {
+    let (mut c, mut d) = pair(10, 10);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.fail();
+    assert_eq!(c.accept(id), Err(Error::Dead));
+    assert_eq!(c.send(id, b"x"), Err(Error::Dead));
+    assert_eq!(c.consume(id, 0), Err(Error::Dead));
+    assert_eq!(c.flush(id), Err(Error::Dead));
+    assert_eq!(c.close(id), Err(Error::Dead));
+    assert_eq!(c.reset(id, ABORTED), Err(Error::Dead));
+    assert_eq!(c.stop(id), Err(Error::Dead));
+    assert_eq!(c.grow(id, 20), Err(Error::Dead));
+    assert_eq!(c.open(Proto::Tcp), Err(Error::Dead));
+}
+
+// #58 — a STOP the peer never answers with CLOSE expires like any stuck flow
+#[test]
+fn unanswered() {
+    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 10, 1, ROOM).unwrap();
+    c.tick(0);
+    d.tick(0);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    d.tick(500);
+    d.stop(id).unwrap();
+    wire(&mut d);
+    d.expire(559, 60);
+    assert!(events(&mut d).is_empty());
+    d.expire(560, 60);
+    assert_eq!(events(&mut d), vec![Event::Reset(id, ABORTED)]);
+    assert_eq!(frames(&wire(&mut d)), vec![tcp(id, Body::Reset(ABORTED))]);
+    assert!(d.is_empty());
+    assert!(d.open(Proto::Tcp).is_ok());
 }
 
 // #58 — every way a flow ends with unread bytes refunds the budget
@@ -506,8 +644,8 @@ fn refund() {
 // their cap slots
 #[test]
 fn expire() {
-    let mut c = Multi::new(Side::Client, 10, Some(4), ROOM);
-    let mut d = Multi::new(Side::Daemon, 10, None, ROOM);
+    let mut c = Multi::new(Side::Client, 10, 4, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, 10, ALL, ROOM).unwrap();
     c.tick(0);
     d.tick(0);
     let open = established(&mut c, &mut d, Proto::Tcp);
@@ -638,8 +776,8 @@ impl Net {
     fn new(wc: u32, wd: u32, budget: u64) -> Self {
         Self {
             m: [
-                Multi::new(Side::Client, wc, None, budget),
-                Multi::new(Side::Daemon, wd, None, budget),
+                Multi::new(Side::Client, wc, ALL, budget).unwrap(),
+                Multi::new(Side::Daemon, wd, ALL, budget).unwrap(),
             ],
             wire: Default::default(),
             sent: Default::default(),
@@ -699,7 +837,7 @@ impl Net {
                 .map(|id| u64::from(m.flow(id).unwrap().held()))
                 .sum();
             prop_assert_eq!(m.used(), held);
-            prop_assert!(m.used() <= budget.max(u64::from(MAX)));
+            prop_assert!(m.used() <= budget);
         }
         Ok(())
     }
@@ -714,7 +852,7 @@ proptest! {
     fn honest(
         wc in windows(),
         wd in windows(),
-        budget in prop_oneof![1u64..2000, Just(ROOM)],
+        budget in prop_oneof![u64::from(MAX)..u64::from(MAX) + 2000, Just(ROOM)],
         ops in prop::collection::vec(op(), 0..300),
     ) {
         let mut net = Net::new(wc, wd, budget);
