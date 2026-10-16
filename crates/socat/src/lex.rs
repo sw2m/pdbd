@@ -230,3 +230,6 @@ impl fmt::Display for Quoted<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod test;
