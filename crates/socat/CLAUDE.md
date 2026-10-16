@@ -137,7 +137,8 @@ Record why next to the pin, and in this file.
 
 ## Tests
 
-- `src/address/test.rs` holds the contract tests. `proptest-regressions/address/test.txt` is proptest's own seed file: it saves the shrunk inputs of past failures and replays them before new cases. Commit it, and don't edit it by hand.
+- Each module's contract tests sit beside it as `<module>/test.rs` (`lex`, `host`, `port`, `option`, `resource`, `target`); `address/test.rs` keeps only whole-address tests (README forms, error offsets, invariants, round-trip and mutation properties). Shared proptest generators and property helpers live once in `src/strategy.rs`, constructors and table helpers in `src/fixture.rs`, both `#[cfg(test)]`.
+- `proptest-regressions/<module>/test.txt` is proptest's own seed file for that module's tests: it saves the shrunk inputs of past failures and replays them before new cases. Its path follows the test's module, so a test that moves takes its seed with it. Commit it, and don't edit it by hand.
 - Round 1 showed that the round-trip property (`check`: parse → print → parse) **can't catch a parse that drops data**, because it reparses the printer's own output. Six targeted mutants survived the suite until exact assertions were added. Keep the suite mutant-killing:
   - typed or canonical assertions for bare paths (`/a:b`);
   - extra-parameter rejection in **both** directions of every fixed-arity parser;
