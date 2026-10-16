@@ -5,5 +5,14 @@ extends:
 # Datapath test — #12-A
 test:
   jobs:
-    - { name: unit, run: cargo test -p transport --locked }
-    - { name: datapath, run: lefthook run test:datapath, tags: [privileged] }
+    - name: unit
+      run: cargo test -p transport --locked
+    - name: datapath
+      run: lefthook run test:datapath
+      tags: [privileged]
+
+benchmark:
+  jobs:
+    - name: stub
+      run: |
+        printf '### transport\n\nbenchmark: reserved — see #72\n' >> "${BENCHMARK_REPORT:-/dev/stdout}"

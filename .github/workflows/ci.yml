@@ -55,7 +55,53 @@ jobs:
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — component reuse means build pollution is possible"
       - env:
           LEFTHOOK_CONFIG: ${{ matrix.check.config }}
-        run: nix develop --no-update-lock-file -c lefthook run ${{ matrix.check.hook }}
+        run: |
+          [ "${{ matrix.check.hook }}" != benchmark ] || export BENCHMARK_REPORT="$RUNNER_TEMP/benchmark.md" # see README "Benchmarks"
+          nix develop --no-update-lock-file -c lefthook run ${{ matrix.check.hook }}
+      - name: summarize benchmark report
+        if: always() && matrix.check.hook == 'benchmark'
+        run: '[ ! -f "$RUNNER_TEMP/benchmark.md" ] || cat "$RUNNER_TEMP/benchmark.md" >> "$GITHUB_STEP_SUMMARY"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && matrix.check.hook == 'benchmark'
+        with:
+          name: benchmark-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/benchmark.md
+          if-no-files-found: ignore
+
+  # Not in mergeable's needs: a failed comment never blocks a merge — see README "Benchmarks"
+  report:
+    needs: check
+    if: >-
+      always() && github.event_name == 'pull_request' && needs.check.result != 'skipped'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: benchmark-*
+          path: reports
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reports=$(find reports -name '*.md' 2>/dev/null | sort)
+          [ -n "$reports" ] || { echo "no benchmark reports"; exit 0; }
+          marker='<!-- pdbd-benchmark -->'
+          {
+            printf '%s\n## Benchmarks\n\nResults for %s.\n\n' "$marker" "$SHA"
+            for f in $reports; do cat "$f"; echo; done
+          } > body.md
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md --silent
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md --silent
+          fi
 
   # The one status to mark required — #65
   mergeable:
