@@ -307,7 +307,7 @@ The stack is therefore standard wire top to bottom: RFC-1661 PPP → kernel IP/T
 
 A userspace mux (yamux, SSH channels, HTTP/2, adb's multiplexing loop) exists to run many logical streams over **one** connection *when the transport has no IP layer*. `pdbd` gives itself an IP layer (PPP → TUN → kernel), so most tunnels are just another kernel socket, demuxed by 4-tuple. The only scenario a general data-plane mux would help is **TCP-tuple exhaustion** — and that is moot: on a point-to-point IPv4 link to one control endpoint only the source port varies (~64 k), but allocating **IPv6** (or binding multiple source addresses — which multi-IP-over-PPP already allows — and/or a `pdbd` holding multiple addresses) makes the tuple space astronomically larger than any host's fd / memory / scheduler budget. You exhaust **physical compute** long before the tuple pool, so a general mux buys nothing the kernel does not already give.
 
-**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge multiplexes **when it carries more than one flow**, by necessity: the `bind`/`forward` aliases forward **both** TCP and UDP, and a `,mux`/`,fork` LISTEN accepts many connections — all riding **one reliable TCP tunnel** over the lossy link (forwarded UDP especially must, since raw UDP would just drop). So such a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. A plain single-connection, single-protocol `LISTEN` carries one flow and needs no frame — a bare stream. Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
+**The one exception — the bridge (`Socat`/forward) tunnel.** A bridge multiplexes **when it carries more than one flow**, by necessity: the `bind`/`forward` aliases forward **both** TCP and UDP, and a `,mux`/`,fork` LISTEN accepts many connections — all riding **one reliable TCP tunnel** over the lossy link (forwarded UDP especially must, since raw UDP would just drop). So such a bridge is **one TCP tunnel owned by a sole pdb/pdbd worker pair that frames and muxes its flows** (`(flow-id, proto, window)` per frame) — ssh's one-process-many-channels model, confined to this one tunnel. A plain single-connection `LISTEN` runs the mux in **single-channel mode**: permanently one flow, with no mux frame or window, so it costs what a raw stream costs, while the mux still owns its open, half-close, close and errors. A UDP flow keeps its datagram lengths there too: the bridge frames each datagram with a 2-byte length (see *Concurrency & flow control*). Everything else stays unmuxed (control plane = the RPC lib's mux; `exec`/`shell` = one kernel socket each; general PPP traffic = kernel 4-tuple). This still doesn't pull `yamux`: that frame must carry **datagrams** (UDP), which yamux (stream-only) can't, so it's a small bespoke frame, not a library mux.
 
 ### Concurrency & flow control
 
@@ -317,9 +317,74 @@ Independent implementations (`gopdb`, `jpdb`, a Rust `pdbd`) must interoperate o
 - **The cross-language contract is per-flow windowed flow control** — the convergent design of every mux protocol (SSH channels, RFC 4254; HTTP/2 `WINDOW_UPDATE`, RFC 9113; yamux; smux): a receiver advertises credit, a sender may not exceed it, window-update frames replenish it. It's a *wire* protocol, so it ports regardless of internal concurrency, and it's what propagates backpressure and stops one flow starving others inside a mux.
 - **Where pdbd needs it:**
   - **control plane + IPC** inherit it for free — gRPC's HTTP/2 gives per-stream + per-connection `WINDOW_UPDATE` across all three segments.
-  - **the bridge tunnel** is the one place pdbd authors it — its `(flow-id, proto, window)` frame carries a **per-flow credit**, same pattern, so a mixed-language bridge agrees on backpressure without agreeing on threads.
+  - **the bridge tunnel** is the one place pdbd authors it — its `(flow-id, proto, window)` frame carries a **per-flow credit**, same pattern, so a mixed-language bridge agrees on backpressure without agreeing on threads. Its wire contract is below.
   - **`exec`/`shell`** need none — a serialized single stream per kernel-TCP tunnel; kernel TCP *is* the flow control.
 - **The behavior spec stays event-loop-expressible** — readiness, explicit window credits, explicit close *frames* — never Rust-`async`-specific constructs (Future-drop cancellation, `select!`), so Go / Java / C can match it. The clinching precedent is ssh itself: OpenSSH (C, select loop), `russh` (Rust/tokio), Go's `x/crypto/ssh` (goroutines), Apache MINA (Java) all interoperate because the channel **window protocol** is uniform while each uses its native concurrency.
+
+
+#### The bridge tunnel's wire contract
+
+The bridge's mux runs its tunnel in one of two **modes, fixed when the tunnel is created**. Both ends learn the mode out of band, from the `Socat` request that set the tunnel up; which mode a bridge uses is the bridge's call, not the mux's. Neither mode sends a preamble or a version byte: `Hello`'s `wire_version` already versions this contract.
+
+**Single-channel mode** is permanently one channel. The tunnel's bytes *are* the channel's bytes: no header, no window, no credit. A single-channel end is therefore wire-identical to a raw TCP stream, and a plain `socat` on the far end interoperates. The channel's lifecycle rides the tunnel's TCP:
+
+- **open** — the tunnel's establishment. There is no other channel to open, ever.
+- **half-close** — a write shutdown (`shutdown(SHUT_WR)`, a TCP FIN). The peer reads EOF as the channel's close in that direction. Each direction closes on its own; the channel is finished once both have.
+- **reset** — abort the tunnel (a TCP RST, e.g. `SO_LINGER` 0); unsent bytes are dropped. A read or write error on the tunnel is a reset.
+- It carries the caller's bytes **unchanged**, so a single-channel UDP flow keeps its datagram boundaries by framing them itself: the bridge sends each datagram as a 2-byte big-endian length, then the payload, never split (#59's *Channels*). The mux's own datagram-per-frame accounting, credit included, is multi-channel only.
+
+**Multi-channel mode** carries framed flows: TCP stream flows and UDP datagrams, each with its own credit. It runs from one flow up to the cap; a multi-channel tunnel that drops to one flow stays multi-channel and keeps framing.
+
+Every frame is a 10-byte header in network byte order, followed by a payload on DATA only:
+
+```
+ 0        1        2               6               10
++--------+--------+---------------+---------------+=================+
+|  type  | proto  |  flow (u32)   |  field (u32)  | payload (DATA)  |
++--------+--------+---------------+---------------+=================+
+```
+
+| `type` | Frame | `field` |
+| --- | --- | --- |
+| 0 | DATA | payload length, 0–65535; exactly that many payload bytes follow |
+| 1 | OPEN | the opener's initial receive window |
+| 2 | ACCEPT | the acceptor's initial receive window |
+| 3 | WINDOW | credit increment, ≥ 1 |
+| 4 | CLOSE | 0 |
+| 5 | RESET | code: 0 refused, 1 aborted; a receiver reads any other value as aborted |
+| 6 | STOP | 0 |
+
+- `proto` is the IANA protocol number: **6** TCP (a byte stream) or **17** UDP (datagrams). It is fixed by the OPEN and repeated on every frame of the flow.
+- A decoder rejects, as soon as the 10 header bytes arrive: an unknown `type` or `proto`, `flow` 0, a DATA length above 65535, an empty TCP DATA, a WINDOW of 0, and a CLOSE or STOP with a nonzero field. 65535 is one UDP datagram; it also bounds what a peer can make the receiver allocate.
+
+**Flow ids.** A flow id is a nonzero u32. The client side opens odd ids from 1 and the daemon side even ids from 2. Each side's ids rise and are never reused, but a side may skip ids. An OPEN with the receiver's own parity, or with an id not greater than every id that peer opened before, is a violation. An OPEN of id X **retires every lower id of the opener's parity that was never opened** (as HTTP/2 does, RFC 9113 §5.1.1): frames for those ids are ignored like any retired id's, never answered as strays. When the next id would pass 2³²−1, that side can open no more flows.
+
+**Handshake.** The opener sends `OPEN(w)`, stating its initial receive window. The acceptor answers `ACCEPT(w')` with its own, or `RESET(code)` to refuse. Until ACCEPT, the opener may send only RESET (to abandon the open) and the acceptor only ACCEPT or RESET. An acceptor at its cap (`max-children`: live flows on that side, opening and pending included) answers `RESET(0)` at once. A UDP flow's OPEN and ACCEPT each state a window of **at least 65535**, so the largest datagram can always be sent; a smaller one is a violation.
+
+**Credit.** Credit is counted in DATA payload bytes, separately for each direction of each flow.
+
+- A sender's credit starts at the window the peer stated (from ACCEPT for the opener, from OPEN for the acceptor). Each DATA it sends spends its payload length; each WINDOW it receives adds its increment.
+- A sender never sends more than its credit. A TCP DATA frame carries 1 to min(credit, 65535) bytes of the stream, never 0. A UDP DATA frame carries exactly one datagram, 0–65535 bytes, never split or coalesced, and needs its whole length in credit: without it, the sender waits or drops the datagram.
+- A receiver sends `WINDOW(n)` for bytes it has consumed (handed on to the flow's endpoint). It **may also over-grant** — send WINDOW beyond what it consumed — to enlarge its window; it never shrinks one. So for each direction, *sender credit + DATA in flight + WINDOW in flight = the receive room the receiver grants*. When to send WINDOW, and whether to grow the window, is local policy; the reference sends once the consumed bytes reach half the window.
+- DATA longer than the credit the receiver granted is a violation. So is a WINDOW that would take the sender's credit above 2³²−1.
+- A TCP window of 0 is legal: that direction carries nothing until the receiver over-grants.
+
+**Close, stop and reset.** Each direction of a flow ends on its own.
+
+- **CLOSE** is the sender's half-close: it sends no more DATA on the flow. DATA after a CLOSE, or a second CLOSE in the same direction, is a violation. Receiving CLOSE stops the receiver making *new* grants for that direction; a WINDOW it already sent may still cross or follow the CLOSE, and the CLOSE's sender accepts it (RFC 9113 §6.9).
+- **STOP** is the receiver's half-close of the other direction: its sender stops reading (QUIC `STOP_SENDING`). On receiving STOP, the peer sends no more DATA on the flow: it discards whatever it hasn't sent yet and sends CLOSE, unless it already has. DATA that arrives after a STOP was sent is discarded, but it is still checked against credit, and an overrun is still a violation. A STOP sender makes no further grants. STOP is legal only after ACCEPT, at most once per direction, and may cross the peer's CLOSE; a second STOP in the same direction is a violation.
+- **RESET** ends both directions at once, from any state, and its sender discards unsent data.
+- A flow is finished once CLOSE has crossed both ways, or once a RESET has crossed either way, and its id is retired.
+
+**Races and violations.** Frames for a retired id, or for an id that was refused, are ignored: an honest peer can race a WINDOW or DATA against the teardown (as in HTTP/2's *closed* state). A frame for an id not opened yet (above the peer's last OPEN, or one of this side's ids it hasn't allocated) is a violation. Every decode error and every violation is fatal to the tunnel: the receiver aborts it, and each live flow ends as if reset with code 1. A tunnel EOF also ends each live flow that way; an EOF in the middle of a frame is a violation.
+
+**Local policy, not wire.** These bind one implementation, not the protocol, and the reference ships them as follows:
+
+- **A receive budget across all flows** (smux's `MaxReceiveBuffer`): bytes delivered but not yet consumed, summed over every flow, are bounded by a budget the caller must choose, at least one maximum frame (65535). When the next valid DATA would exceed it, the mux stops decoding and the caller stops reading the tunnel until consumption, a stop, a close or a reset refunds room. The pause never defers a violation: a header the decoder rejects, DATA after CLOSE, or DATA beyond credit is fatal at once, however full the budget is. It is local because a shared *window* on the wire would let one unread flow stall every other one (yamux has none; Nerdbank.Streams v2 moved to per-channel windows for this reason).
+- **A flow cap** (`max-children`) is always set; the caller chooses it, so the flow table and its event queue are bounded too.
+- **Expiry.** A flow left opening, pending, half-closed, or stopped without the CLOSE the peer owes, longer than the caller's deadline, is reset with code 1, freeing its cap slot (yamux's stream open and close timeouts). The caller supplies the clock.
+- **Scheduling.** Control frames are sent before any DATA, and flows with queued DATA take turns, one bounded chunk each.
+- **No ping, keepalive or drain frame.** Liveness is L2's (LCP echo), and a graceful drain or teardown is the control plane's (`Drop`); the tunnel adds neither.
 
 ---
 

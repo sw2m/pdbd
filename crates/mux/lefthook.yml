@@ -1,0 +1,23 @@
+extends:
+  - nix/lefthook.yml
+
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p mux --locked
+
+# #58 — peers/rust is outside the workspace, so the root quality jobs don't reach it
+quality:
+  jobs:
+    - name: peers
+      run: |
+        cargo fmt --manifest-path crates/mux/peers/rust/Cargo.toml --check
+        cargo clippy --manifest-path crates/mux/peers/rust/Cargo.toml --benches -- -D warnings
+
+# #58 — see crates/mux/CLAUDE.md §"Benchmarks"
+benchmark:
+  jobs:
+    - name: compare
+      run: |
+        pkgs=github:NixOS/nixpkgs/nixpkgs-unstable # unlocked on purpose: the benchmark races the latest toolchains
+        nix shell "$pkgs#go" "$pkgs#dotnet-sdk" "$pkgs#cargo" "$pkgs#rustc" "$pkgs#gcc" -c sh crates/mux/peers/compare.sh

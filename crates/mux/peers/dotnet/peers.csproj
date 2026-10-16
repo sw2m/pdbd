@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Pin Condition="'$(Pin)' == ''">*</Pin>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- floats to the newest release unless ./pins sets $(Pin); see crates/mux/CLAUDE.md §"Benchmarks" -->
+    <PackageReference Include="Nerdbank.Streams" Version="$(Pin)" />
+  </ItemGroup>
+</Project>

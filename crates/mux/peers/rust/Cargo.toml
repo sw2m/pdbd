@@ -1,0 +1,35 @@
+[package]
+name = "peers"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# its own workspace: kept out of the root one, so its floating versions never touch the root Cargo.lock
+[workspace]
+
+# the comparators float to the newest release; to stop racing one, add it to ./pins; see crates/mux/CLAUDE.md §"Benchmarks"
+[dev-dependencies]
+yamux = "*"
+async_smux = "*"
+h2 = "*"
+mux = { path = "../.." }
+criterion = { version = "0.8", default-features = false, features = [
+  "cargo_bench_support"
+] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "macros",
+  "sync",
+  "time"
+] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+bytes = "1"
+http = "1"
+
+[[bench]]
+name = "compare"
+harness = false

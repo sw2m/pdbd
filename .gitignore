@@ -1,3 +1,7 @@
 /target
 .githooks/
 /result*
+crates/mux/peers/rust/Cargo.lock
+crates/mux/peers/rust/target/
+crates/mux/peers/dotnet/bin/
+crates/mux/peers/dotnet/obj/
