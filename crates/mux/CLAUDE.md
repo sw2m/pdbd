@@ -3,7 +3,7 @@
 The bridge tunnel's multiplexer (#58, PR #68). It's a sans-IO state machine: `feed` bytes in, `poll` events, `transmit` bytes out. #59 drives it over the one reliable TCP tunnel a bridge rides. The wire contract is the README's §"The bridge tunnel's wire contract". This file records how the design compares with the multiplexers we reviewed, so the next change reuses that research instead of redoing it.
 
 - `Single`: one flow, no frame, the raw stream (flow id `0`).
-- `Multi::new(side, window, cap, budget)`: framed flows. A 10-byte header (type, proto, id, length/credit). Types are `DATA 0`, `OPEN 1`, `ACCEPT 2`, `WINDOW 3`, `CLOSE 4`, `RESET 5`, `STOP 6`. Proto is `6` TCP or `17` UDP.
+- `Multi::new(side, window, cap, budget)`: framed flows. `cap` (max-children) and `budget` are required; the budget must hold one maximum frame (≥ 65535), or `new` returns `Error::Budget`. A 10-byte header (type, proto, id, length/credit). Types are `DATA 0`, `OPEN 1`, `ACCEPT 2`, `WINDOW 3`, `CLOSE 4`, `RESET 5`, `STOP 6`. Proto is `6` TCP or `17` UDP.
 
 ## Settled (don't re-litigate)
 
@@ -12,9 +12,9 @@ The bridge tunnel's multiplexer (#58, PR #68). It's a sans-IO state machine: `fe
 - **RESET codes:** only `REFUSED 0` and `ABORTED 1`, and any other code reads as `ABORTED`. A fuller reason table is deferred.
 - **Which listeners mux and which need a peer table** is #59's **Channels** section. Mux is optional per listener; only `bind`/`forward` always mux.
 
-## Open: single-channel UDP
+## Settled: single-channel UDP
 
-#59's Channels section says single-channel means *one flow*, not *no framing*. A single-channel UDP flow must keep datagram boundaries across the TCP tunnel (2-byte length, then payload, never split). `Single` today is a raw byte passthrough with no proto, so it carries TCP correctly but not UDP. Either `Single` gains a UDP mode with that length frame, or #59 frames it outside this crate. Decide before #59 builds on `Single`.
+`Single` stays byte-transparent: one flow, no proto, no frame of its own. A single-channel UDP flow keeps its datagram boundaries because #59's worker frames each datagram itself (2-byte big-endian length, then the payload, never split), per #59's **Channels** section. Kimi k3's round-2 probe pushed u16-framed datagrams through `Single` in 7-byte chunks and every boundary survived. The mux's datagram-per-DATA-frame accounting and credit are multi-channel only.
 
 ## The multiplexers we compared
 
@@ -84,3 +84,5 @@ Keep covered:
 - CLOSE/WINDOW crossing;
 - unknown RESET codes from a non-Rust peer;
 - `grow` on a pending flow (a bug found and fixed in round 2; test `early`).
+- a rejected header behind a spent budget is fatal, not a pause (`poison`, `guilty`; round 3);
+- a STOP the peer never answers with CLOSE expires (`unanswered`; round 3).

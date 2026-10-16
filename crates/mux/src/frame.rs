@@ -73,6 +73,60 @@ impl Body {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Head {
+    pub kind: u8,
+    pub proto: Proto,
+    pub flow: u32,
+    pub field: u32,
+}
+
+impl Head {
+    pub fn parse(buf: &[u8]) -> Result<Option<Head>, Error> {
+        let Some(head) = buf.get(..HEADER) else {
+            return Ok(None);
+        };
+        let word = |i: usize| {
+            u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]])
+        };
+        let (kind, flow, field) = (head[0], word(2), word(6));
+        if kind > 6 {
+            return Err(Error::Type(kind));
+        }
+        let proto = Proto::parse(head[1])?;
+        Self::check(kind, proto, flow, field)?;
+        Ok(Some(Head {
+            kind,
+            proto,
+            flow,
+            field,
+        }))
+    }
+
+    fn check(
+        kind: u8,
+        proto: Proto,
+        flow: u32,
+        field: u32,
+    ) -> Result<(), Error> {
+        match kind {
+            _ if flow == 0 => Err(Error::Flow),
+            0 if field > MAX => Err(Error::Oversize(field)),
+            0 if field == 0 && proto == Proto::Tcp => Err(Error::Empty),
+            3 if field == 0 => Err(Error::Increment),
+            4 | 6 if field != 0 => Err(Error::Field(field)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self.kind {
+            0 => HEADER + self.field as usize,
+            _ => HEADER,
+        }
+    }
+}
+
 impl Frame {
     pub fn write(
         out: &mut Vec<u8>,
@@ -80,10 +134,12 @@ impl Frame {
         proto: Proto,
         payload: &[u8],
     ) -> Result<(), Error> {
+        let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        Head::check(0, proto, flow, len)?;
         out.push(0);
         out.push(proto as u8);
         out.extend_from_slice(&flow.to_be_bytes());
-        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(payload);
         Ok(())
     }
@@ -99,44 +155,27 @@ impl Frame {
     }
 
     pub fn decode(buf: &[u8]) -> Result<Option<(Frame, usize)>, Error> {
-        let Some(head) = buf.get(..HEADER) else {
+        let Some(head) = Head::parse(buf)? else {
             return Ok(None);
         };
-        let word = |i: usize| {
-            u32::from_be_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]])
+        let Some(rest) = buf.get(HEADER..head.size()) else {
+            return Ok(None);
         };
-        let (kind, flow, field) = (head[0], word(2), word(6));
-        if kind > 6 {
-            return Err(Error::Type(kind));
-        }
-        let proto = Proto::parse(head[1])?;
-        if flow == 0 {
-            return Err(Error::Flow);
-        }
-        let body = match kind {
-            0 if field > MAX => return Err(Error::Oversize(field)),
-            0 if field == 0 && proto == Proto::Tcp => return Err(Error::Empty),
-            0 => {
-                let Some(d) = buf.get(HEADER..HEADER + field as usize) else {
-                    return Ok(None);
-                };
-                Body::Data(d.to_vec())
-            }
-            1 => Body::Open(field),
-            2 => Body::Accept(field),
-            3 if field == 0 => return Err(Error::Increment),
-            3 => Body::Window(field),
-            4 if field != 0 => return Err(Error::Field(field)),
+        let body = match head.kind {
+            0 => Body::Data(rest.to_vec()),
+            1 => Body::Open(head.field),
+            2 => Body::Accept(head.field),
+            3 => Body::Window(head.field),
             4 => Body::Close,
-            5 => Body::Reset(field),
-            _ if field != 0 => return Err(Error::Field(field)),
+            5 => Body::Reset(head.field),
             _ => Body::Stop,
         };
-        let n = match &body {
-            Body::Data(d) => HEADER + d.len(),
-            _ => HEADER,
+        let frame = Frame {
+            flow: head.flow,
+            proto: head.proto,
+            body,
         };
-        Ok(Some((Frame { flow, proto, body }, n)))
+        Ok(Some((frame, head.size())))
     }
 }
 
@@ -171,6 +210,18 @@ impl Reader {
             self.at = 0;
         }
         Ok(Some(frame))
+    }
+
+    pub fn whole(&self) -> bool {
+        let rest = self.peek();
+        let mut k = 0;
+        while k < rest.len() {
+            match Head::parse(&rest[k..]) {
+                Ok(Some(head)) => k += head.size(),
+                _ => return false,
+            }
+        }
+        k == rest.len()
     }
 
     pub fn peek(&self) -> &[u8] {

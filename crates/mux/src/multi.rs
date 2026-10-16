@@ -1,5 +1,5 @@
 use crate::flow::{self, Flow, State, ABORTED, REFUSED};
-use crate::frame::{Body, Frame, Proto, Reader, HEADER, MAX};
+use crate::frame::{Body, Frame, Head, Proto, Reader, HEADER, MAX};
 use crate::{Error, Event, Side, Transmit};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -32,6 +32,9 @@ impl Multi {
         cap: u32,
         budget: u64,
     ) -> Result<Self, Error> {
+        if budget < u64::from(MAX) {
+            return Err(Error::Budget(budget));
+        }
         let first = match side {
             Side::Client => 1,
             Side::Daemon => 2,
@@ -73,6 +76,9 @@ impl Multi {
     }
 
     fn get(&mut self, id: u32) -> Result<&mut Flow, Error> {
+        if self.dead {
+            return Err(Error::Dead);
+        }
         self.flows.get_mut(&id).ok_or(Error::Unknown(id))
     }
 
@@ -119,17 +125,18 @@ impl Multi {
     }
 
     fn blocked(&self) -> bool {
-        let head = self.reader.peek();
-        if head.len() < HEADER || head[0] != 0 || self.used == 0 {
+        let Ok(Some(head)) = Head::parse(self.reader.peek()) else {
             return false;
-        }
-        let id = u32::from_be_bytes([head[2], head[3], head[4], head[5]]);
-        let len = u32::from_be_bytes([head[6], head[7], head[8], head[9]]);
-        let held = self
-            .flows
-            .get(&id)
-            .is_some_and(|f| f.state() == State::Open && !f.stopped());
-        held && self.used + u64::from(len) > self.budget
+        };
+        let held = head.kind == 0
+            && self.flows.get(&head.flow).is_some_and(|f| {
+                f.state() == State::Open
+                    && f.proto() == head.proto
+                    && !f.stopped()
+                    && !f.received()
+                    && head.field <= f.granted()
+            });
+        held && self.used + u64::from(head.field) > self.budget
     }
 
     fn route(&mut self, frame: Frame) -> Result<(), Error> {
@@ -165,6 +172,9 @@ impl Multi {
         let event = match flow.receive(frame).map_err(|e| Error::Peer(id, e))? {
             flow::Event::Accepted => {
                 flow.mark(self.now);
+                if let Some(grant) = flow.flush() {
+                    grant.encode(&mut self.control);
+                }
                 Event::Accepted(id)
             }
             flow::Event::Data(d) => {
@@ -225,7 +235,7 @@ impl Multi {
             return Err(Error::Dead);
         }
         self.abort();
-        match self.reader.pending() == 0 || self.paused {
+        match self.reader.whole() {
             true => Ok(()),
             false => Err(Error::Truncated),
         }
@@ -251,17 +261,8 @@ impl Multi {
                 continue;
             };
             let mut k = 0;
-            while k < lane.len() {
-                let size = HEADER
-                    + match lane[k] {
-                        0 => u32::from_be_bytes([
-                            lane[k + 6],
-                            lane[k + 7],
-                            lane[k + 8],
-                            lane[k + 9],
-                        ]) as usize,
-                        _ => 0,
-                    };
+            while let Ok(Some(head)) = Head::parse(&lane[k..]) {
+                let size = head.size();
                 if k > 0 && k + size > QUANTUM {
                     break;
                 }
@@ -350,6 +351,7 @@ impl Multi {
         let held = flow.held();
         let frame = flow.stop().map_err(|e| Error::Flow(id, e))?;
         self.used -= u64::from(held);
+        self.mark(id);
         self.signal(frame);
         Ok(())
     }
