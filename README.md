@@ -688,9 +688,27 @@ nix develop --no-update-lock-file -c lefthook run benchmark            # benchma
 LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite with them
 ```
 
-A benchmark check passes when its benchmarks run to completion; the numbers never gate a
-merge, because shared GHA runners are too noisy for thresholds. Each benchmark job writes
-its results to `$GITHUB_STEP_SUMMARY` when set, so runs compare across PRs.
+**A benchmark reports; it gates only on expectations it publishes.** A benchmark check
+fails in exactly two cases:
+
+- **it errors out** — a crash, a harness that fails to build, any non-zero exit that
+  isn't a verdict on the numbers;
+- **it has published expectations and a run misses them** — expected results committed
+  in the repo beside the benchmark (an expected-results matrix, a stated threshold).
+
+A benchmark with no committed expectations is purely reportive: whenever its measurements
+were taken, it exits 0, whatever they show. A crate opts into gating by committing its
+expectations; without them, poor or regressed performance never fails or blocks CI.
+
+**Reporting contract.** A benchmark job appends a markdown section (headed by its crate,
+e.g. `### transport`) to the file named by `$BENCHMARK_REPORT`, or to stdout when it's
+unset (locally): `>> "${BENCHMARK_REPORT:-/dev/stdout}"`. A gating benchmark's section
+also says which expectations failed. On GitHub, the `check` job sets `BENCHMARK_REPORT`
+for benchmark checks, copies the section into the job summary, and uploads it; the
+`report` job joins every section under one header and posts it as **one sticky PR
+comment**, found by its `<!-- pdbd-benchmark -->` marker and edited in place on each push.
+`report` is not in `mergeable`'s needs, so a failed post never blocks a merge. Fork PRs
+get a read-only token, so `report` skips them; the job summaries still carry the results.
 
 ### Git hooks
 
