@@ -676,13 +676,30 @@ sudo podman rm -f "$cid"
 
 `CARGO_TARGET_DIR` keeps root's build out of the checkout's `target/`.
 
+### Benchmarks
+
+`benchmark` is a hook like `test`: a crate opts in by defining `benchmark:` in its own
+`lefthook.yml`, and the fanout finds it. It's slow and noisy, so the `ci` job that runs
+it is tagged `benchmark` and the git hooks exclude it; GitHub CI excludes nothing, so
+each opted-in crate surfaces as a `benchmark (<crate>)` check. Run it locally with:
+
+```
+nix develop --no-update-lock-file -c lefthook run benchmark            # benchmarks only
+LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite with them
+```
+
+A benchmark check passes when its benchmarks run to completion; the numbers never gate a
+merge, because shared GHA runners are too noisy for thresholds. Each benchmark job writes
+its results to `$GITHUB_STEP_SUMMARY` when set, so runs compare across PRs.
+
 ### Git hooks
 
-`pre-commit` and `pre-push` are defined in `lefthook.yml` and **dispatch into the
-image** (`podman run … lefthook run …`, unprivileged) — so the checks always run in
+`pre-commit` and `pre-push` are defined in `lefthook.githooks.yml` and **dispatch into
+the image** (`podman run … lefthook run …`, unprivileged) — so the checks always run in
 the pinned environment, never against host tool versions. The host needs only `git`,
 `podman`, and a `lefthook` binary (a thin dispatcher that runs no checks itself).
-Install the hooks with `lefthook install`.
+Install the hooks with `lefthook install`. `pre-push` runs `ci` with
+`LEFTHOOK_EXCLUDE=privileged,benchmark`: no privileged datapath, no benchmarks.
 
 `buf breaking` is intentionally not wired yet — the `pdbd.v1` contract is still shaping (#21).
 

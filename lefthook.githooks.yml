@@ -20,7 +20,7 @@ pre-push:
   jobs:
     - name: ci
       run: |
-        podman run --rm -e LEFTHOOK_EXCLUDE=privileged --security-opt unmask=ALL --security-opt seccomp=unconfined \
+        podman run --rm -e LEFTHOOK_EXCLUDE=privileged,benchmark --security-opt unmask=ALL --security-opt seccomp=unconfined \
           -v "$(git rev-parse --show-toplevel)":/pdbd -w /pdbd \
           -v "$(git rev-parse --show-toplevel)":"$(git rev-parse --show-toplevel)" \
           -v "$(git rev-parse --path-format=absolute --git-common-dir)":"$(git rev-parse --path-format=absolute --git-common-dir)" \

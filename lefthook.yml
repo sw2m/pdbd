@@ -64,6 +64,10 @@ governance:
   jobs:
     - name: fanout
       run: lefthook run fanout governance
+benchmark:
+  jobs:
+    - name: fanout
+      run: lefthook run fanout benchmark
 
 ci:
   jobs:
@@ -77,3 +81,6 @@ ci:
       run: lefthook run vuln
     - name: governance
       run: lefthook run governance
+    - name: benchmark # #71
+      run: lefthook run benchmark
+      tags: [benchmark]

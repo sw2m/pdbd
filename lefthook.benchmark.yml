@@ -1,0 +1,4 @@
+benchmark:root:
+  jobs:
+    - name: noop
+      run: "true"
