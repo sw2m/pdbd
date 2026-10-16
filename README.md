@@ -93,7 +93,7 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 | files | `FILE`, `OPEN`, `GOPEN` (distinct), or a bare path (= `GOPEN`) |
 | `EXEC`, `STDIO` (`-`), `PTY` | as in socat |
 
-Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address. **Deliberately unsupported, and rejected with a positioned error:** `TCP4`/`TCP6` and the other socat address families (`UDP-SENDTO`, `UDP-RECVFROM`, `UNIX-CLIENT`, `OPENSSL`, `SOCKS4`, `PROXY`, `SCTP`, `PIPE`, `SYSTEM`, `TUN`, …), `FD` and the numeric-FD shorthand, `!!` dual addresses, and socat's base-0 numbers (`010`, `0x50`) for VSOCK ids and `max-children`.
+Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address. **Deliberately unsupported, and rejected with a positioned error:** `TCP4`/`TCP6` and the other socat address families (`UDP-SENDTO`, `UDP-RECVFROM`, `UNIX-CLIENT`, `OPENSSL`, `SOCKS4`, `PROXY`, `SCTP`, `PIPE`, `SYSTEM`, `TUN`, …), `FD` and the numeric-FD shorthand, `!!` dual addresses, the `\0` escape (socat truncates there), and socat's base-0 numbers (`010`, `0x50`) for VSOCK ids and `max-children`.
 
 ### L2 — PPP, in userspace
 

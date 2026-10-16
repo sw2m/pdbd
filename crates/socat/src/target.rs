@@ -212,10 +212,12 @@ impl Target {
 
     fn web(web: Web, params: &Params, mode: Mode) -> Result<Self, Error> {
         let tokens = params.tokens();
-        let bare = mode == Mode::Listen
-            && tokens
-                .first()
-                .is_some_and(|t| tokens.len() == 1 || t.text.contains('/'));
+        if let [first, _, ..] = tokens {
+            if mode == Mode::Listen && first.text.contains('/') {
+                return Err(first.fail(Kind::Port(first.text.clone())));
+            }
+        }
+        let bare = mode == Mode::Listen && tokens.len() == 1;
         let k = if bare { 0 } else { 1 };
         let split = tokens.get(k).and_then(|t| Some((t, t.text.find('/')?)));
         let Some((tok, i)) = split else {
@@ -231,8 +233,7 @@ impl Target {
             path.push(':');
             path.push_str(&t.text);
         }
-        let resource = Resource::new(&path)
-            .ok_or(Error::new(tok.at + i, Kind::Resource(path)))?;
+        let resource = Resource::parse(&path, tok.at + i)?;
         let mut head = tokens[..k].to_vec();
         head.push(Token::new(&tok.text[..i], tok.at));
         let inet = Inet::parse(&Params::new(&head, params.end()), mode)?;
@@ -247,8 +248,8 @@ impl Target {
         let joined = params.joined();
         let base = params.tokens()[0].at + 2;
         let body = &joined[2..];
-        let (authority, path) =
-            body.split_at(body.find('/').unwrap_or(body.len()));
+        let end = body.find(['/', '?', '#']).unwrap_or(body.len());
+        let (authority, path) = body.split_at(end);
         let bad = || Error::new(base, Kind::Host(authority.into()));
         let (host, port) = match authority.strip_prefix('[') {
             Some(_) => {
@@ -273,18 +274,30 @@ impl Target {
             }
             None => Port::Number(web.port()),
         };
+        let at = base + authority.len();
         let resource = match path {
             "" => Resource::default(),
-            p => Resource::new(p).ok_or(Error::new(
-                base + authority.len(),
-                Kind::Resource(p.into()),
-            ))?,
+            p if p.starts_with('?') => {
+                Resource::parse(&format!("/{p}"), at - 1)?
+            }
+            p => Resource::parse(p, at)?,
         };
         Ok(Self::Web {
             web,
             inet: Inet::Connect { host, port },
             resource,
         })
+    }
+
+    pub fn single(&self) -> bool {
+        matches!(
+            self,
+            Self::File(_)
+                | Self::Open(_)
+                | Self::Gopen(_)
+                | Self::Stdio
+                | Self::Pty
+        )
     }
 
     pub fn mode(&self) -> Option<Mode> {

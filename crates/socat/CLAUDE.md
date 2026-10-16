@@ -10,7 +10,7 @@ The README's L1 section is the user-facing contract for the supported subset. Th
 - **`PTY` stays.** The README and #59/#60 decide which L1s exist. Examples are not contracts.
 - **`,fork` is a listen-only alias of `,mux`**, not socat's process-fork option. socat's own semantics (`fork` on connect, `fork=0`/`fork=2`) are deliberately not modelled. `max-children` requires `mux`.
 - **No Windows paths.** Backslash escapes follow socat on POSIX.
-- **Which addresses can mux, and which need a peer table,** is #59's **Channels** section. This crate only has to let #59 tell single-stream types (`STDIO`, `FILE`/`OPEN`/`GOPEN`, `PTY`) from the rest (`Target::mode()` is `None` for them, and for `EXEC`).
+- **Which addresses can mux, and which need a peer table,** is #59's **Channels** section. This crate's half is **`Target::single()`**, the one classification #59 keys on: it is `true` for the single-stream types (`STDIO`, `FILE`/`OPEN`/`GOPEN`, `PTY`) and `false` for everything openable per flow (sockets and `EXEC`). Don't use `Target::mode()` for this, because it is `None` for `EXEC` too. A new variant must pick a side in `single()` and in its test.
 
 ## Coverage
 
@@ -23,7 +23,7 @@ L1 transports the README names, and how each is reached:
 | vsock | `VSOCK-CONNECT:cid:port`, `VSOCK-LISTEN:port` | `u32` fields, decimal only. |
 | serial | `FILE`/`OPEN`/`GOPEN:/dev/ttyS0,b115200,raw`, or a bare path (= `GOPEN`) | **Serial options (`b115200`, `raw`, `echo=0`) are untyped**: they ride in `rest`. |
 | pty, stdio, exec | `PTY`, `STDIO`/`-`, `EXEC:cmd` | PTY options (`link=`, `raw`, …) are untyped too. |
-| ws, wss, webtransport | `WS`/`WSS`/`WEBTRANSPORT` `-CONNECT`/`-LISTEN` with an optional `Resource` path; `ws://`, `wss://`, `https://` URLs | URLs are connect-only. |
+| ws, wss, webtransport | `WS`/`WSS`/`WEBTRANSPORT` `-CONNECT`/`-LISTEN` with an optional `Resource` path; `ws://`, `wss://`, `https://` URLs | URLs are connect-only. A query-only URL (`ws://h?x`) gets the path `/?x`. `#` fragments are rejected, because a fragment is never sent in the handshake. A host-less listen whose path has a colon must quote it (`WS-LISTEN:8080'/a:b'`). A slashed first listen token followed by more parameters (`WS-LISTEN:'h/x':80`) is rejected as `Kind::Port`, never reread as service plus path. |
 
 Every direction type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …).
 
@@ -37,7 +37,9 @@ Every direction type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTE
 - `OPENSSL*`, `SOCKS*`, `PROXY`: secure and proxied pipes compose externally via `EXEC:` (README *Crypto*);
 - `SCTP`, `DCCP`, `UDPLITE`, `IP-*`, `TUN`, `INTERFACE`, `READLINE`, `POSIXMQ`;
 - `!!` dual addresses, which are rejected unquoted, and the printer quotes any literal `!!`;
-- base-0 numbers (`010`, `0x50`) for VSOCK ids and `max-children`.
+- base-0 numbers (`010`, `0x50`, and any `0`-led alphanumeric such as `0b1` or `00x1`) for VSOCK ids and `max-children`, as `Kind::Base`;
+- the `\0` escape (`Kind::Nul`). socat truncates its C string there, silently dropping the rest; we refuse it rather than copy the data loss;
+- an empty positional parameter (`TCP:h:80:`, `STDIO:`), as `Kind::Blank`. Empty *option* fields are skipped instead.
 
 Adding one of these means a deliberate spec change (README L1 plus a #59/#60 consumer), not a parser tweak.
 
@@ -45,7 +47,7 @@ Adding one of these means a deliberate spec change (README L1 plus a #59/#60 con
 
 Use these when a reference question comes up. They were run locally against the real binary, and they override clones that disagree.
 
-- Named escapes `\n \r \t \f \b \a` are converted outside single quotes; an unknown escape drops the backslash (`\q` → `q`). **`\xHH` is not an escape** (`\x41` → `x41`): oittaa/socat's `\xHH` is a divergence.
+- Named escapes `\n \r \t \f \b \a \v` are converted outside single quotes. `\0` becomes NUL, which truncates the C string; we reject it as `Kind::Nul`, a deliberate divergence. There is no octal (`\101` → `101`). an unknown escape drops the backslash (`\q` → `q`). **`\xHH` is not an escape** (`\x41` → `x41`): oittaa/socat's `\xHH` is a divergence.
 - Single quotes are verbatim; double quotes process escapes.
 - A stray closer with nothing open (`EXEC:a]b`) is literal. A mismatch inside an open group (`EXEC:(a]`) is an error.
 - Empty option fields are skipped (`TCP:h:80,`, `TCP:h:80,,reuseaddr`), but an empty numeric value (`fork=`) is an error.

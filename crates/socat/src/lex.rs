@@ -50,8 +50,8 @@ impl Token {
             return Err(self.fail(Kind::Missing(part)));
         }
         let digits = text.bytes().all(|b| b.is_ascii_digit());
-        let hex = matches!(text.as_bytes().get(1), Some(b'x' | b'X'));
-        if text.len() > 1 && text.starts_with('0') && (digits || hex) {
+        let radix = text.bytes().all(|b| b.is_ascii_alphanumeric());
+        if text.len() > 1 && text.starts_with('0') && radix {
             return Err(self.fail(Kind::Base(text.into())));
         }
         match text.parse() {
@@ -87,6 +87,7 @@ impl<'a> Params<'a> {
 
     pub(crate) fn done(&self, n: usize) -> Result<(), Error> {
         match self.tokens.get(n) {
+            Some(t) if t.text.is_empty() => Err(t.fail(Kind::Blank)),
             Some(t) => Err(t.fail(Kind::Extra(t.text.clone()))),
             None => Ok(()),
         }
@@ -124,6 +125,7 @@ fn escape(c: char) -> char {
         'f' => '\u{c}',
         'b' => '\u{8}',
         'a' => '\u{7}',
+        'v' => '\u{b}',
         c => c,
     }
 }
@@ -166,6 +168,7 @@ impl Lexed {
                     return Err(Error::new(i, Kind::Dual));
                 }
                 '\\' => match chars.next() {
+                    Some((_, '0')) => return Err(Error::new(i, Kind::Nul)),
                     Some((_, e)) => tok.text.push(escape(e)),
                     None => return Err(Error::new(i, Kind::Escape)),
                 },
@@ -179,7 +182,10 @@ impl Lexed {
                 '"' => loop {
                     match chars.next() {
                         Some((_, '"')) => break,
-                        Some((_, '\\')) => match chars.next() {
+                        Some((j, '\\')) => match chars.next() {
+                            Some((_, '0')) => {
+                                return Err(Error::new(j, Kind::Nul))
+                            }
                             Some((_, e)) => tok.text.push(escape(e)),
                             None => return Err(Error::new(i, Kind::Quote)),
                         },

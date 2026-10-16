@@ -480,7 +480,32 @@ fn resources() {
         ("https://h/wt", "WEBTRANSPORT-CONNECT:h:443/wt"),
         ("ws://[::1]:9/x", "WS-CONNECT:[::1]:9/x"),
         ("ws://h/a:b", "WS-CONNECT:h:80'/a:b'"),
+        ("ws://h?x=1", "WS-CONNECT:h:80/?x=1"),
+        ("ws://h:9?x", "WS-CONNECT:h:9/?x"),
+        ("WS-LISTEN:8080'/a:b'", "WS-LISTEN:8080'/a:b'"),
     ]);
+}
+
+// #57 — a host never holds `/`, so a slashed first listen token with more
+// parameters is a mistake, not a port/path
+#[test]
+fn slashed_listen() {
+    table(&[
+        ("WS-LISTEN:'h/x':80", 10, Kind::Port("h/x".into())),
+        ("WS-LISTEN:8080/a:b", 10, Kind::Port("8080/a".into())),
+        ("WSS-LISTEN:h/x:1:2", 11, Kind::Port("h/x".into())),
+    ]);
+    assert_eq!(
+        exec("WS-LISTEN:8080'/a:b'"),
+        web(
+            Web::Ws,
+            Inet::Listen {
+                host: None,
+                port: num(8080)
+            },
+            "/a:b"
+        )
+    );
 }
 
 // #57
@@ -516,6 +541,13 @@ fn escapes() {
     assert_eq!(exec(r"EXEC:'a\nb'"), Target::Exec(text(r"a\nb")));
     assert_eq!(exec(r"EXEC:\q"), Target::Exec(text("q")));
     assert_eq!(exec(r"EXEC:\x41"), Target::Exec(text("x41")));
+    assert_eq!(exec(r"EXEC:a\vb"), Target::Exec(text("a\u{b}b")));
+    assert_eq!(exec(r#"EXEC:"\v""#), Target::Exec(text("\u{b}")));
+    table(&[
+        (r"EXEC:a\0b", 6, Kind::Nul),
+        (r#"EXEC:"a\0""#, 7, Kind::Nul),
+        (r"FILE:/x,v=\0", 10, Kind::Nul),
+    ]);
     assert_eq!(
         parse(r"FILE:/x,v=a\rb").options().rest().as_slice(),
         &[opt("v", Some("a\rb"))]
@@ -705,6 +737,15 @@ fn numbers() {
         ("VSOCK-LISTEN:0x50", 13, Kind::Base("0x50".into())),
         ("VSOCK-CONNECT:0x2:1", 14, Kind::Base("0x2".into())),
         ("VSOCK-CONNECT:2:00", 16, Kind::Base("00".into())),
+        ("VSOCK-LISTEN:00x1", 13, Kind::Base("00x1".into())),
+        ("VSOCK-LISTEN:0b1", 13, Kind::Base("0b1".into())),
+        ("VSOCK-LISTEN:0x", 13, Kind::Base("0x".into())),
+        ("VSOCK-LISTEN:0o7", 13, Kind::Base("0o7".into())),
+        (
+            "TCP-LISTEN:80,mux,max-children=0b1",
+            18,
+            Kind::Base("0b1".into()),
+        ),
         ("VSOCK-LISTEN:+1", 13, Kind::Port("+1".into())),
         ("VSOCK-LISTEN:-1", 13, Kind::Port("-1".into())),
         ("TCP-LISTEN:80,mux,max-children=0", 18, value()),
@@ -789,7 +830,11 @@ fn errors_carry_positions() {
         ),
         ("TCP-LISTEN:80,mux,fork", 18, Kind::Duplicate("mux".into())),
         ("TCP-LISTEN:80,max-children=2", 14, Kind::Cap),
-        ("WS-CONNECT:h:80/a b", 15, Kind::Resource("/a b".into())),
+        ("WS-CONNECT:h:80/a b", 17, Kind::Resource("/a b".into())),
+        ("WS-CONNECT:h:80/x#f", 17, Kind::Resource("/x#f".into())),
+        ("ws://h/x#f", 8, Kind::Resource("/x#f".into())),
+        ("ws://h#f", 6, Kind::Resource("#f".into())),
+        ("ws://h:80/a b", 11, Kind::Resource("/a b".into())),
         ("ws://", 5, Kind::Missing(Part::Host)),
         ("ws://h:99999/", 7, Kind::Port("99999".into())),
         ("ws:x", 0, Kind::Keyword("ws".into())),
@@ -813,6 +858,10 @@ fn extra_parameters() {
         ("VSOCK-LISTEN:1:2", 15, Kind::Extra("2".into())),
         ("STDIO:x", 6, Kind::Extra("x".into())),
         ("PTY:x", 4, Kind::Extra("x".into())),
+        ("TCP:h:80:", 9, Kind::Blank),
+        ("TCP-LISTEN:80:", 14, Kind::Missing(Part::Port)),
+        ("VSOCK-LISTEN:1:", 15, Kind::Blank),
+        ("STDIO:", 6, Kind::Blank),
     ]);
 }
 
@@ -865,6 +914,36 @@ fn non_ascii_offsets() {
     ]);
 }
 
+// #57 — the one classification #59 keys a muxed bridge's target on
+#[test]
+fn single() {
+    let cases = [
+        ("FILE:/dev/ttyS0", true),
+        ("OPEN:/x", true),
+        ("GOPEN:/x", true),
+        ("/dev/ttyUSB0", true),
+        ("STDIO", true),
+        ("PTY", true),
+        ("EXEC:cat", false),
+        ("UNIX-CONNECT:/s", false),
+        ("UNIX-LISTEN:/s", false),
+        ("ABSTRACT-CONNECT:n", false),
+        ("ABSTRACT-LISTEN:n", false),
+        ("VSOCK-CONNECT:3:1", false),
+        ("VSOCK-LISTEN:1", false),
+        ("TCP:h:1", false),
+        ("TCP-LISTEN:1", false),
+        ("UDP:h:1", false),
+        ("UDP-LISTEN:1", false),
+        ("WS-CONNECT:h:1", false),
+        ("WSS-LISTEN:1", false),
+        ("WEBTRANSPORT-CONNECT:h:1", false),
+    ];
+    for (s, want) in cases {
+        assert_eq!(parse(s).target().single(), want, "{s}");
+    }
+}
+
 // #57
 #[test]
 fn invariants() {
@@ -882,7 +961,7 @@ fn invariants() {
         assert_eq!(Service::new(bad), None, "{bad:?}");
     }
     assert!(Service::new("http").is_some());
-    for bad in ["", "x", "/a b", "/a\nb"] {
+    for bad in ["", "x", "/a b", "/a\nb", "/x#f"] {
         assert_eq!(Resource::new(bad), None, "{bad:?}");
     }
     assert!(Resource::new("/a?b=1").is_some());
