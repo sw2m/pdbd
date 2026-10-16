@@ -297,7 +297,9 @@ impl Flow {
     pub fn overdue(&self, now: u64, deadline: u64) -> bool {
         let stuck = match self.state {
             State::Opening | State::Pending => true,
-            State::Open => self.sent != self.received,
+            State::Open => {
+                self.sent != self.received || (self.stopped && !self.received)
+            }
             State::Reset => false,
         };
         stuck && now.saturating_sub(self.since) >= deadline
@@ -305,6 +307,10 @@ impl Flow {
 
     pub fn stopped(&self) -> bool {
         self.stopped
+    }
+
+    pub fn received(&self) -> bool {
+        self.received
     }
 
     pub fn id(&self) -> u32 {
