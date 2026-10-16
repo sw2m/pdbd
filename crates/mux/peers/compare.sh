@@ -28,5 +28,5 @@ MUX_PEERS=$out MUX_TABLE=$out/table.md cargo bench --bench compare
 {
   printf '### mux\n\n'
   cat "$out/table.md"
-  printf '\nToolchains: %s · %s · .NET SDK %s.\n' "$(rustc --version)" "$(go version)" "$(dotnet --version)"
+  printf '\nToolchains: %s · %s · .NET SDK %s.\n\n' "$(rustc --version)" "$(go version)" "$(dotnet --version)"
 } >>"${BENCHMARK_REPORT:-/dev/stdout}"
