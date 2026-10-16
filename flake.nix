@@ -78,6 +78,7 @@
             pkgs.iputils
             pkgs.socat
             pkgs.ppp
+            pkgs.iperf3
             pkgs.bash
             pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
           ];
