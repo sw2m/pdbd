@@ -101,7 +101,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-uXrzGUVCTuwnPy+zD9jrhQGBEDryrF2DWWXWu6bQ7ow=";
+          "x86_64-linux" = "sha256-IEToGFX0nL3yg99eys5w7QAKI+dIGEx541SsvCoby9o=";
         };
       };
 }
