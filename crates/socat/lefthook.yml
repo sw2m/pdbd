@@ -5,3 +5,11 @@ test:
   jobs:
     - name: cargo
       run: cargo test -p socat --locked
+
+# #57 — see crates/socat/CLAUDE.md §"Benchmark"
+benchmark:
+  jobs:
+    - name: oracles
+      run: |
+        pkgs=github:NixOS/nixpkgs/nixpkgs-unstable # unlocked on purpose: the benchmark races the latest toolchains
+        PKGS=$pkgs nix shell "$pkgs#go" "$pkgs#cargo" "$pkgs#rustc" "$pkgs#gcc" "$pkgs#curl" "$pkgs#cacert" "$pkgs#util-linux" -c sh crates/socat/peers/compare.sh
