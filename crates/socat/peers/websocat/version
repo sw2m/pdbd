@@ -1,2 +1,0 @@
-# the websocat release raced; floats to the newest GitHub release. To stop racing it, replace with a tag (v1.14.1); see crates/socat/CLAUDE.md §"Benchmark"
-latest
