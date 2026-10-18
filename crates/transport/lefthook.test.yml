@@ -8,7 +8,24 @@ test:datapath:
         runner=env; [ "$(id -u)" != 0 ] && runner="sudo -n env PATH=$PATH"
         cargo test -p transport --locked --lib --config "target.'cfg(all())'.runner='$runner'" -- --ignored
     - name: fixtures
-      run: lefthook run test:fixtures
+      root: "crates/transport/"
+      run: |
+        set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
+        for u in systemd/*.service; do
+          minijinja-cli -D ip="$(command -v ip)" -D socat="$(command -v socat)" -D pppd="$(command -v pppd)" -D sh="$(command -v sh)" -D envfile="$PWD/.env" "$u" \
+            | $sudo tee "/run/systemd/system/$(basename "$u")" >/dev/null
+        done
+        $sudo systemctl daemon-reload
+    - name: build
+      run: |
+        set -eu
+        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
+        cargo build -q -p transport --example linkup
+        bin=$(find "$(cargo metadata --no-deps --format-version 1 | yq -p json .target_directory)" -type f -name linkup -path '*debug/examples*' | head -1)
+        [ -n "$bin" ]
+        $sudo install -d -m0755 /run/pdbd
+        printf 'LINKUP=%s\n' "$bin" | $sudo tee /run/pdbd/linkup.env >/dev/null
     - name: fanout
       run: |
         set -eu
@@ -21,30 +38,6 @@ test:datapath:
           N=$N lefthook run test:teardown >/dev/null 2>&1 || true # catch-all: reclaim a slot whose attempt failed before its own `down`
         done
         [ "$rc" = 0 ]
-
-test:fixtures:
-  piped: true
-  jobs:
-    - name: fixtures
-      root: "crates/transport/"
-      run: |
-        set -eu
-        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
-        for u in systemd/*.service; do
-          minijinja-cli -D ip="$(command -v ip)" -D socat="$(command -v socat)" -D pppd="${PPPD:-$(command -v pppd)}" -D sh="$(command -v sh)" -D envfile="$PWD/.env" "$u" \
-            | $sudo tee "/run/systemd/system/$(basename "$u")" >/dev/null
-        done
-        $sudo systemctl daemon-reload
-    - name: build
-      run: |
-        set -eu
-        sudo=; [ "$(id -u)" != 0 ] && sudo="sudo -n env PATH=$PATH"
-        profile=${PROFILE:-debug}
-        cargo build -q -p transport --example linkup $([ "$profile" = release ] && echo --release)
-        bin=$(find "$(cargo metadata --no-deps --format-version 1 | yq -p json .target_directory)" -type f -name linkup -path "*${profile}/examples*" | head -1)
-        [ -n "$bin" ]
-        $sudo install -d -m0755 /run/pdbd
-        printf 'LINKUP=%s\n' "$bin" | $sudo tee /run/pdbd/linkup.env >/dev/null
 
 test:attempt:
   piped: true

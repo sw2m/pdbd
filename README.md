@@ -713,9 +713,23 @@ get a read-only token, so `report` skips them; the job summaries still carry the
 **Comparators float.** A benchmark that races another implementation resolves that
 comparator's latest release at run time, outside the workspace `Cargo.lock` and the root
 `flake.lock`, and reports the version it raced. Pinning one is a deliberate "stop racing
-it" decision, made by committing a pin file beside the benchmark. `transport` races
-`pppd` from nixpkgs-unstable; a `crates/transport/pppd.pin` holding a nixpkgs flake ref
-(e.g. `github:NixOS/nixpkgs/<rev>`) pins it.
+it" decision, committed beside the benchmark. `transport` races `pppd` built from ppp's
+latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it.
+
+**Benchmarks run on [bencher](https://github.com/sw2m/bencher).** A crate's benchmark is a
+bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
+[pdbd-bench](https://github.com/sw2m/pdbd-bench), which holds the harness code, and passes it
+the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
+`pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, a Rust
+toolchain that also targets musl, and the paths below. Its variables avoid the `BENCHER_`
+prefix, which bencher reads as its own settings. `transport`'s `benchmark:link`:
+
+1. builds `linkup` static (`$MUSL_TARGET`), since it runs in bencher's Debian VM, not on the
+   build host, and links `bench/fixture` to the pdbd-bench input (both gitignored);
+2. installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't there, which
+   needs `sudo -n`, as the benchmark already does;
+3. runs `bencher run bench` and renders its report (`bench/report.jq`) into the `### transport`
+   section. With no `expect.tsv`, the check fails only when bencher reports an error.
 
 ### Git hooks
 

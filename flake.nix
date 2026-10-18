@@ -8,9 +8,14 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    bencher.url = "github:sw2m/bencher/v0.1.0"; # see README "Benchmarks"
+    pdbd-bench = {
+      url = "github:sw2m/pdbd-bench/feat/transport"; # sw2m/pdbd-bench#1
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay, bencher, pdbd-bench }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs {
@@ -64,6 +69,18 @@
           default = build null;
           toolchain = rust;
         };
+        devShells.benchmark = let
+          musl = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}-unknown-linux-musl";
+        in pkgs.mkShell {
+          packages = [
+            (rust.override { targets = [ musl ]; })
+            bencher.packages.${system}.default
+            pkgs.jq
+          ];
+          MUSL_TARGET = musl;
+          BENCH_FIXTURE = pdbd-bench;
+          BENCH_SETUP = "${bencher}/ci/setup.sh";
+        };
         devShells.default = pkgs.mkShell {
           packages = [
             rust
@@ -78,7 +95,6 @@
             pkgs.iputils
             pkgs.socat
             pkgs.ppp
-            pkgs.iperf3
             pkgs.bash
             pkgs.util-linux # nsenter: ip netns exec remounts /sys, unsafe in containers
           ];
