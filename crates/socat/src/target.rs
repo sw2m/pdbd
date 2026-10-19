@@ -278,7 +278,9 @@ impl Target {
         }
         let bad = || Error::new(at, Kind::Host(host.into()));
         let digits = port.strip_prefix(':').unwrap_or(port);
-        let wrong = || Error::new(at + split + 1, Kind::Port(digits.into()));
+        let colon = usize::from(digits.len() != port.len());
+        let wrong =
+            || Error::new(at + split + colon, Kind::Port(digits.into()));
         let resource =
             |i: usize| Error::new(start + i, Kind::Resource(rest.into()));
         let text = format!("{}:{joined}", web.scheme());
@@ -292,7 +294,8 @@ impl Target {
             })?;
         if uri.fragment().is_some() {
             return Err(resource(
-                2 + authority.len() + rest.find('#').unwrap_or(0),
+                2 + authority.len()
+                    + rest.find('#').expect("a fragment has `#`"),
             ));
         }
         let parts = uri.authority().expect("the text has `//`");

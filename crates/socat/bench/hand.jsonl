@@ -85,7 +85,6 @@
 "TCP:a.1:80"
 "TCP:localhost.:80"
 "TCP:a..:80"
-"TCP:bücher.de:80"
 "TCP:xn--bcher-kva.de:80"
 "TCP:a⁄b:80"
 "TCP:[fe80::1%~]:80"
