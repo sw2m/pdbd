@@ -1,4 +1,7 @@
 # #72 — see README "Benchmarks"
+templates:
+  nixsh: nix develop ../..#benchmark --no-update-lock-file -c sh
+
 benchmark:link:
   piped: true
   jobs:
@@ -6,25 +9,26 @@ benchmark:link:
       root: "crates/transport/"
       run: |
         set -eu
-        nix develop ../..#benchmark --no-update-lock-file -c sh -c '
+        {nixsh} -c '
           set -eu
           cargo build --release --locked -p transport --example linkup --target "$MUSL_TARGET"
           cp "${CARGO_TARGET_DIR:-../../target}/$MUSL_TARGET/release/examples/linkup" bench/linkup
           ln -sfn "$BENCH_FIXTURE" bench/fixture
         '
     - name: incus
+      root: "crates/transport/"
       run: |
         set -eu
         if command -v incus >/dev/null && sg incus-admin -c true 2>/dev/null; then exit 0; fi
-        nix develop .#benchmark --no-update-lock-file -c sh -c 'sudo -n "$BENCH_SETUP" "$(id -un)"'
+        {nixsh} -c 'sudo -n "$BENCH_SETUP" "$(id -un)"'
     - name: run
       root: "crates/transport/"
       run: |
         set -eu
         out=$(mktemp -d)
         trap 'rm -rf "$out"' EXIT
-        bencher=$(nix develop ../..#benchmark --no-update-lock-file -c sh -c 'command -v bencher')
+        bencher=$({nixsh} -c 'command -v bencher')
         status=0
         sg incus-admin -c "'$bencher' run bench --out '$out/report.json'" || status=$?
-        [ ! -s "$out/report.json" ] || nix develop ../..#benchmark --no-update-lock-file -c jq -r -f bench/report.jq "$out/report.json" >>"${BENCHMARK_REPORT:-/dev/stdout}"
+        [ ! -s "$out/report.json" ] || {nixsh} -c 'jq -r -f bench/report.jq "$1"' _ "$out/report.json" >>"${BENCHMARK_REPORT:-/dev/stdout}"
         exit "$status"
