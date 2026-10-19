@@ -93,6 +93,19 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 | files | `FILE`, `OPEN`, `GOPEN` (distinct), or a bare path (= `GOPEN`) |
 | `EXEC`, `STDIO` (`-`), `PTY` | as in socat |
 
+**Where a standard governs a part, the standard decides, through a library rather than a hand-rolled check:**
+
+| Part | Standard | Checked by |
+| --- | --- | --- |
+| host name | RFC 1123 §2.1; with the default `idn` feature, UTS #46 nontransitional (so `bücher.de`, `BÜCHER.DE` and `xn--bcher-kva.de` are one host, printed in Unicode) | [`hostname-validator`](https://crates.io/crates/hostname-validator), [`idna`](https://crates.io/crates/idna) |
+| IPv4 / IPv6 | RFC 4291, RFC 5952 | `core::net` |
+| `%zone` | RFC 4007 §11 in the address form; RFC 9844 §6, 1–15 characters (Linux `IFNAMSIZ`) | — |
+| service-name port | RFC 6335 §5.1 | — |
+| resource path | RFC 3986 `path-abempty [ "?" query ]` (RFC 6455 §3), no fragment | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
+| `ws://` / `wss://` / `https://` URL | RFC 3986, RFC 6455 §3, RFC 9110 §4.2.2; digits-only port, an IDN host as its A-label, no userinfo, no fragment, and no zone (RFC 9844 §3) | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
+
+Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. All three crates build without `std` (#29).
+
 Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement. **Deliberately unsupported, and rejected with a positioned error:**
 
 - `TCP4`/`TCP6`/`UDP4`/`UDP6` family pins;
@@ -566,6 +579,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 - vsock: [`tokio-vsock`](https://crates.io/crates/tokio-vsock) `0.7.2` — the VM-guest transport.
 - UDP: `tokio`'s `UdpSocket` with a datagram framing — a lossy datagram L1 (no extra crate); the archetypal pipe PPP + kernel-TCP is designed to recover over.
 - WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*). Feature-gated.
+- The address dialect: [`fluent-uri`](https://crates.io/crates/fluent-uri) `0.4.1` (RFC 3986), [`idna`](https://crates.io/crates/idna) `1.1.0` (UTS #46, the default `idn` feature) and [`hostname-validator`](https://crates.io/crates/hostname-validator) `1.1.1` (RFC 1123), each without `std`.
 - WebTransport (`webtransport`, built-in secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; built in because its web architecture is OSI-bound (see *Crypto*), a datagram session the default exposure. Needs UDP reachability. Feature-gated.
 
 **Kernel plumbing:**

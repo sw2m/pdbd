@@ -87,3 +87,13 @@ unchecked.
 | Twisted `endpoints.py` (`quoteStringArgument`) | MIT | printer quoting as the inverse of the lexer |
 | Go `net.SplitHostPort`, RFC 3986 §3.2.2 | BSD-3-Clause | bracketed hosts and `%zone` splitting |
 | [multiaddr](https://github.com/multiformats/multiaddr) (Go, JS, Rust, Python) | MIT / Apache-2.0 | typed components with a normalizing printer (string → typed → canonical string); `ip6zone` as its own component |
+
+## Standards, through libraries
+
+The parts a standard governs are checked by a library, not by our own grammar: host names by
+`hostname-validator` (RFC 1123) and `idna` (UTS #46), resource paths and URLs by `fluent-uri`
+(RFC 3986). README §"L1 — the transport" maps each part to its standard. Candidates weighed for
+URIs were `fluent-uri`, `iri-string` and `url` (the WHATWG URL Standard, not RFC 3986);
+`fluent-uri` won on RFC 3986 strictness, a positioned `ParseError` and building without `std` or
+`alloc` (#29). No crate implements strict IDNA2008, and `idna` dropped it, so UTS #46
+nontransitional is the rule.

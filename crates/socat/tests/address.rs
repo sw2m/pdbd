@@ -250,7 +250,7 @@ fn positions() {
         ("EXEC:é[x", 7, Kind::Bracket),
         ("EXEC:é'x", 7, Kind::Quote),
         ("TCP:h:é", 6, Kind::Port("é".into())),
-        ("TCP:é:1:é", 9, Kind::Extra("é".into())),
+        ("TCP:h:1:é", 8, Kind::Extra("é".into())),
         ("STDIO,é", 6, Kind::Option("é".into())),
         ("FILE:é,x=é,mux", 13, Kind::Option("mux".into())),
         ("VSOCK-LISTEN:é", 13, Kind::Port("é".into())),
@@ -281,6 +281,7 @@ fn invariants() {
         assert_eq!(Name::new(bad), None, "{bad:?}");
     }
     assert_eq!(Name::new("A.b").expect("name").as_str(), "a.b");
+    #[cfg(feature = "idn")]
     assert_eq!(Name::new("Bü").expect("name").as_str(), "bü");
     for bad in ["", "a%b", "a]b", "a b"] {
         assert_eq!(Zone::new(bad), None, "{bad:?}");

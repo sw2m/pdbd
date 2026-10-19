@@ -2,7 +2,7 @@ mod support;
 
 use proptest::prelude::*;
 use socat::{Address, Error, Kind};
-use support::fixture::{name, parse, same, svc, tcp};
+use support::fixture::{name, parse, same, svc, table, tcp};
 
 // #57
 #[test]
@@ -16,6 +16,28 @@ fn ports() {
         ("TCP:h:65535", "TCP-CONNECT:h:65535"),
         ("UDP-LISTEN:domain", "UDP-LISTEN:domain"),
         ("TCP:h:http", "TCP-CONNECT:h:http"),
+    ]);
+}
+
+// #57: RFC 6335 §5.1
+#[test]
+fn services() {
+    same(&[
+        ("TCP:h:x-1", "TCP-CONNECT:h:x-1"),
+        ("TCP:h:1x", "TCP-CONNECT:h:1x"),
+        ("TCP:h:abcdefghijklmno", "TCP-CONNECT:h:abcdefghijklmno"),
+    ]);
+    table(&[
+        ("TCP:h:a_b", 6, Kind::Port("a_b".into())),
+        ("TCP:h:a.b", 6, Kind::Port("a.b".into())),
+        ("TCP:h:-ab", 6, Kind::Port("-ab".into())),
+        ("TCP:h:ab-", 6, Kind::Port("ab-".into())),
+        ("TCP:h:a--b", 6, Kind::Port("a--b".into())),
+        (
+            "TCP:h:abcdefghijklmnop",
+            6,
+            Kind::Port("abcdefghijklmnop".into()),
+        ),
     ]);
 }
 

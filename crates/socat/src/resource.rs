@@ -3,23 +3,31 @@ use crate::{Error, Kind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource(String);
 
-fn invalid(c: char) -> bool {
-    c == '#' || c.is_whitespace() || c.is_control()
-}
-
 impl Resource {
+    const PROBE: &'static str = "ws://h"; // https://www.rfc-editor.org/rfc/rfc6455#section-3
+
     pub fn new(s: &str) -> Option<Self> {
-        (s.starts_with('/') && !s.contains(invalid)).then(|| Self(s.into()))
+        Self::check(s).ok().map(|()| Self(s.into()))
     }
 
     pub(crate) fn parse(path: &str, at: usize) -> Result<Self, Error> {
-        Self::new(path).ok_or_else(|| {
-            let off = match path.starts_with('/') {
-                true => path.find(invalid).unwrap_or(0),
-                false => 0,
-            };
-            Error::new(at + off, Kind::Resource(path.into()))
-        })
+        Self::check(path)
+            .map(|()| Self(path.into()))
+            .map_err(|off| Error::new(at + off, Kind::Resource(path.into())))
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc3986#section-3.3
+    // https://www.rfc-editor.org/rfc/rfc3986#section-3.4
+    fn check(s: &str) -> Result<(), usize> {
+        if !s.starts_with('/') {
+            return Err(0);
+        }
+        let probe = format!("{}{s}", Self::PROBE);
+        match fluent_uri::Uri::parse(probe.as_str()) {
+            Ok(uri) if uri.fragment().is_none() => Ok(()),
+            Ok(_) => Err(s.find('#').unwrap_or(0)),
+            Err(e) => Err(e.index() - Self::PROBE.len()),
+        }
     }
 
     pub fn as_str(&self) -> &str {

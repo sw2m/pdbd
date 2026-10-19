@@ -1,5 +1,5 @@
 use crate::lex::{Params, Quoted, Token};
-use crate::{Error, Host, Kind, Part, Port, Resource, Text};
+use crate::{Error, Host, Kind, Name, Part, Port, Resource, Text};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,14 @@ impl Mode {
 }
 
 impl Web {
+    fn scheme(self) -> &'static str {
+        match self {
+            Self::Ws => "ws",
+            Self::Wss => "wss",
+            Self::Webtransport => "https",
+        }
+    }
+
     fn port(self) -> u16 {
         match self {
             Self::Ws => 80,
@@ -244,48 +252,73 @@ impl Target {
         })
     }
 
+    // https://www.rfc-editor.org/rfc/rfc3986#section-3
+    // https://www.rfc-editor.org/rfc/rfc6455#section-3
+    // https://www.rfc-editor.org/rfc/rfc9110#section-4.2.2
+    // https://www.rfc-editor.org/rfc/rfc9844#section-3
     fn url(web: Web, params: &Params) -> Result<Self, Error> {
         let joined = params.joined();
-        let base = params.tokens()[0].at + 2;
+        let start = params.tokens()[0].at;
         let body = &joined[2..];
-        let end = body.find(['/', '?', '#']).unwrap_or(body.len());
-        let (authority, path) = body.split_at(end);
-        let bad = || Error::new(base, Kind::Host(authority.into()));
-        let (host, port) = match authority.strip_prefix('[') {
-            Some(_) => {
-                let close = authority.find(']').ok_or_else(bad)? + 1;
-                match &authority[close..] {
-                    "" => (&authority[..close], None),
-                    rest => (
-                        &authority[..close],
-                        Some(rest.strip_prefix(':').ok_or_else(bad)?),
-                    ),
+        let authority =
+            &body[..body.find(['/', '?', '#']).unwrap_or(body.len())];
+        let split = match authority.starts_with('[') {
+            true => authority.find(']').map_or(authority.len(), |i| i + 1),
+            false => authority.find(':').unwrap_or(authority.len()),
+        };
+        let (host, port) = authority.split_at(split);
+        let rest = &body[authority.len()..];
+        let at = start + 2;
+        if host.is_empty() {
+            return Err(Error::new(at, Kind::Missing(Part::Host)));
+        }
+        let bad = || Error::new(at, Kind::Host(host.into()));
+        let digits = port.strip_prefix(':').unwrap_or(port);
+        let wrong = || Error::new(at + split + 1, Kind::Port(digits.into()));
+        let resource =
+            |i: usize| Error::new(start + i, Kind::Resource(rest.into()));
+        let text = format!("{}:{joined}", web.scheme());
+        let uri =
+            fluent_uri::Uri::parse(text.as_str()).map_err(|e| {
+                match e.index() - web.scheme().len() - 1 {
+                    i if i < 2 + split => bad(),
+                    i if i < 2 + authority.len() => wrong(),
+                    i => resource(i),
                 }
+            })?;
+        if uri.fragment().is_some() {
+            return Err(resource(
+                2 + authority.len() + rest.find('#').unwrap_or(0),
+            ));
+        }
+        let parts = uri.authority().ok_or_else(bad)?;
+        if parts.userinfo().is_some() {
+            return Err(bad());
+        }
+        let host = match parts.host_parsed() {
+            fluent_uri::component::Host::Ipv4(ip) => Host::V4(ip),
+            fluent_uri::component::Host::Ipv6(ip) => Host::V6(ip, None),
+            fluent_uri::component::Host::RegName(name) => {
+                Host::Name(Name::new(name.as_str()).ok_or_else(bad)?)
             }
-            None => match authority.split_once(':') {
-                Some((h, p)) => (h, Some(p)),
-                None => (authority, None),
-            },
+            _ => return Err(bad()),
         };
-        let host = Host::parse(&Token::new(host, base))?;
-        let port = match port {
-            Some(p) => {
-                Port::parse(&Token::new(p, base + authority.len() - p.len()))?
-            }
-            None => Port::Number(web.port()),
+        let port = match digits {
+            "" => Port::Number(web.port()),
+            d => Port::Number(d.parse().map_err(|_| wrong())?),
         };
-        let at = base + authority.len();
-        let resource = match path {
-            "" => Resource::default(),
-            p if p.starts_with('?') => {
-                Resource::parse(&format!("/{p}"), at - 1)?
-            }
-            p => Resource::parse(p, at)?,
+        let path = match uri.path().as_str() {
+            "" => "/",
+            p => p,
+        };
+        let resource = match uri.query() {
+            Some(q) => format!("{path}?{}", q.as_str()),
+            None => path.to_string(),
         };
         Ok(Self::Web {
             web,
             inet: Inet::Connect { host, port },
-            resource,
+            resource: Resource::new(&resource).ok_or_else(bad)?,
         })
     }
 

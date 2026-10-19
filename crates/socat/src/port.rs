@@ -12,12 +12,15 @@ pub enum Port {
 }
 
 impl Service {
+    const MAX: usize = 15; // https://www.rfc-editor.org/rfc/rfc6335#section-5.1
+
     pub fn new(s: &str) -> Option<Self> {
-        let valid = s.starts_with(|c: char| c.is_ascii_alphanumeric())
+        let valid = (1..=Self::MAX).contains(&s.len())
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             && s.bytes().any(|b| b.is_ascii_alphabetic())
-            && s.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')
-            });
+            && !s.starts_with('-')
+            && !s.ends_with('-')
+            && !s.contains("--");
         valid.then(|| Self(s.into()))
     }
 

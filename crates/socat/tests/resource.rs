@@ -89,3 +89,41 @@ fn slashed() {
         )
     );
 }
+
+// #57: RFC 3986 §3.3, §3.4 and §2.1; RFC 6455 §3
+#[test]
+fn encoding() {
+    assert_eq!(
+        exec("ws://h/a%20b?c=d/e?f"),
+        web(
+            Web::Ws,
+            Inet::Connect {
+                host: name("h"),
+                port: num(80)
+            },
+            "/a%20b?c=d/e?f"
+        )
+    );
+    assert_eq!(
+        exec("WS-CONNECT:h:80/a:b@c*+;=$&~"),
+        web(
+            Web::Ws,
+            Inet::Connect {
+                host: name("h"),
+                port: num(80)
+            },
+            "/a:b@c*+;=$&~"
+        )
+    );
+    table(&[
+        ("ws://h/a%zz", 8, Kind::Resource("/a%zz".into())),
+        ("ws://h/a%2", 8, Kind::Resource("/a%2".into())),
+        ("ws://h/a%", 8, Kind::Resource("/a%".into())),
+        ("ws://h/a<b", 8, Kind::Resource("/a<b".into())),
+        ("ws://h/a^b", 8, Kind::Resource("/a^b".into())),
+        ("ws://h/a}b", 8, Kind::Resource("/a}b".into())),
+        ("ws://h/a|b", 8, Kind::Resource("/a|b".into())),
+        ("WS-CONNECT:h:80/a`b", 17, Kind::Resource("/a`b".into())),
+        ("WS-CONNECT:h:80/a?b<c", 19, Kind::Resource("/a?b<c".into())),
+    ]);
+}

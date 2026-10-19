@@ -348,3 +348,22 @@ proptest! {
         );
     }
 }
+
+// #57: RFC 3986 URI syntax, RFC 9844 (no zone in a URI)
+#[test]
+fn urls() {
+    same(&[
+        ("ws://[::1]/", "WS-CONNECT:[::1]:80"),
+        ("wss://a-b.c:8443/x", "WSS-CONNECT:a-b.c:8443/x"),
+    ]);
+    table(&[
+        ("ws://[fe80::1%lo]/", 5, Kind::Host("[fe80::1%lo]".into())),
+        (
+            "ws://[fe80::1%25lo]/",
+            5,
+            Kind::Host("[fe80::1%25lo]".into()),
+        ),
+        ("ws://a_b/", 5, Kind::Host("a_b".into())),
+        ("wss://-a/", 6, Kind::Host("-a".into())),
+    ]);
+}

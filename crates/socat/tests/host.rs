@@ -3,7 +3,7 @@ mod support;
 use proptest::prelude::*;
 use socat::{Address, Error, Host, Kind, Zone};
 use std::net::Ipv6Addr;
-use support::fixture::{name, num, parse, same, tcp};
+use support::fixture::{name, num, parse, same, table, tcp};
 
 // #57
 #[test]
@@ -30,14 +30,76 @@ fn ipv6() {
 // #57
 #[test]
 fn names() {
+    same(&[
+        ("TCP:a-b.c:1", "TCP-CONNECT:a-b.c:1"),
+        ("TCP:A.B:1", "TCP-CONNECT:a.b:1"),
+    ]);
+}
+
+// #57: RFC 1123 §2.1
+#[test]
+fn labels() {
+    let long = "a".repeat(64);
+    let tall = [
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61),
+    ]
+    .join(".");
+    assert_eq!(tall.len(), 253);
+    assert_eq!(
+        parse(&format!("TCP:{tall}:1")).target(),
+        &tcp(name(&tall), num(1))
+    );
+    let over = format!("{tall}e");
+    table(&[
+        ("TCP:a_b:1", 4, Kind::Host("a_b".into())),
+        ("TCP:-a:1", 4, Kind::Host("-a".into())),
+        ("TCP:a-:1", 4, Kind::Host("a-".into())),
+        ("TCP:a.-b:1", 4, Kind::Host("a.-b".into())),
+        ("TCP:a..b:1", 4, Kind::Host("a..b".into())),
+        ("TCP:.a:1", 4, Kind::Host(".a".into())),
+        (&format!("TCP:{long}:1"), 4, Kind::Host(long.clone())),
+        (&format!("TCP:{over}:1"), 4, Kind::Host(over.clone())),
+    ]);
+}
+
+// #57: UTS #46 nontransitional, not strict IDNA2008 (NV8 U+2044 passes)
+#[cfg(feature = "idn")]
+#[test]
+fn unicode() {
     assert_eq!(
         parse("TCP:bücher.de:80").target(),
         &tcp(name("bücher.de"), num(80))
     );
     same(&[
-        ("TCP:BÜCHER.DE:1", "TCP-CONNECT:bÜcher.de:1"),
-        ("TCP:a_b-c.d:1", "TCP-CONNECT:a_b-c.d:1"),
+        ("TCP:BÜCHER.DE:1", "TCP-CONNECT:bücher.de:1"),
+        ("TCP:xn--bcher-kva.de:1", "TCP-CONNECT:bücher.de:1"),
+        ("TCP:a\u{2044}b:1", "TCP-CONNECT:a\u{2044}b:1"),
     ]);
+    table(&[("TCP:a\u{ff0f}b:1", 4, Kind::Host("a\u{ff0f}b".into()))]);
+}
+
+// #57: RFC 1123 alone without the idn feature
+#[cfg(not(feature = "idn"))]
+#[test]
+fn unicode() {
+    table(&[("TCP:bücher.de:1", 4, Kind::Host("bücher.de".into()))]);
+}
+
+// #57: RFC 4007 §11, RFC 9844 §6
+#[test]
+fn zones() {
+    same(&[(
+        "TCP:[fe80::1%abcdefghijklmno]:1",
+        "TCP-CONNECT:[fe80::1%abcdefghijklmno]:1",
+    )]);
+    table(&[(
+        "TCP:[fe80::1%abcdefghijklmnop]:1",
+        4,
+        Kind::Host("[fe80::1%abcdefghijklmnop]".into()),
+    )]);
 }
 
 proptest! {

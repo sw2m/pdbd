@@ -18,14 +18,42 @@ pub enum Host {
 
 impl Name {
     pub fn new(s: &str) -> Option<Self> {
-        let valid = !s.is_empty()
-            && s.parse::<Ipv4Addr>().is_err()
-            && s.chars().all(|c| {
-                c.is_ascii_alphanumeric()
-                    || matches!(c, '.' | '-' | '_')
-                    || !(c.is_ascii() || c.is_whitespace() || c.is_control())
-            });
-        valid.then(|| Self(s.to_ascii_lowercase()))
+        if s.parse::<Ipv4Addr>().is_ok() {
+            return None;
+        }
+        Self::map(s).map(Self)
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc1123#section-2.1
+    // https://www.unicode.org/reports/tr46/#Processing
+    #[cfg(feature = "idn")]
+    fn map(s: &str) -> Option<String> {
+        use idna::uts46::{AsciiDenyList, DnsLength, Hyphens, Uts46};
+        let uts46 = Uts46::new();
+        let ascii = uts46
+            .to_ascii(
+                s.as_bytes(),
+                AsciiDenyList::STD3,
+                Hyphens::CheckFirstLast,
+                DnsLength::Verify,
+            )
+            .ok()?;
+        if !hostname_validator::is_valid(&ascii) {
+            return None;
+        }
+        let (unicode, mapped) = uts46.to_unicode(
+            ascii.as_bytes(),
+            AsciiDenyList::STD3,
+            Hyphens::CheckFirstLast,
+        );
+        mapped.ok().map(|()| unicode.into_owned())
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc1123#section-2.1
+    #[cfg(not(feature = "idn"))]
+    fn map(s: &str) -> Option<String> {
+        (s.is_ascii() && hostname_validator::is_valid(s))
+            .then(|| s.to_ascii_lowercase())
     }
 
     pub fn as_str(&self) -> &str {
@@ -34,8 +62,10 @@ impl Name {
 }
 
 impl Zone {
+    const MAX: usize = 15; // Linux IFNAMSIZ less its NUL (RFC 9844 §6)
+
     pub fn new(s: &str) -> Option<Self> {
-        let valid = !s.is_empty()
+        let valid = (1..=Self::MAX).contains(&s.len())
             && s.bytes().all(|b| {
                 b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')
             });
