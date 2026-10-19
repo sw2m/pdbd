@@ -1,5 +1,6 @@
 extends:
   - nix/lefthook.yml
+  - bench/lefthook.yml
   - crates/transport/lefthook.*.yml
 
 # Datapath test — #12-A

@@ -1,0 +1,23 @@
+# see README "Benchmarks"
+templates:
+  nixsh: nix develop "$(git rev-parse --show-toplevel)#benchmark" --no-update-lock-file -c sh
+
+benchmark:bencher:
+  piped: true
+  jobs:
+    - name: incus
+      run: |
+        set -eu
+        if command -v incus >/dev/null && sg incus-admin -c true 2>/dev/null; then exit 0; fi
+        {nixsh} -c 'sudo -n "$BENCH_SETUP" "$(id -un)"'
+    - name: run
+      run: |
+        set -eu
+        bench={1}/bench
+        out=$(mktemp -d)
+        trap 'rm -rf "$out"' EXIT
+        bencher=$({nixsh} -c 'command -v bencher')
+        status=0
+        sg incus-admin -c "'$bencher' run '$bench' --out '$out/report.json'" || status=$?
+        [ ! -s "$out/report.json" ] || {nixsh} -c 'jq -r -f "$1/report.jq" "$2"' _ "$bench" "$out/report.json" >>"${BENCHMARK_REPORT:-/dev/stdout}"
+        exit "$status"
