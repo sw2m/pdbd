@@ -32,6 +32,3 @@ impl Default for Resource {
         Self("/".into())
     }
 }
-
-#[cfg(test)]
-mod test;

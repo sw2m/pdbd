@@ -1,12 +1,14 @@
-use crate::fixture::{fail, name, num, opt, parse, plain, table, text, web};
-use crate::strategy::{addresses, check, edit, respell, spelling};
-use crate::{
+mod support;
+
+use proptest::prelude::*;
+use socat::{
     Address, Host, Inet, Kind, Mode, Name, Net, Opt, Options, Part, Resource,
     Service, Target, Text, Unchecked, Vsock, Web, Zone,
 };
-use proptest::prelude::*;
 use std::net::Ipv4Addr;
 use std::num::NonZeroU32;
+use support::fixture::{fail, name, num, opt, parse, plain, table, text, web};
+use support::strategy::{addresses, check, edit, respell, spelling};
 
 // #57
 #[test]
@@ -323,6 +325,8 @@ fn invariants() {
 }
 
 proptest! {
+    #![proptest_config(support::strategy::config())]
+
     // #57
     #[test]
     fn roundtrip(a in addresses()) {

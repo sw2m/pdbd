@@ -1,7 +1,9 @@
-use crate::fixture::{name, num, parse, same, tcp};
-use crate::{Address, Error, Host, Kind, Zone};
+mod support;
+
 use proptest::prelude::*;
+use socat::{Address, Error, Host, Kind, Zone};
 use std::net::Ipv6Addr;
+use support::fixture::{name, num, parse, same, tcp};
 
 // #57
 #[test]
@@ -39,6 +41,8 @@ fn names() {
 }
 
 proptest! {
+    #![proptest_config(support::strategy::config())]
+
     // #57
     #[test]
     fn invalid(a in "[a-z]{0,4}", c in "[@#$%^&*+~/!=?]", b in "[a-z]{0,4}") {

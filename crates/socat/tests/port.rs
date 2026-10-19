@@ -1,6 +1,8 @@
-use crate::fixture::{name, parse, same, svc, tcp};
-use crate::{Address, Error, Kind};
+mod support;
+
 use proptest::prelude::*;
+use socat::{Address, Error, Kind};
+use support::fixture::{name, parse, same, svc, tcp};
 
 // #57
 #[test]
@@ -18,6 +20,8 @@ fn ports() {
 }
 
 proptest! {
+    #![proptest_config(support::strategy::config())]
+
     // #57
     #[test]
     fn overflow(h in "[a-z]{1,8}", p in 65536u64..) {

@@ -1,10 +1,10 @@
-use crate::fixture::plain;
-use crate::lex::Quoted;
-use crate::{
+use super::fixture::plain;
+use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
+use socat::{
     Address, Host, Inet, Mode, Name, Net, Opt, Options, Port, Resource,
     Service, Target, Text, Unchecked, Vsock, Web, Zone,
 };
-use proptest::prelude::*;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
 use std::num::NonZeroU32;
@@ -234,14 +234,30 @@ pub(crate) fn url(t: &Target) -> Option<String> {
         Web::Wss => "wss",
         Web::Webtransport => "https",
     };
-    let port = match port {
-        Port::Number(n) => n.to_string(),
-        Port::Service(s) => s.as_str().to_string(),
-    };
-    Some(format!(
-        "{scheme}://{host}:{port}{}",
-        Quoted(resource.as_str())
-    ))
+    let printed = Address::new(
+        Target::Web {
+            web: *web,
+            inet: Inet::Connect {
+                host: host.clone(),
+                port: port.clone(),
+            },
+            resource: resource.clone(),
+        },
+        Options::default(),
+    )
+    .expect("address")
+    .to_string();
+    let (_, rest) = printed.split_once(':').expect("keyword");
+    Some(format!("{scheme}://{rest}"))
+}
+
+pub(crate) fn config() -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(
+            FileFailurePersistence::WithSource("regressions"),
+        )),
+        ..ProptestConfig::default()
+    }
 }
 
 pub(crate) fn respell(a: &Address, sp: &Spelling) -> String {

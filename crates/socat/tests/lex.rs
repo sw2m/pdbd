@@ -1,7 +1,9 @@
-use crate::fixture::{exec, opt, parse, plain, table, text};
-use crate::strategy::addresses;
-use crate::{Address, Error, Kind, Mode, Target};
+mod support;
+
 use proptest::prelude::*;
+use socat::{Address, Error, Kind, Mode, Target};
+use support::fixture::{exec, opt, parse, plain, table, text};
+use support::strategy::addresses;
 
 // #57
 #[test]
@@ -98,6 +100,8 @@ fn dual() {
 }
 
 proptest! {
+    #![proptest_config(support::strategy::config())]
+
     // #57
     #[test]
     fn unterminated(a in addresses(), body in "[^']{0,8}") {

@@ -54,6 +54,3 @@ impl fmt::Display for Address {
         write!(f, "{}{}", self.target, self.options)
     }
 }
-
-#[cfg(test)]
-mod test;

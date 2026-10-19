@@ -49,6 +49,3 @@ impl fmt::Display for Port {
         }
     }
 }
-
-#[cfg(test)]
-mod test;

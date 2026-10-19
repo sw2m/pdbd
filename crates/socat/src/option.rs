@@ -180,6 +180,3 @@ impl fmt::Display for Options {
         }
     }
 }
-
-#[cfg(test)]
-mod test;

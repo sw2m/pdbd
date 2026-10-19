@@ -1,6 +1,8 @@
-use crate::fixture::{exec, name, num, same, table, web};
-use crate::{Host, Inet, Kind, Web};
+mod support;
+
+use socat::{Host, Inet, Kind, Web};
 use std::net::Ipv4Addr;
+use support::fixture::{exec, name, num, same, table, web};
 
 // #57
 #[test]

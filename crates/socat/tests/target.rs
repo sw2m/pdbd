@@ -1,8 +1,10 @@
-use crate::fixture::{exec, num, parse, same, table, text};
-use crate::strategy::keywords;
-use crate::{Address, Error, Inet, Kind, Mode, Net, Part, Target, Vsock};
+mod support;
+
 use proptest::prelude::*;
+use socat::{Address, Error, Inet, Kind, Mode, Net, Part, Target, Vsock};
 use std::num::NonZeroU32;
+use support::fixture::{exec, num, parse, same, table, text};
+use support::strategy::keywords;
 
 // #57
 #[test]
@@ -301,6 +303,8 @@ fn numbers() {
 }
 
 proptest! {
+    #![proptest_config(support::strategy::config())]
+
     // #57
     #[test]
     fn vsock(p in (u32::MAX as u64 + 1)..) {

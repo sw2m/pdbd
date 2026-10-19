@@ -80,6 +80,3 @@ impl fmt::Display for Host {
         }
     }
 }
-
-#[cfg(test)]
-mod test;

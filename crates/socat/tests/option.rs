@@ -1,6 +1,8 @@
-use crate::fixture::{opt, parse, same, table};
-use crate::{Kind, Mode};
+mod support;
+
+use socat::{Kind, Mode};
 use std::num::NonZeroU32;
+use support::fixture::{opt, parse, same, table};
 
 // #57; see README §"Control plane"
 #[test]
