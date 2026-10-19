@@ -8,11 +8,12 @@ def cell($name; $tags; $unit):
     end;
 . as $report
 | ([.rows[] | select(.name == "link")]) as $links
-| ([.rows[] | .tags.pppd // empty] | unique | join(", ") | if . == "" then "(none ran)" else . end) as $pppd
+| ([.rows[] | select(.name == "pppd") | .tags] | first // null) as $build
+| (if $build then "pppd \($build.version) (\($build.mode), \($build.toolchain))" else "pppd (not built)" end) as $pppd
 | ([.rows[] | select(.name == "bring-up") | .stats.ms.n] | max // 0) as $repeat
 | "### transport",
   "",
-  ("L1: a socat PTY pair in a bencher VM (its image from bencher's \($report.cache.level // "unknown") cache); L2: pppd \($pppd), "
+  ("L1: a socat PTY pair in a bencher VM (its image from bencher's \($report.cache.level // "unknown") cache); L2: \($pppd), "
    + "linkup's static musl build. Pairings are near ↔ far: near runs in its own netns and starts once far's interface exists, "
    + "→ is near to far. Each cell is the median of \($repeat) runs, with its 95% confidence interval when there are enough samples; "
    + "RTT pools every ping reply. CPU is busy time on the benchmark's own CPUs (bencher fences it there, so this counts kernel PPP work) "
