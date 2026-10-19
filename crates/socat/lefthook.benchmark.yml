@@ -1,0 +1,16 @@
+# #57 — see crates/socat/CLAUDE.md §"Benchmark"
+benchmark:matrix:
+  piped: true
+  jobs:
+    - name: build
+      root: "crates/socat/"
+      run: |
+        set -eu
+        {nixsh} -c '
+          set -eu
+          cargo build --release --locked -p socat --example verdict --target "$MUSL_TARGET"
+          cp "${CARGO_TARGET_DIR:-../../target}/$MUSL_TARGET/release/examples/verdict" bench/ours
+          ln -sfn "$BENCH_FIXTURE" bench/fixture
+        '
+    - name: bencher
+      run: lefthook run benchmark:bencher crates/socat

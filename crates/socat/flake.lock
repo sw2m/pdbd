@@ -1,5 +1,24 @@
 {
   "nodes": {
+    "bencher": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1792386282,
+        "narHash": "sha256-Thkcrm8T/VYZDr7K7EIC3umWHt1PvHdMhAG35CN1jto=",
+        "owner": "sw2m",
+        "repo": "bencher",
+        "rev": "a17902c942f877ce64509a1be569a342f5a52132",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sw2m",
+        "ref": "feat/coverage",
+        "repo": "bencher",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -20,6 +39,22 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1791956154,
+        "narHash": "sha256-jBYGPi4udQ9uo4KQp9m2J0546nJVQitG15gvZSaVVAs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "55bfb4d7437bd4e09ab7cba58a43bd68eb310044",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1782847189,
         "narHash": "sha256-twXPFqFsrrY5r28Zh7Homgcp2gUMBgQ6WDS98Q/3xFI=",
         "owner": "NixOS",
@@ -34,6 +69,23 @@
         "type": "github"
       }
     },
+    "pdbd-bench": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792387080,
+        "narHash": "sha256-qH+ng+yDqBVeIuak+wDc7itnwWxkZCZmXFrfaQ7YPBw=",
+        "owner": "sw2m",
+        "repo": "pdbd-bench",
+        "rev": "0bb95b15e23e3a18c30c475912d0e852259d7438",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sw2m",
+        "ref": "feat/socat",
+        "repo": "pdbd-bench",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "root": "root_2"
@@ -41,8 +93,10 @@
     },
     "root_2": {
       "inputs": {
+        "bencher": "bencher",
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs",
+        "nixpkgs": "nixpkgs_2",
+        "pdbd-bench": "pdbd-bench",
         "rust-overlay": "rust-overlay"
       },
       "locked": {

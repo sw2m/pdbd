@@ -5,16 +5,16 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1792309049,
-        "narHash": "sha256-lZwpLraTeXaDOtKE6wbRY6nQU9duH6ElpgNEYQWBnIk=",
+        "lastModified": 1792386282,
+        "narHash": "sha256-Thkcrm8T/VYZDr7K7EIC3umWHt1PvHdMhAG35CN1jto=",
         "owner": "sw2m",
         "repo": "bencher",
-        "rev": "4957a77d6fe3ef2704ad0935425fcc64a3e764ab",
+        "rev": "a17902c942f877ce64509a1be569a342f5a52132",
         "type": "github"
       },
       "original": {
         "owner": "sw2m",
-        "ref": "v0.1.0",
+        "ref": "feat/coverage",
         "repo": "bencher",
         "type": "github"
       }
@@ -72,15 +72,16 @@
     "pdbd-bench": {
       "flake": false,
       "locked": {
-        "lastModified": 1792380754,
-        "narHash": "sha256-f64Ace2icckZ9AA8EjCh5ZhAaAAbWOGne0AgrcnlFrY=",
+        "lastModified": 1792387080,
+        "narHash": "sha256-qH+ng+yDqBVeIuak+wDc7itnwWxkZCZmXFrfaQ7YPBw=",
         "owner": "sw2m",
         "repo": "pdbd-bench",
-        "rev": "582cf5cd1469ba2e0b3af68aafa9b34f88e55748",
+        "rev": "0bb95b15e23e3a18c30c475912d0e852259d7438",
         "type": "github"
       },
       "original": {
         "owner": "sw2m",
+        "ref": "feat/socat",
         "repo": "pdbd-bench",
         "type": "github"
       }

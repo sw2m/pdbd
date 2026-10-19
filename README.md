@@ -735,14 +735,23 @@ bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
 the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
 `pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, a Rust
 toolchain that also targets musl, and the paths below. Its variables avoid the `BENCHER_`
-prefix, which bencher reads as its own settings. `transport`'s `benchmark:link`:
+prefix, which bencher reads as its own settings.
 
-1. builds `linkup` static (`$MUSL_TARGET`), since it runs in bencher's Debian VM, not on the
-   build host, and links `bench/fixture` to the pdbd-bench input (both gitignored);
-2. installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't there, which
-   needs `sudo -n`, as the benchmark already does;
-3. runs `bencher run bench` and renders its report (`bench/report.jq`) into the `### transport`
-   section. With no `expect.tsv`, the check fails only when bencher reports an error.
+A crate's benchmark job builds what it races, then hands its `bench/` to the shared
+`benchmark:bencher` hook (`bench/lefthook.yml`, which every benchmarking crate extends):
+
+1. **the crate's own build** makes its artifacts static (`$MUSL_TARGET`), since they run in
+   bencher's Debian guest, not on the build host, and links `bench/fixture` to the pdbd-bench
+   input (both gitignored). `transport`'s `benchmark:link` builds `linkup`; `socat`'s
+   `benchmark:matrix` builds `examples/verdict.rs` as `ours`;
+2. **`benchmark:bencher <crate dir>`** installs Incus with bencher's own `ci/setup.sh`
+   (`$BENCH_SETUP`) when it isn't there, which needs `sudo -n`, as the benchmark already does;
+   then runs `bencher run <crate dir>/bench` and renders its report (`bench/report.jq`) into the
+   crate's `### <crate>` section.
+
+`transport` has no `expect.tsv`, so its check fails only when bencher reports an error. `socat`'s
+`expect.tsv` is its expected-results matrix, so a difference fails it (crates/socat/CLAUDE.md
+§"Benchmark").
 
 ### Git hooks
 

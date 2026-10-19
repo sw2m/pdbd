@@ -1,0 +1,14 @@
+[fixture]
+path = "fixture"  # a symlink to the pdbd-bench flake input, made by benchmark:matrix
+runner = "socat"
+
+[limits]
+cpu = 3  # a 4-vCPU GitHub runner: one for telemetry, two for the oracles, one left to the host
+memory = "4GiB"  # cargo builds tocat while provisioning
+provision = "PT45M"  # socat, Go, Rust and tocat build from source while provisioning
+run = 1800
+
+[artifacts]
+ours = "ours"  # the static musl build benchmark:matrix copies here
+hand = "hand.jsonl"
+alternatives = "alternatives.jsonl"
