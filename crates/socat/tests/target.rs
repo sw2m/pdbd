@@ -365,5 +365,29 @@ fn urls() {
         ),
         ("ws://a_b/", 5, Kind::Host("a_b".into())),
         ("wss://-a/", 6, Kind::Host("-a".into())),
+        ("ws://u@h/", 5, Kind::Host("u@h".into())),
+        ("ws://u:p@h/", 5, Kind::Host("u:p@h".into())),
+        ("ws://@h/", 5, Kind::Host("@h".into())),
+        ("ws://[v1.fe80::]/", 5, Kind::Host("[v1.fe80::]".into())),
+        ("ws://a%2Fb/", 5, Kind::Host("a%2Fb".into())),
+        ("ws://exa!mple/", 5, Kind::Host("exa!mple".into())),
+        ("WS://'[::1'/x", 5, Kind::Host("[::1".into())),
     ]);
+}
+
+// #57: RFC 3986 §3.2.2, a reg-name is percent-decoded
+#[test]
+fn decoded() {
+    same(&[
+        ("ws://exa%6Dple.com/", "WS-CONNECT:example.com:80"),
+        ("ws://a./", "WS-CONNECT:a.:80"),
+    ]);
+    #[cfg(feature = "idn")]
+    same(&[("ws://b%C3%BCcher.de/", "WS-CONNECT:bücher.de:80")]);
+    #[cfg(not(feature = "idn"))]
+    table(&[(
+        "ws://b%C3%BCcher.de/",
+        5,
+        Kind::Host("b%C3%BCcher.de".into()),
+    )]);
 }

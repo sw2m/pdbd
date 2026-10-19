@@ -52,6 +52,10 @@ fn labels() {
         parse(&format!("TCP:{tall}:1")).target(),
         &tcp(name(&tall), num(1))
     );
+    assert_eq!(
+        parse(&format!("TCP:{tall}.:1")).target(),
+        &tcp(name(&format!("{tall}.")), num(1))
+    );
     let over = format!("{tall}e");
     table(&[
         ("TCP:a_b:1", 4, Kind::Host("a_b".into())),
@@ -88,6 +92,26 @@ fn unicode() {
     table(&[("TCP:bücher.de:1", 4, Kind::Host("bücher.de".into()))]);
 }
 
+// #57: RFC 1123 §2.1, a root dot, and no all-numeric top label
+#[test]
+fn absolute() {
+    same(&[
+        ("TCP:a.:1", "TCP-CONNECT:a.:1"),
+        ("TCP:A.B.:1", "TCP-CONNECT:a.b.:1"),
+        ("TCP:1a.b:1", "TCP-CONNECT:1a.b:1"),
+        ("TCP:a.b1:1", "TCP-CONNECT:a.b1:1"),
+    ]);
+    table(&[
+        ("TCP:.:1", 4, Kind::Host(".".into())),
+        ("TCP:a..:1", 4, Kind::Host("a..".into())),
+        ("TCP:1:1", 4, Kind::Host("1".into())),
+        ("TCP:a.1:1", 4, Kind::Host("a.1".into())),
+        ("TCP:a.1.:1", 4, Kind::Host("a.1.".into())),
+        ("TCP:01.2.3.4:1", 4, Kind::Host("01.2.3.4".into())),
+        ("TCP:0x7f.1:1", 4, Kind::Host("0x7f.1".into())),
+    ]);
+}
+
 // #57: RFC 4007 §11, RFC 9844 §6
 #[test]
 fn zones() {
@@ -95,11 +119,14 @@ fn zones() {
         "TCP:[fe80::1%abcdefghijklmno]:1",
         "TCP-CONNECT:[fe80::1%abcdefghijklmno]:1",
     )]);
-    table(&[(
-        "TCP:[fe80::1%abcdefghijklmnop]:1",
-        4,
-        Kind::Host("[fe80::1%abcdefghijklmnop]".into()),
-    )]);
+    table(&[
+        (
+            "TCP:[fe80::1%abcdefghijklmnop]:1",
+            4,
+            Kind::Host("[fe80::1%abcdefghijklmnop]".into()),
+        ),
+        ("TCP:[fe80::1%~]:1", 4, Kind::Host("[fe80::1%~]".into())),
+    ]);
 }
 
 proptest! {
