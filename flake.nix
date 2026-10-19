@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.1.0"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench/feat/transport"; # sw2m/pdbd-bench#1
+      url = "github:sw2m/pdbd-bench";
       flake = false;
     };
   };

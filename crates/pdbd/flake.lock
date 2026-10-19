@@ -72,16 +72,15 @@
     "pdbd-bench": {
       "flake": false,
       "locked": {
-        "lastModified": 1792324115,
-        "narHash": "sha256-E9TCpDcD8QxS0DLadlGxU2dechw5IVbMaghzEduKHAs=",
+        "lastModified": 1792380754,
+        "narHash": "sha256-f64Ace2icckZ9AA8EjCh5ZhAaAAbWOGne0AgrcnlFrY=",
         "owner": "sw2m",
         "repo": "pdbd-bench",
-        "rev": "50d5dfa0222c90b491beaebba737cd4f1b10ae48",
+        "rev": "582cf5cd1469ba2e0b3af68aafa9b34f88e55748",
         "type": "github"
       },
       "original": {
         "owner": "sw2m",
-        "ref": "feat/transport",
         "repo": "pdbd-bench",
         "type": "github"
       }
