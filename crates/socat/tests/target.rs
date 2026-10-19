@@ -373,6 +373,9 @@ fn urls() {
         ("ws://a%2Fb/", 5, Kind::Host("a%2Fb".into())),
         ("ws://exa!mple/", 5, Kind::Host("exa!mple".into())),
         ("WS://'[::1'/x", 5, Kind::Host("[::1".into())),
+        ("ws://[::1]x/", 10, Kind::Port("x".into())),
+        ("ws://[::1]:x/", 11, Kind::Port("x".into())),
+        ("ws://%ff/", 5, Kind::Host("%ff".into())),
     ]);
 }
 
