@@ -245,6 +245,16 @@ fn positions() {
         ("ws://", 5, Kind::Missing(Part::Host)),
         ("ws://h:99999/", 7, Kind::Port("99999".into())),
         ("ws:x", 0, Kind::Keyword("ws".into())),
+        ("EXEC:é\\", 7, Kind::Escape),
+        ("EXEC:(é]", 8, Kind::Bracket),
+        ("EXEC:é[x", 7, Kind::Bracket),
+        ("EXEC:é'x", 7, Kind::Quote),
+        ("TCP:h:é", 6, Kind::Port("é".into())),
+        ("TCP:é:1:é", 9, Kind::Extra("é".into())),
+        ("STDIO,é", 6, Kind::Option("é".into())),
+        ("FILE:é,x=é,mux", 13, Kind::Option("mux".into())),
+        ("VSOCK-LISTEN:é", 13, Kind::Port("é".into())),
+        ("TCP:'é b':1", 4, Kind::Host("é b".into())),
     ]);
 }
 
@@ -260,23 +270,6 @@ fn display() {
         fail("STDIO!!STDIO").to_string(),
         "at byte 5: dual address \"!!\" is not supported"
     );
-}
-
-// #57
-#[test]
-fn offsets() {
-    table(&[
-        ("EXEC:é\\", 7, Kind::Escape),
-        ("EXEC:(é]", 8, Kind::Bracket),
-        ("EXEC:é[x", 7, Kind::Bracket),
-        ("EXEC:é'x", 7, Kind::Quote),
-        ("TCP:h:é", 6, Kind::Port("é".into())),
-        ("TCP:é:1:é", 9, Kind::Extra("é".into())),
-        ("STDIO,é", 6, Kind::Option("é".into())),
-        ("FILE:é,x=é,mux", 13, Kind::Option("mux".into())),
-        ("VSOCK-LISTEN:é", 13, Kind::Port("é".into())),
-        ("TCP:'é b':1", 4, Kind::Host("é b".into())),
-    ]);
 }
 
 // #57

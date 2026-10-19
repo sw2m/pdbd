@@ -272,6 +272,8 @@ fn numbers() {
         ),
         ("VSOCK-LISTEN:010", 13, Kind::Base("010".into())),
         ("VSOCK-LISTEN:0x50", 13, Kind::Base("0x50".into())),
+        ("VSOCK-LISTEN:0-", 13, Kind::Port("0-".into())),
+        ("VSOCK-LISTEN:0_", 13, Kind::Port("0_".into())),
         ("VSOCK-CONNECT:0x2:1", 14, Kind::Base("0x2".into())),
         ("VSOCK-CONNECT:2:00", 16, Kind::Base("00".into())),
         ("VSOCK-LISTEN:00x1", 13, Kind::Base("00x1".into())),

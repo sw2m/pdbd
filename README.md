@@ -712,7 +712,7 @@ each opted-in crate surfaces as a `benchmark (<crate>)` check. Run it locally wi
 ```
 nix develop --no-update-lock-file -c lefthook run benchmark            # benchmarks only
 LEFTHOOK_CONFIG=crates/socat/lefthook.yml nix develop --no-update-lock-file -c lefthook run benchmark  # one crate's
-LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite with them
+LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite, benchmarks excluded
 ```
 
 **A benchmark reports; it gates only on expectations it publishes.** A benchmark check

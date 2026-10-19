@@ -19,5 +19,6 @@ fn main() {
             }),
         };
         writeln!(out, "{answer}").expect("stdout");
+        out.flush().expect("stdout");
     }
 }

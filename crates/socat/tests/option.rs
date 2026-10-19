@@ -63,6 +63,12 @@ fn misspelled() {
             Kind::Duplicate("max-children".into()),
         ),
         ("TCP-LISTEN:80,fork=1", 14, Kind::Value("fork".into())),
+        ("TCP-LISTEN:80,fork=", 14, Kind::Value("fork".into())),
+        (
+            "TCP-LISTEN:80,mux,max-children=",
+            18,
+            Kind::Value("max-children".into()),
+        ),
     ]);
 }
 
