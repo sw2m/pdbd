@@ -84,7 +84,7 @@ No source expression was imported, only behaviour and types (clean-room). No pat
 | `alternatives.jsonl` | `[input, form]` pairs: an input we reject, and the form we accept instead |
 | `report.jq` | renders the report into the `### socat` section |
 
-`examples/verdict.rs` is ours in the race: it reads one JSON string per line and answers `{"ok": true, "canonical": …}` or `{"ok": false, "kind": …, "at": …}`. `benchmark:matrix` builds it static for the runner's guest.
+`examples/verdict.rs` is ours in the race: it reads one JSON string per line and answers `{"ok": true, "canonical": …}` or `{"ok": false, "kind": …, "at": …}`. The shared `benchmark` hook (`bench/lefthook.yml`) builds it static for the runner's guest, as the `verdict` artifact.
 
 **A row's class** follows from its rules: `supported` is `parse {impl: ours} == "ok"` plus a `print {input, canonical}` row (so a changed canonical print leaves a stale rule, and fails); `rejected` is `parse {impl: ours} == "err"`; `alternative` is `rejected` plus an `alternative {input, form}` row that must be `"ok"`. Oracle rows (`impl` socat, websocat, oittaa, tocat) record only verdicts, so a new oracle release fails the check only when it changes one; the versions raced are in the report.
 

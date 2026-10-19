@@ -11,10 +11,3 @@ test:
     - name: datapath
       run: lefthook run test:datapath
       tags: [privileged]
-
-benchmark:
-  jobs:
-    - name: link
-      run: lefthook run benchmark:link
-      tags:
-        - privileged

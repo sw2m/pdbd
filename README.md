@@ -691,13 +691,14 @@ sudo podman rm -f "$cid"
 
 ### Benchmarks
 
-`benchmark` is a hook like `test`: a crate opts in by defining `benchmark:` in its own
-`lefthook.yml`, and the fanout finds it. It's slow and noisy, so the `ci` job that runs
+`benchmark` is a hook like `test`: a crate opts in by extending `bench/lefthook.yml` (below),
+and the fanout finds it. It's slow and noisy, so the `ci` job that runs
 it is tagged `benchmark` and the git hooks exclude it; GitHub CI excludes nothing, so
 each opted-in crate surfaces as a `benchmark (<crate>)` check. Run it locally with:
 
 ```
 nix develop --no-update-lock-file -c lefthook run benchmark            # benchmarks only
+LEFTHOOK_CONFIG=crates/socat/lefthook.yml nix develop --no-update-lock-file -c lefthook run benchmark  # one crate's
 LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite with them
 ```
 
@@ -727,31 +728,36 @@ get a read-only token, so `report` skips them; the job summaries still carry the
 comparator's latest release at run time, outside the workspace `Cargo.lock` and the root
 `flake.lock`, and reports the version it raced. Pinning one is a deliberate "stop racing
 it" decision, committed beside the benchmark. `transport` races `pppd` built from ppp's
-latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it.
+latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it. `socat`
+races socat, websocat, oittaa/socat and tocat at their latest releases;
+`params.pins.<oracle>` in `crates/socat/bench/bench.toml` pins one.
 
 **Benchmarks run on [bencher](https://github.com/sw2m/bencher).** A crate's benchmark is a
 bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
 [pdbd-bench](https://github.com/sw2m/pdbd-bench), which holds the harness code, and passes it
 the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
-`pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, a Rust
-toolchain that also targets musl, and the paths below. Its variables avoid the `BENCHER_`
-prefix, which bencher reads as its own settings.
+`pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, jq, a Rust
+toolchain that also targets musl, and three variables the hook uses: `$MUSL_TARGET`,
+`$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP` (bencher's `ci/setup.sh`). They
+avoid the `BENCHER_` prefix, which bencher reads as its own settings.
 
-A crate's benchmark job builds what it races, then hands its `bench/` to the shared
-`benchmark:bencher` hook (`bench/lefthook.yml`, which every benchmarking crate extends):
+The `benchmark` hook is shared, like `build`: it lives in `bench/lefthook.yml`, and a crate opts
+in by extending it and committing a `bench/`. It resolves the crate from `$LEFTHOOK_CONFIG` (or
+`$DIR`), the way `nix/lefthook.yml` does, and runs:
 
-1. **the crate's own build** makes its artifacts static (`$MUSL_TARGET`), since they run in
-   bencher's Debian guest, not on the build host, and links `bench/fixture` to the pdbd-bench
-   input (both gitignored). `transport`'s `benchmark:link` builds `linkup`; `socat`'s
-   `benchmark:matrix` builds `examples/verdict.rs` as `ours`;
-2. **`benchmark:bencher <crate dir>`** installs Incus with bencher's own `ci/setup.sh`
-   (`$BENCH_SETUP`) when it isn't there, which needs `sudo -n`, as the benchmark already does;
-   then runs `bencher run <crate dir>/bench` and renders its report (`bench/report.jq`) into the
+1. **build**: every `[artifacts]` entry in `bench/bench.toml` named after one of the crate's
+   examples (`examples/<name>.rs`) is built static (`$MUSL_TARGET`) and copied to the artifact's
+   path, since it runs in bencher's Debian guest, not on the build host; `bench/fixture` is
+   linked to the pdbd-bench input. Both are gitignored. `transport` builds `linkup`, `socat`
+   builds `verdict`;
+2. **incus**: installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't
+   there, which needs `sudo -n`, as the benchmark already does;
+3. **run**: `bencher run <crate>/bench`, then renders its report (`bench/report.jq`) into the
    crate's `### <crate>` section.
 
 `transport` has no `expect.tsv`, so its check fails only when bencher reports an error. `socat`'s
-`expect.tsv` is its expected-results matrix, so a difference fails it (crates/socat/CLAUDE.md
-§"Benchmark").
+`expect.tsv` is its expected-results matrix, so a difference fails it; a developer decides each
+difference and rewrites the matrix with `bencher bless` (crates/socat/CLAUDE.md §"Benchmark").
 
 ### Git hooks
 

@@ -1,19 +1,41 @@
-# see README "Benchmarks"
+# #71 — see README "Benchmarks"
 templates:
   nixsh: nix develop "$(git rev-parse --show-toplevel)#benchmark" --no-update-lock-file -c sh
 
-benchmark:bencher:
+benchmark:
   piped: true
   jobs:
+    - name: build
+      tags:
+        - privileged
+      run: |
+        set -eu
+        dir=${DIR:-$(dirname "$LEFTHOOK_CONFIG")}
+        artifacts=$(yq -p toml -o tsv '.artifacts // {} | to_entries | .[] | [.key, .value]' "$dir/bench/bench.toml")
+        while IFS="$(printf '\t')" read -r name path; do
+          [ -n "$name" ] && [ -f "$dir/examples/$name.rs" ] || continue
+          {nixsh} -c '
+            set -eu
+            cargo build --release --locked -p "$1" --example "$2" --target "$MUSL_TARGET"
+            cp "${CARGO_TARGET_DIR:-target}/$MUSL_TARGET/release/examples/$2" "$3"
+          ' _ "$(basename "$dir")" "$name" "$dir/bench/$path"
+        done <<END
+        $artifacts
+        END
+        {nixsh} -c 'ln -sfn "$BENCH_FIXTURE" "$1/bench/fixture"' _ "$dir"
     - name: incus
+      tags:
+        - privileged
       run: |
         set -eu
         if command -v incus >/dev/null && sg incus-admin -c true 2>/dev/null; then exit 0; fi
         {nixsh} -c 'sudo -n "$BENCH_SETUP" "$(id -un)"'
     - name: run
+      tags:
+        - privileged
       run: |
         set -eu
-        bench={1}/bench
+        bench=${DIR:-$(dirname "$LEFTHOOK_CONFIG")}/bench
         out=$(mktemp -d)
         trap 'rm -rf "$out"' EXIT
         bencher=$({nixsh} -c 'command -v bencher')
