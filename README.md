@@ -753,7 +753,8 @@ in by extending it and committing a `bench/`. It resolves the crate from `$LEFTH
 2. **incus**: installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't
    there, which needs `sudo -n`, as the benchmark already does;
 3. **run**: `bencher run <crate>/bench`, then renders its report (`bench/report.jq`) into the
-   crate's `### <crate>` section.
+   crate's `### <crate>` section. bencher's report stays at `bench/report.json` (gitignored), the
+   input `bencher bless` takes.
 
 `transport` has no `expect.tsv`, so its check fails only when bencher reports an error. `socat`'s
 `expect.tsv` is its expected-results matrix, so a difference fails it; a developer decides each

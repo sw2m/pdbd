@@ -69,7 +69,7 @@ fn resources() {
 
 // #57
 #[test]
-fn slashed_listen() {
+fn slashed() {
     table(&[
         ("WS-LISTEN:'h/x':80", 10, Kind::Port("h/x".into())),
         ("WS-LISTEN:8080/a:b", 10, Kind::Port("8080/a".into())),

@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 
 // #57; see README §"Control plane"
 #[test]
-fn mux_and_cap() {
+fn mux() {
     let none = parse("TCP-LISTEN:8080");
     assert!(!none.options().mux());
     assert_eq!(none.options().cap(), None);
@@ -27,7 +27,7 @@ fn mux_and_cap() {
 
 // #57
 #[test]
-fn near_miss_options() {
+fn misspelled() {
     same(&[
         (
             "TCP-LISTEN:80,max_children=4,mux",
@@ -66,7 +66,7 @@ fn near_miss_options() {
 
 // #57
 #[test]
-fn empty_options() {
+fn empty() {
     same(&[
         ("TCP-LISTEN:80,", "TCP-LISTEN:80"),
         ("TCP-LISTEN:80,,raw,", "TCP-LISTEN:80,raw"),

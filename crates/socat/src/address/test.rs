@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 
 // #57
 #[test]
-fn readme_transports() {
+fn transports() {
     let any = Ipv4Addr::UNSPECIFIED;
     let cases = [
         (
@@ -102,7 +102,7 @@ fn readme_transports() {
 
 // #57
 #[test]
-fn readme_forms() {
+fn forms() {
     let cases = [
         ("TCP:127.0.0.1:7000", "TCP-CONNECT:127.0.0.1:7000"),
         ("TCP:10.0.0.5:80", "TCP-CONNECT:10.0.0.5:80"),
@@ -172,7 +172,7 @@ fn readme_forms() {
 
 // #57
 #[test]
-fn errors_carry_positions() {
+fn positions() {
     table(&[
         ("", 0, Kind::Empty),
         ("BOGUS:1", 0, Kind::Keyword("BOGUS".into())),
@@ -248,7 +248,7 @@ fn errors_carry_positions() {
 
 // #57
 #[test]
-fn error_display_names_the_position() {
+fn display() {
     assert_eq!(
         fail("TCP:host:99999").to_string(),
         "at byte 9: invalid port \"99999\""
@@ -262,7 +262,7 @@ fn error_display_names_the_position() {
 
 // #57
 #[test]
-fn non_ascii_offsets() {
+fn offsets() {
     table(&[
         ("EXEC:é\\", 7, Kind::Escape),
         ("EXEC:(é]", 8, Kind::Bracket),
@@ -346,13 +346,13 @@ proptest! {
 
     // #57
     #[test]
-    fn arbitrary_input(s in "[ -~]{0,40}") {
+    fn printable(s in "[ -~]{0,40}") {
         check(&s)?;
     }
 
     // #57
     #[test]
-    fn arbitrary_unicode(s in "\\PC{0,24}") {
+    fn unicode(s in "\\PC{0,24}") {
         check(&s)?;
     }
 

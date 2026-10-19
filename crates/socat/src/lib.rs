@@ -1,4 +1,4 @@
-// see README §"L1 — the transport" and §"License"
+// see README.md §"L1 — the transport" and §"License"
 
 mod address;
 mod error;

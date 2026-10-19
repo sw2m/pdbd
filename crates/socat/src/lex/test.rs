@@ -100,7 +100,7 @@ fn dual() {
 proptest! {
     // #57
     #[test]
-    fn unterminated_quote(a in addresses(), body in "[^']{0,8}") {
+    fn unterminated(a in addresses(), body in "[^']{0,8}") {
         let s = format!("{a},x='{body}");
         let at = s.len() - body.len() - 1;
         prop_assert_eq!(Address::parse(&s), Err(Error::new(at, Kind::Quote)));
@@ -108,7 +108,7 @@ proptest! {
 
     // #57
     #[test]
-    fn unclosed_bracket(a in addresses(), open in "[\\[({]", body in "[a-z]{0,8}") {
+    fn unclosed(a in addresses(), open in "[\\[({]", body in "[a-z]{0,8}") {
         let s = format!("{a},x={open}{body}");
         let at = s.len() - body.len() - 1;
         prop_assert_eq!(Address::parse(&s), Err(Error::new(at, Kind::Bracket)));
@@ -116,7 +116,7 @@ proptest! {
 
     // #57
     #[test]
-    fn dual_rejected(a in addresses(), tail in "[a-z]{0,6}") {
+    fn duals(a in addresses(), tail in "[a-z]{0,6}") {
         let s = format!("{a},x=y!!{tail}");
         let at = s.len() - tail.len() - 2;
         prop_assert_eq!(Address::parse(&s), Err(Error::new(at, Kind::Dual)));

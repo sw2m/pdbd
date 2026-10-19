@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 
 // #57
 #[test]
-fn synonyms_and_case() {
+fn synonyms() {
     same(&[
         ("-", "STDIO"),
         ("stdio", "STDIO"),
@@ -59,7 +59,7 @@ fn prefixes() {
 
 // #57
 #[test]
-fn listen_host_is_optional() {
+fn hostless() {
     assert_eq!(
         parse("TCP-LISTEN:8080").target(),
         &Target::Net {
@@ -105,7 +105,7 @@ fn files() {
 
 // #57
 #[test]
-fn unix_and_abstract() {
+fn unix() {
     assert_eq!(
         exec("UNIX-CONNECT:@name"),
         Target::Unix {
@@ -160,7 +160,7 @@ fn single() {
 
 // #57
 #[test]
-fn deferred_forms() {
+fn deferred() {
     let keyword = |k: &str| Kind::Keyword(k.into());
     table(&[
         ("TCP4:h:1", 0, keyword("TCP4")),
@@ -192,7 +192,7 @@ fn deferred_forms() {
 
 // #57
 #[test]
-fn extra_parameters() {
+fn extra() {
     table(&[
         ("TCP:h:1:2", 8, Kind::Extra("2".into())),
         ("TCP-LISTEN:h:1:2", 15, Kind::Extra("2".into())),
@@ -303,7 +303,7 @@ fn numbers() {
 proptest! {
     // #57
     #[test]
-    fn vsock_out_of_range(p in (u32::MAX as u64 + 1)..) {
+    fn vsock(p in (u32::MAX as u64 + 1)..) {
         prop_assert_eq!(
             Address::parse(&format!("VSOCK-LISTEN:{p}")),
             Err(Error::new(13, Kind::Port(p.to_string())))
@@ -320,7 +320,7 @@ proptest! {
 
     // #57
     #[test]
-    fn leading_zero(n in any::<u32>(), p in any::<u16>()) {
+    fn zeros(n in any::<u32>(), p in any::<u16>()) {
         let z = format!("0{n}");
         prop_assert_eq!(
             Address::parse(&format!("VSOCK-LISTEN:{z}")),
@@ -334,7 +334,7 @@ proptest! {
 
     // #57
     #[test]
-    fn unknown_keyword(k in "[A-Z][A-Z0-9-]{0,10}") {
+    fn unknown(k in "[A-Z][A-Z0-9-]{0,10}") {
         prop_assume!(!keywords().contains(&k));
         prop_assert_eq!(
             Address::parse(&format!("{k}:x")),

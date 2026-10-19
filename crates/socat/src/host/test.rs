@@ -41,7 +41,7 @@ fn names() {
 proptest! {
     // #57
     #[test]
-    fn invalid_host(a in "[a-z]{0,4}", c in "[@#$%^&*+~/!=?]", b in "[a-z]{0,4}") {
+    fn invalid(a in "[a-z]{0,4}", c in "[@#$%^&*+~/!=?]", b in "[a-z]{0,4}") {
         let h = format!("{a}{c}{b}");
         prop_assert_eq!(
             Address::parse(&format!("WS-CONNECT:{h}:1")),

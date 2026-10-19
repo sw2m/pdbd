@@ -32,4 +32,11 @@ def cells: "\(.supported // 0) | \(.alternative // 0) | \(.rejected // 0)";
   "| family | types | supported | alternative | rejected |",
   "| --- | --: | --: | --: | --: |",
   ([$corpus[] | select(.family | startswith("socat:type:"))] | group_by(.family)[]
-    | "| \(.[0].family | ltrimstr("socat:type:")) | \(length) | \(counts | cells) |")
+    | "| \(.[0].family | ltrimstr("socat:type:")) | \(length) | \(counts | cells) |"),
+  "",
+  "socat's options, per option group (each riding a type whose groups fit):",
+  "",
+  "| group | options | supported | alternative | rejected |",
+  "| --- | --: | --: | --: | --: |",
+  ([$corpus[] | select(.family | startswith("socat:option:"))] | group_by(.family)[]
+    | "| \(.[0].family | ltrimstr("socat:option:")) | \(length) | \(counts | cells) |")

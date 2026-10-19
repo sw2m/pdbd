@@ -20,7 +20,7 @@ fn ports() {
 proptest! {
     // #57
     #[test]
-    fn port_out_of_range(h in "[a-z]{1,8}", p in 65536u64..) {
+    fn overflow(h in "[a-z]{1,8}", p in 65536u64..) {
         let s = format!("TCP:{h}:{p}");
         prop_assert_eq!(
             Address::parse(&s),

@@ -31,10 +31,10 @@ Every direction type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTE
 
 **Rejected with a positioned error, deliberately:**
 - `TCP4`/`TCP6`/`UDP4`/`UDP6` family pins;
-- socat's datagram modes (`UDP-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM`, `UNIX-SENDTO`/`-RECVFROM`/`-CLIENT`);
-- `FD` and the numeric-FD shorthand;
-- `STDIN`/`STDOUT`/`STDERR`, `SYSTEM`/`SHELL`, `PIPE`, `CREATE`;
-- `OPENSSL*`, `SOCKS*`, `PROXY`: secure and proxied pipes compose externally via `EXEC:` (README *Crypto*);
+- socat's datagram modes (`UDP-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM`, `UNIX-SENDTO`/`-RECVFROM`/`-RECV`/`-SEND`/`-CLIENT`, `ABSTRACT-SENDTO`/`-RECVFROM`/`-RECV`), and the generic `SOCKET-*`/`DATAGRAM`/`SENDTO` addresses;
+- `FD`, the numeric-FD shorthand, and `ACCEPT`/`ACCEPT-FD`;
+- `STDIN`/`STDOUT`/`STDERR`, `SYSTEM`/`SHELL`, `PIPE`/`FIFO`, `CREATE`;
+- `OPENSSL*` and `DTLS*`, `SOCKS*`, `PROXY`: secure and proxied pipes compose externally via `EXEC:` (README *Crypto*);
 - `SCTP`, `DCCP`, `UDPLITE`, `IP-*`, `TUN`, `INTERFACE`, `READLINE`, `POSIXMQ`;
 - `!!` dual addresses, which are rejected unquoted, and the printer quotes any literal `!!`;
 - base-0 numbers (`010`, `0x50`, and any `0`-led alphanumeric such as `0b1` or `00x1`) for VSOCK ids and `max-children`, as `Kind::Base`;
@@ -42,6 +42,10 @@ Every direction type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTE
 - an empty positional parameter (`TCP:h:80:`, `STDIO:`), as `Kind::Blank`. Empty *option* fields are skipped instead.
 
 Adding one of these means a deliberate spec change (README L1 plus a #59/#60 consumer), not a parser tweak.
+
+**Not yet decided** (the benchmark surfaced them; each is rejected today, and the matrix records it so):
+- bare `VSOCK:`, which socat 1.8.1.3 reads as `VSOCK-CONNECT`, as we already do for `UNIX`/`LOCAL`. Recorded as an alternative (`VSOCK-CONNECT`); supporting it is a one-line change;
+- socat 1.8.1's test and debugging types `TEXT:`, `STALL`, `ECHO` and `SOCKETPAIR`: not transports, so likely deliberate rejections, but not yet on the list above.
 
 ## socat behaviour confirmed by probing socat 1.8.0.0
 
@@ -56,9 +60,11 @@ Use these when a reference question comes up. They were run locally against the 
 - GOPEN is inferred only when `/` comes before the first `:` or `,`.
 - `OPEN` (`open(2)`) and `GOPEN` (also connects to sockets) differ, so they're distinct variants.
 
+Confirmed later against socat 1.8.1.3, each in its own empty network namespace: `max-children` without `fork` is a syntax error ("not allowed without option fork"), matching our `max-children` requires `mux`. Raced in one shared namespace, a concurrent LISTEN on the same port makes the check fail at bind instead, which reads as acceptance (#67, round 6).
+
 ## Prior art
 
-The four reports are in the session scratchpad (Claude and k3 sweeps, 2026-10-15). The sources worth re-reading:
+PR #67's "Prior art" section has the sweep's findings (2026-10-15). The sources worth re-reading:
 
 | Source | License | What it's good for |
 | --- | --- | --- |
@@ -78,17 +84,17 @@ No source expression was imported, only behaviour and types (clean-room). No pat
 
 | File | What it is |
 | --- | --- |
-| `bench.toml` | the runner, its limits, and the three artifacts below |
-| `expect.tsv` | the expected-results matrix: one exact `verdict ==` rule per row, plus coverage rules (`parse {} rules >= 1`, …) so a new corpus entry fails until it's decided |
+| `bench.toml` | the runner, its limits, and three artifacts: `verdict` (below), `hand` and `alternatives` |
+| `expect.tsv` | the expected-results matrix: one exact `verdict ==` rule per `parse` and `print` row; coverage rules (`parse {} rules >= 1`, `print {} rules >= 1`), which count only exact rules, so a new corpus entry or canonical print fails until it's decided; and broad rules that every alternative parses and the corpus and oracle rows exist |
 | `hand.jsonl` | hand-written corpus entries, one JSON string per line, `# section` lines naming their family: lexer edges, the #67 review probes, the README forms, wrapper-tool forms |
 | `alternatives.jsonl` | `[input, form]` pairs: an input we reject, and the form we accept instead |
-| `report.jq` | renders the report into the `### socat` section |
+| `report.jq` | renders the report into the `### socat` section: the oracles raced, class counts, missed rules, and coverage per corpus, per socat type family and per socat option group |
 
 `examples/verdict.rs` is ours in the race: it reads one JSON string per line and answers `{"ok": true, "canonical": …}` or `{"ok": false, "kind": …, "at": …}`. The shared `benchmark` hook (`bench/lefthook.yml`) builds it static for the runner's guest, as the `verdict` artifact.
 
 **A row's class** follows from its rules: `supported` is `parse {impl: ours} == "ok"` plus a `print {input, canonical}` row (so a changed canonical print leaves a stale rule, and fails); `rejected` is `parse {impl: ours} == "err"`; `alternative` is `rejected` plus an `alternative {input, form}` row that must be `"ok"`. Oracle rows (`impl` socat, websocat, oittaa, tocat) record only verdicts, so a new oracle release fails the check only when it changes one; the versions raced are in the report.
 
-**Resolving a failure is a developer decision.** Run the benchmark, then `nix run github:sw2m/bencher/<ref> -- bless crates/socat/bench --report <report.json>`, which updates every exact rule and appends one for every undecided row. Read the diff and decide each changed row: support it (a README §L1 change and a crate change), reject it deliberately, or add an alternative to `alternatives.jsonl`. Then commit, with the reason in the message.
+**Resolving a failure is a developer decision.** Run the benchmark (`LEFTHOOK_CONFIG=crates/socat/lefthook.yml nix develop --no-update-lock-file -c lefthook run benchmark`); it leaves bencher's report at `bench/report.json` (gitignored). Then `nix develop .#benchmark --no-update-lock-file -c bencher bless crates/socat/bench --report crates/socat/bench/report.json` updates every exact rule and appends one for every undecided row. Read the diff and decide each changed row: support it (a README §L1 change and a crate change), reject it deliberately, or add an alternative to `alternatives.jsonl`. Then commit, with the reason in the message.
 
 **Oracles float.** Each run races the latest socat, websocat, oittaa/socat and tocat; `[params.pins]` in `bench.toml` (`socat`, `websocat`, `oittaa`, `tocat`) stops racing one. Record why next to the pin.
 

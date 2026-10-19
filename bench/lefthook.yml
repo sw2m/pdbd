@@ -36,10 +36,9 @@ benchmark:
       run: |
         set -eu
         bench=${DIR:-$(dirname "$LEFTHOOK_CONFIG")}/bench
-        out=$(mktemp -d)
-        trap 'rm -rf "$out"' EXIT
+        rm -f "$bench/report.json"
         bencher=$({nixsh} -c 'command -v bencher')
         status=0
-        sg incus-admin -c "'$bencher' run '$bench' --out '$out/report.json'" || status=$?
-        [ ! -s "$out/report.json" ] || {nixsh} -c 'jq -r -f "$1/report.jq" "$2"' _ "$bench" "$out/report.json" >>"${BENCHMARK_REPORT:-/dev/stdout}"
+        sg incus-admin -c "'$bencher' run '$bench' --out '$bench/report.json'" || status=$?
+        [ ! -s "$bench/report.json" ] || {nixsh} -c 'jq -r -f "$1/report.jq" "$1/report.json"' _ "$bench" >>"${BENCHMARK_REPORT:-/dev/stdout}"
         exit "$status"
