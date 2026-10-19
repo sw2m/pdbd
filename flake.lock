@@ -1,5 +1,24 @@
 {
   "nodes": {
+    "bencher": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1792309049,
+        "narHash": "sha256-lZwpLraTeXaDOtKE6wbRY6nQU9duH6ElpgNEYQWBnIk=",
+        "owner": "sw2m",
+        "repo": "bencher",
+        "rev": "4957a77d6fe3ef2704ad0935425fcc64a3e764ab",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sw2m",
+        "ref": "v0.1.0",
+        "repo": "bencher",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -20,6 +39,22 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1791956154,
+        "narHash": "sha256-jBYGPi4udQ9uo4KQp9m2J0546nJVQitG15gvZSaVVAs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "55bfb4d7437bd4e09ab7cba58a43bd68eb310044",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1782847189,
         "narHash": "sha256-twXPFqFsrrY5r28Zh7Homgcp2gUMBgQ6WDS98Q/3xFI=",
         "owner": "NixOS",
@@ -34,10 +69,28 @@
         "type": "github"
       }
     },
+    "pdbd-bench": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792380754,
+        "narHash": "sha256-f64Ace2icckZ9AA8EjCh5ZhAaAAbWOGne0AgrcnlFrY=",
+        "owner": "sw2m",
+        "repo": "pdbd-bench",
+        "rev": "582cf5cd1469ba2e0b3af68aafa9b34f88e55748",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sw2m",
+        "repo": "pdbd-bench",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
+        "bencher": "bencher",
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs",
+        "nixpkgs": "nixpkgs_2",
+        "pdbd-bench": "pdbd-bench",
         "rust-overlay": "rust-overlay"
       }
     },

@@ -1,0 +1,16 @@
+[fixture]
+path = "fixture"  # a symlink to the pdbd-bench flake input, made by benchmark:link
+runner = "transport"
+
+[limits]
+cpu = 3  # a 4-vCPU GitHub runner: one for telemetry, two for the pairing, one left to the host
+memory = "2GiB"
+provision = "PT30M"
+run = 3600
+
+[params]
+repeat = 3
+duration = 10
+
+[artifacts]
+linkup = "linkup"  # the static musl build benchmark:link copies here
