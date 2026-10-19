@@ -210,7 +210,8 @@ fn extra() {
         ("STDIO:x", 6, Kind::Extra("x".into())),
         ("PTY:x", 4, Kind::Extra("x".into())),
         ("TCP:h:80:", 9, Kind::Blank),
-        ("TCP-LISTEN:80:", 14, Kind::Missing(Part::Port)),
+        ("TCP-LISTEN:h:", 13, Kind::Missing(Part::Port)),
+        ("TCP-LISTEN:80:", 11, Kind::Host("80".into())),
         ("VSOCK-LISTEN:1:", 15, Kind::Blank),
         ("STDIO:", 6, Kind::Blank),
     ]);

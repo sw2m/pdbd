@@ -25,7 +25,7 @@ impl Resource {
         let probe = format!("{}{s}", Self::PROBE);
         match fluent_uri::Uri::parse(probe.as_str()) {
             Ok(uri) if uri.fragment().is_none() => Ok(()),
-            Ok(_) => Err(s.find('#').unwrap_or(0)),
+            Ok(_) => Err(s.find('#').expect("a fragment has `#`")),
             Err(e) => Err(e.index() - Self::PROBE.len()),
         }
     }

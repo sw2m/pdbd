@@ -131,7 +131,15 @@ pub(crate) fn url(t: &Target) -> Option<String> {
     let (_, rest) = printed.split_once(':').expect("keyword");
     match host {
         Host::Name(name) if !name.as_str().is_ascii() => {
-            let label = idna::domain_to_ascii(name.as_str()).expect("a-label");
+            use idna::uts46::{AsciiDenyList, DnsLength, Hyphens, Uts46};
+            let label = Uts46::new()
+                .to_ascii(
+                    name.as_str().as_bytes(),
+                    AsciiDenyList::STD3,
+                    Hyphens::CheckFirstLast,
+                    DnsLength::VerifyAllowRootDot,
+                )
+                .expect("a-label");
             let rest = rest.strip_prefix(name.as_str()).expect("host first");
             Some(format!("{scheme}://{label}{rest}"))
         }

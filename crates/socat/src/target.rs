@@ -262,13 +262,17 @@ impl Target {
         let body = &joined[2..];
         let authority =
             &body[..body.find(['/', '?', '#']).unwrap_or(body.len())];
+        let at = start + 2;
+        let whole = || Error::new(at, Kind::Host(authority.into()));
+        if authority.contains('@') {
+            return Err(whole());
+        }
         let split = match authority.starts_with('[') {
-            true => authority.find(']').map_or(authority.len(), |i| i + 1),
+            true => authority.find(']').map(|i| i + 1).ok_or_else(whole)?,
             false => authority.find(':').unwrap_or(authority.len()),
         };
         let (host, port) = authority.split_at(split);
         let rest = &body[authority.len()..];
-        let at = start + 2;
         if host.is_empty() {
             return Err(Error::new(at, Kind::Missing(Part::Host)));
         }
@@ -291,15 +295,13 @@ impl Target {
                 2 + authority.len() + rest.find('#').unwrap_or(0),
             ));
         }
-        let parts = uri.authority().ok_or_else(bad)?;
-        if parts.userinfo().is_some() {
-            return Err(bad());
-        }
+        let parts = uri.authority().expect("the text has `//`");
         let host = match parts.host_parsed() {
             fluent_uri::component::Host::Ipv4(ip) => Host::V4(ip),
             fluent_uri::component::Host::Ipv6(ip) => Host::V6(ip, None),
             fluent_uri::component::Host::RegName(name) => {
-                Host::Name(Name::new(name.as_str()).ok_or_else(bad)?)
+                let decoded = Self::decode(name.decode()).ok_or_else(bad)?;
+                Host::Name(Name::new(&decoded).ok_or_else(bad)?)
             }
             _ => return Err(bad()),
         };
@@ -318,8 +320,21 @@ impl Target {
         Ok(Self::Web {
             web,
             inet: Inet::Connect { host, port },
-            resource: Resource::new(&resource).ok_or_else(bad)?,
+            resource: Resource::new(&resource).expect("parsed as a URI"),
         })
+    }
+
+    // https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2
+    fn decode(chunks: fluent_uri::pct_enc::Decode) -> Option<String> {
+        use fluent_uri::pct_enc::DecodedChunk;
+        let mut bytes = Vec::new();
+        for chunk in chunks {
+            match chunk {
+                DecodedChunk::Unencoded(s) => bytes.extend(s.bytes()),
+                DecodedChunk::PctDecoded(b) => bytes.push(b),
+            }
+        }
+        String::from_utf8(bytes).ok()
     }
 
     pub fn single(&self) -> bool {

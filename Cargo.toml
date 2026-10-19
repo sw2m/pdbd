@@ -30,7 +30,7 @@ idna = { version = "1", default-features = false, features = [
   "alloc",
   "compiled_data"
 ] }  # UTS #46 without std (#29)
-hostname-validator = "1"  # RFC 1123 host names, core only (#29)
+hostname-validator = "1"  # RFC 1123 host names without the idn feature, core only (#29)
 
 [patch.crates-io]
 ppproto = { git = "https://github.com/sw2m/ppproto", rev = "2a608947e49aa0c35ca8195dddf1d7167751c8aa" }  # #45: peer-input panics; drop once embassy-rs/ppproto#8 is released

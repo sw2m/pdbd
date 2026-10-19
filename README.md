@@ -97,14 +97,14 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 
 | Part | Standard | Checked by |
 | --- | --- | --- |
-| host name | RFC 1123 §2.1; with the default `idn` feature, UTS #46 nontransitional (so `bücher.de`, `BÜCHER.DE` and `xn--bcher-kva.de` are one host, printed in Unicode) | [`hostname-validator`](https://crates.io/crates/hostname-validator), [`idna`](https://crates.io/crates/idna) |
-| IPv4 / IPv6 | RFC 4291, RFC 5952 | `core::net` |
-| `%zone` | RFC 4007 §11 in the address form; RFC 9844 §6, 1–15 characters (Linux `IFNAMSIZ`) | — |
+| host name | RFC 1123 §2.1: letters, digits and hyphens, never an all-numeric top label (so `1`, `0x7f.1` and `01.2.3.4` are not names), and a root dot is kept (`a.` is not `a`); with the default `idn` feature, UTS #46 nontransitional (so `bücher.de`, `BÜCHER.DE` and `xn--bcher-kva.de` are one host, printed in Unicode) | [`hostname-validator`](https://crates.io/crates/hostname-validator), [`idna`](https://crates.io/crates/idna) |
+| IPv4 / IPv6 | strict dotted-decimal (RFC 1123 §2.1); RFC 4291, RFC 5952 | `core::net` |
+| `%zone` | RFC 4007 §11 in the address form; RFC 9844 §6 leaves the charset to us: 1–15 of `A-Z a-z 0-9 . - _` (Linux `IFNAMSIZ`), none of which the printer must quote | — |
 | service-name port | RFC 6335 §5.1 | — |
 | resource path | RFC 3986 `path-abempty [ "?" query ]` (RFC 6455 §3), no fragment | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
-| `ws://` / `wss://` / `https://` URL | RFC 3986, RFC 6455 §3, RFC 9110 §4.2.2; digits-only port, an IDN host as its A-label, no userinfo, no fragment, and no zone (RFC 9844 §3) | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
+| `ws://` / `wss://` / `https://` URL | RFC 3986, RFC 6455 §3, RFC 9110 §4.2.2; digits-only port, a percent-decoded host (RFC 3986 §3.2.2) that must then be a host name above, an IDN host as its A-label or percent-encoded, no userinfo, no IPvFuture, no fragment, and no zone (RFC 9844 §3) | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
 
-Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. All three crates build without `std` (#29).
+Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. The three libraries build without `std` (#29); the `socat` crate itself does not yet.
 
 Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement. **Deliberately unsupported, and rejected with a positioned error:**
 

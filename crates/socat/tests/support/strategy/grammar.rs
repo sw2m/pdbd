@@ -16,7 +16,10 @@ fn label(alnum: &'static str) -> impl Strategy<Value = String> {
     (
         chars(alnum, 1..=1),
         proptest::option::of((
-            chars("abcdefghijklmnopqrstuvwxyz0123456789-", 0..=6),
+            prop_oneof![
+                9 => chars("abcdefghijklmnopqrstuvwxyz0123456789-", 0..=6),
+                1 => chars("abcdefghijklmnopqrstuvwxyz0123456789-", 55..=62),
+            ],
             chars(alnum, 1..=1),
         )),
     )
@@ -33,8 +36,10 @@ pub(crate) fn name() -> impl Strategy<Value = Name> {
         prop_oneof![ascii, prop::collection::vec(label("abcéöü"), 1..=3)];
     #[cfg(not(feature = "idn"))]
     let labels = ascii;
-    labels
-        .prop_map(|l| l.join("."))
+    (labels, any::<bool>())
+        .prop_map(|(l, root)| {
+            format!("{}{}", l.join("."), if root { "." } else { "" })
+        })
         .prop_filter_map("not a name", |n| Name::new(&n))
 }
 

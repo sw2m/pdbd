@@ -17,14 +17,17 @@ pub enum Host {
 }
 
 impl Name {
+    // https://www.rfc-editor.org/rfc/rfc1123#section-2.1
     pub fn new(s: &str) -> Option<Self> {
-        if s.parse::<Ipv4Addr>().is_ok() {
+        let (bare, root) = s.strip_suffix('.').map_or((s, ""), |b| (b, "."));
+        let mapped = Self::map(bare)?;
+        let top = mapped.rsplit_once('.').map_or(mapped.as_str(), |(_, t)| t);
+        if top.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        Self::map(s).map(Self)
+        Some(Self(format!("{mapped}{root}")))
     }
 
-    // https://www.rfc-editor.org/rfc/rfc1123#section-2.1
     // https://www.unicode.org/reports/tr46/#Processing
     #[cfg(feature = "idn")]
     fn map(s: &str) -> Option<String> {
@@ -38,9 +41,6 @@ impl Name {
                 DnsLength::Verify,
             )
             .ok()?;
-        if !hostname_validator::is_valid(&ascii) {
-            return None;
-        }
         let (unicode, mapped) = uts46.to_unicode(
             ascii.as_bytes(),
             AsciiDenyList::STD3,
@@ -49,7 +49,6 @@ impl Name {
         mapped.ok().map(|()| unicode.into_owned())
     }
 
-    // https://www.rfc-editor.org/rfc/rfc1123#section-2.1
     #[cfg(not(feature = "idn"))]
     fn map(s: &str) -> Option<String> {
         (s.is_ascii() && hostname_validator::is_valid(s))
