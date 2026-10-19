@@ -117,6 +117,8 @@ Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`,
 - `!!` dual addresses (a literal `!!` is quoted when printed);
 - the `\0` escape: socat truncates its string there, and we refuse to copy that silent data loss;
 - socat's base-0 numbers (`010`, `0x50`, any `0`-led alphanumeric) for VSOCK ids and `max-children`;
+- socat's `inet_aton` host forms (`1`, `0x7f.1`, `01.2.3.4`): a name's top label is never all-numeric (RFC 1123 §2.1), so spell the dotted quad (`0.0.0.1`, `127.0.0.1`, `1.2.3.4`);
+- in a URL, userinfo, IPvFuture, a fragment, and an IPv6 zone (RFC 9844 §3: use the `TCP`-style form, `WS-CONNECT:[fe80::1%lo]:80`);
 - an empty positional parameter (`TCP:h:80:`, `STDIO:`); empty *option* fields are skipped instead.
 
 Adding one is a deliberate spec change here plus a consumer that opens it (#59, #60), not a parser tweak. Which forms the prior-art parsers accept, and how we compare, is in [`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md) and the `socat` benchmark.
