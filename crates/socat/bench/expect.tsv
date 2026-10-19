@@ -1,5 +1,5 @@
 # name	tags	quantity	op	bound
-# see crates/socat/CLAUDE.md §"Benchmark"
+# see README.md §"Benchmarks"
 parse	{}	rules	>=	1
 print	{}	rules	>=	1
 alternative	{}	verdict	==	"ok"

@@ -15,7 +15,7 @@ def cells: "\(.supported // 0) | \(.alternative // 0) | \(.rejected // 0)";
   "",
   (if ($report.errors | length) > 0 then "**Errors:** " + ([$report.errors[] | "\(.stage): \(.message)"] | join("; "))
    elif ($missed | length) == 0 then "**Every row matches `expect.tsv`.**"
-   else "**\($missed | length) rule(s) missed** — decide each, then `bencher bless` (crates/socat/CLAUDE.md §\"Benchmark\"):",
+   else "**\($missed | length) rule(s) missed** — decide each, then `bencher bless` (README.md §\"Benchmarks\"):",
      "",
      ($missed[:50][] | "- line \(.line): `\(.rule | gsub("\t"; " "))`" + (if .error then " — \(.error)" else "" end)
        + ([.checks[] | select(.pass | not) | " — \(.tags | tojson) is \(.actual | tojson)"] | .[:3] | join(""))),

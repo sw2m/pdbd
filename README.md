@@ -93,7 +93,20 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 | files | `FILE`, `OPEN`, `GOPEN` (distinct), or a bare path (= `GOPEN`) |
 | `EXEC`, `STDIO` (`-`), `PTY` | as in socat |
 
-Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address. **Deliberately unsupported, and rejected with a positioned error:** `TCP4`/`TCP6` and the other socat address families (`UDP-SENDTO`, `UDP-RECVFROM`, `UNIX-CLIENT`, `OPENSSL`, `SOCKS4`, `PROXY`, `SCTP`, `PIPE`, `SYSTEM`, `TUN`, …), `FD` and the numeric-FD shorthand, `!!` dual addresses, the `\0` escape (socat truncates there), and socat's base-0 numbers (`010`, `0x50`) for VSOCK ids and `max-children`.
+Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement. **Deliberately unsupported, and rejected with a positioned error:**
+
+- `TCP4`/`TCP6`/`UDP4`/`UDP6` family pins;
+- socat's datagram modes (`UDP-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM`, `UNIX-SENDTO`/`-RECVFROM`/`-RECV`/`-SEND`/`-CLIENT`, `ABSTRACT-SENDTO`/`-RECVFROM`/`-RECV`) and the generic `SOCKET-*`/`DATAGRAM`/`SENDTO` addresses;
+- `FD`, the numeric-FD shorthand, and `ACCEPT`/`ACCEPT-FD`;
+- `STDIN`/`STDOUT`/`STDERR`, `SYSTEM`/`SHELL`, `PIPE`/`FIFO`, `CREATE`;
+- `OPENSSL*` and `DTLS*`, `SOCKS*`, `PROXY`: secure and proxied pipes compose externally via `EXEC:` (see *Crypto*);
+- `SCTP`, `DCCP`, `UDPLITE`, `IP-*`, `TUN`, `INTERFACE`, `READLINE`, `POSIXMQ`;
+- `!!` dual addresses (a literal `!!` is quoted when printed);
+- the `\0` escape: socat truncates its string there, and we refuse to copy that silent data loss;
+- socat's base-0 numbers (`010`, `0x50`, any `0`-led alphanumeric) for VSOCK ids and `max-children`;
+- an empty positional parameter (`TCP:h:80:`, `STDIO:`); empty *option* fields are skipped instead.
+
+Adding one is a deliberate spec change here plus a consumer that opens it (#59, #60), not a parser tweak. Which forms the prior-art parsers accept, and how we compare, is in [`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md) and the `socat` benchmark.
 
 ### L2 — PPP, in userspace
 
@@ -756,9 +769,29 @@ in by extending it and committing a `bench/`. It resolves the crate from `$LEFTH
    crate's `### <crate>` section. bencher's report stays at `bench/report.json` (gitignored), the
    input `bencher bless` takes.
 
-`transport` has no `expect.tsv`, so its check fails only when bencher reports an error. `socat`'s
-`expect.tsv` is its expected-results matrix, so a difference fails it; a developer decides each
-difference and rewrites the matrix with `bencher bless` (crates/socat/CLAUDE.md §"Benchmark").
+`transport` has no `expect.tsv`, so its check fails only when bencher reports an error.
+
+**`socat`'s matrix.** `socat` races the dialect against the prior-art parsers
+([`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md)) on pdbd-bench's `socat` runner, as
+per-input verdicts, and its `expect.tsv` is the expected-results matrix, so any difference fails
+the check. Its `bench/` holds `bench.toml`, `expect.tsv`, `hand.jsonl` (hand-written corpus
+entries, one JSON string per line, `# section` lines naming their family), `alternatives.jsonl`
+(`[input, form]`: an input we reject and the form we accept instead) and `report.jq` (the oracles
+raced, class counts, missed rules, and coverage per corpus, per socat type family and per socat
+option group). `examples/verdict.rs` is ours in the race: one JSON string per line in,
+`{"ok": true, "canonical": …}` or `{"ok": false, "kind": …, "at": …}` out.
+
+- **A row's class follows from its rules.** `supported` is `parse {impl: ours} == "ok"` plus a
+  `print {input, canonical}` row, so a changed canonical print leaves a stale rule and fails;
+  `rejected` is `parse {impl: ours} == "err"`; `alternative` adds an `alternative {input, form}`
+  row that must be `"ok"`. Oracle rows record only verdicts, so a new oracle release fails the
+  check only when it changes one. `parse {} rules >= 1` and `print {} rules >= 1` count only exact
+  rules, so a new corpus entry or canonical print fails until someone decides it.
+- **Resolving a failure is a developer decision.** Run the crate's benchmark, then
+  `nix develop .#benchmark --no-update-lock-file -c bencher bless crates/socat/bench --report crates/socat/bench/report.json`,
+  which updates every exact rule and appends one for every undecided row. Read the diff and decide
+  each changed row: support it (a change to *L1 — the transport* and to the crate), reject it
+  deliberately, or add an alternative to `alternatives.jsonl`. Commit with the reason.
 
 ### Git hooks
 

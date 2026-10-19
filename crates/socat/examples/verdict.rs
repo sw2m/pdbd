@@ -1,4 +1,4 @@
-// see crates/socat/CLAUDE.md §"Benchmark"
+// see README.md §"Benchmarks"
 use std::io::{BufRead, Write};
 
 fn main() {
