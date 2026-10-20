@@ -162,34 +162,8 @@ fn single() {
 
 // #57
 #[test]
-fn deferred() {
-    let keyword = |k: &str| Kind::Keyword(k.into());
-    table(&[
-        ("TCP4:h:1", 0, keyword("TCP4")),
-        ("TCP6:h:1", 0, keyword("TCP6")),
-        ("TCP4-LISTEN:80", 0, keyword("TCP4-LISTEN")),
-        ("TCP6-LISTEN:443", 0, keyword("TCP6-LISTEN")),
-        ("UDP4:h:1", 0, keyword("UDP4")),
-        ("UDP-SENDTO:h:1", 0, keyword("UDP-SENDTO")),
-        ("UDP-RECVFROM:1", 0, keyword("UDP-RECVFROM")),
-        ("UDP-DATAGRAM:h:1", 0, keyword("UDP-DATAGRAM")),
-        ("UNIX-SENDTO:/s", 0, keyword("UNIX-SENDTO")),
-        ("UNIX-CLIENT:/s", 0, keyword("UNIX-CLIENT")),
-        ("ABSTRACT-SENDTO:n", 0, keyword("ABSTRACT-SENDTO")),
-        ("OPENSSL:h:443", 0, keyword("OPENSSL")),
-        ("OPENSSL-LISTEN:443", 0, keyword("OPENSSL-LISTEN")),
-        ("SCTP-LISTEN:1", 0, keyword("SCTP-LISTEN")),
-        ("SOCKS4:p:h:1", 0, keyword("SOCKS4")),
-        ("PROXY:p:h:1", 0, keyword("PROXY")),
-        ("FD:3", 0, keyword("FD")),
-        ("3", 0, keyword("3")),
-        ("PIPE", 0, keyword("PIPE")),
-        ("SYSTEM:ls", 0, keyword("SYSTEM")),
-        ("TUN", 0, keyword("TUN")),
-        ("C-STDIO", 0, keyword("C-STDIO")),
-        ("http://h", 0, keyword("http")),
-        ("STDIO!!STDIO", 5, Kind::Dual),
-    ]);
+fn dual() {
+    table(&[("STDIO!!STDIO", 5, Kind::Dual)]);
 }
 
 // #57

@@ -1,3 +1,4 @@
+use crate::Exclusion;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,6 +9,8 @@ pub enum Part {
     Command,
     Cid,
     Name,
+    Address,
+    Bits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +34,10 @@ pub enum Kind {
     Resource(String),
     Nul,
     Blank,
+    Excluded(Exclusion),
+    Deferred(u32),
+    Hex(String),
+    Bits(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +61,8 @@ impl fmt::Display for Part {
             Self::Command => "command",
             Self::Cid => "vsock cid",
             Self::Name => "name",
+            Self::Address => "socket address",
+            Self::Bits => "prefix length",
         })
     }
 }
@@ -82,6 +91,10 @@ impl fmt::Display for Kind {
             Self::Resource(r) => write!(f, "invalid resource path {r:?}"),
             Self::Nul => write!(f, "\\0 escape (socat truncates there)"),
             Self::Blank => write!(f, "empty parameter"),
+            Self::Excluded(why) => write!(f, "excluded address type ({why})"),
+            Self::Deferred(n) => write!(f, "address type deferred to #{n}"),
+            Self::Hex(h) => write!(f, "invalid hex socket address {h:?}"),
+            Self::Bits(b) => write!(f, "invalid prefix length {b:?}"),
         }
     }
 }
