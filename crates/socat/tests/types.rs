@@ -47,19 +47,47 @@ fn datagrams() {
 #[test]
 fn generic() {
     same(&[
-        ("socket-connect:1:0:2f746d70", "SOCKET-CONNECT:1:0:2f746d70"),
-        ("SOCKET-LISTEN:1:0:2F746D70", "SOCKET-LISTEN:1:0:2f746d70"),
-        ("socket-sendto:2:2:17:0035", "SOCKET-SENDTO:2:2:17:0035"),
-        ("socket-recvfrom:2:2:17:0035", "SOCKET-RECVFROM:2:2:17:0035"),
-        ("socket-recv:2:2:17:0035", "SOCKET-RECV:2:2:17:0035"),
-        ("socket-datagram:2:2:17:0035", "SOCKET-DATAGRAM:2:2:17:0035"),
+        (
+            "socket-connect:1:0:x2f746d70",
+            "SOCKET-CONNECT:1:0:x2f746d70",
+        ),
+        ("SOCKET-LISTEN:1:0:x2F746D70", "SOCKET-LISTEN:1:0:x2f746d70"),
+        (
+            "socket-datagram:2:2:17:x007bxc0a80100x0000000000000000",
+            "SOCKET-DATAGRAM:2:2:17:x007bxc0a80100x0000000000000000",
+        ),
+        (
+            "socket-sendto:2:2:17:S53x7f000001",
+            "SOCKET-SENDTO:2:2:17:S53x7f000001",
+        ),
+        (
+            "socket-recvfrom:2:2:17:'x00 x01'",
+            "SOCKET-RECVFROM:2:2:17:x00x01",
+        ),
+        ("socket-recv:2:2:17:i-1B7", "SOCKET-RECV:2:2:17:i-1B7"),
+        (
+            r#"SOCKET-CONNECT:1:0:'"/tmp/s"'"#,
+            r#"SOCKET-CONNECT:1:0:'"/tmp/s"'"#,
+        ),
+        (r#"SOCKET-CONNECT:1:0:"'a'""#, r#"SOCKET-CONNECT:1:0:"'a'""#),
     ]);
     table(&[
-        ("SOCKET-CONNECT:1:0:2f7", 19, Kind::Hex("2f7".into())),
-        ("SOCKET-CONNECT:1:0:xy", 19, Kind::Hex("xy".into())),
+        (
+            "SOCKET-CONNECT:1:0:2f746d70",
+            19,
+            Kind::Dalan("2f746d70".into()),
+        ),
+        ("SOCKET-CONNECT:1:0:x2f7", 19, Kind::Dalan("x2f7".into())),
+        (
+            "SOCKET-CONNECT:1:0:127.0.0.1",
+            19,
+            Kind::Dalan("127.0.0.1".into()),
+        ),
+        ("SOCKET-CONNECT:1:0:B256", 19, Kind::Dalan("B256".into())),
+        ("SOCKET-CONNECT:1:0:X2f", 19, Kind::Dalan("X2f".into())),
         ("SOCKET-CONNECT:1:0", 18, Kind::Missing(Part::Address)),
-        ("SOCKET-CONNECT:010:0:2f", 15, Kind::Base("010".into())),
-        ("SOCKET-CONNECT:1:2:33:2f", 22, Kind::Extra("2f".into())),
+        ("SOCKET-CONNECT:010:0:x2f", 15, Kind::Base("010".into())),
+        ("SOCKET-CONNECT:1:2:x33:x2f", 22, Kind::Extra("x2f".into())),
         ("SOCKET-SENDTO:2:2:17", 20, Kind::Missing(Part::Address)),
     ]);
 }
@@ -126,7 +154,7 @@ fn streams() {
         ("stderr", "STDERR"),
         ("create:/tmp/x", "CREATE:/tmp/x"),
         ("OPEN:/f,rdonly", "OPEN:/f,rdonly"),
-        ("FILE:/f,WRONLY", "FILE:/f,wronly"),
+        ("FILE:/f,WRONLY", "OPEN:/f,wronly"),
     ]);
     table(&[
         ("STDIN:x", 6, Kind::Extra("x".into())),

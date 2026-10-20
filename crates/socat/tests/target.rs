@@ -54,7 +54,7 @@ fn prefixes() {
         ("l-vsock:9", "VSOCK-LISTEN:9"),
         ("l-abstract:n", "ABSTRACT-LISTEN:n"),
         ("connect-abstract:n", "ABSTRACT-CONNECT:n"),
-        ("UNIX:/s", "UNIX-CONNECT:/s"),
+        ("UNIX:/s", "UNIX-CLIENT:/s"),
         ("local:/s", "UNIX-CONNECT:/s"),
     ]);
 }
@@ -81,7 +81,7 @@ fn hostless() {
 // #57
 #[test]
 fn files() {
-    assert_eq!(exec("FILE:/x"), Target::File(text("/x")));
+    assert_eq!(exec("FILE:/x"), Target::Open(text("/x")));
     assert_eq!(exec("OPEN:/x"), Target::Open(text("/x")));
     assert_eq!(exec("GOPEN:/x"), Target::Gopen(text("/x")));
     let bare = [
@@ -101,7 +101,7 @@ fn files() {
         ("/dev/ttyS0,RAW", "GOPEN:/dev/ttyS0,raw"),
         ("/a:b", "GOPEN:'/a:b'"),
         ("OPEN:/x", "OPEN:/x"),
-        ("FILE:/a:b", "FILE:'/a:b'"),
+        ("FILE:/a:b", "OPEN:'/a:b'"),
     ]);
 }
 
@@ -171,7 +171,7 @@ fn single() {
         ("TEXT:x", true),
         ("UDP-RECV:9", true),
         ("UNIX-RECV:/s", true),
-        ("SOCKET-RECV:2:2:17:0035", true),
+        ("SOCKET-RECV:2:2:17:x0035", true),
         ("UDP-RECVFROM:9", false),
         ("UDP-SENDTO:h:9", false),
         ("IP-DATAGRAM:h:47", false),

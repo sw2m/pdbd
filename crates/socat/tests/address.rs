@@ -18,7 +18,7 @@ fn transports() {
         (
             "FILE:/dev/ttyS0,b115200,raw",
             plain(
-                Target::File(text("/dev/ttyS0")),
+                Target::Open(text("/dev/ttyS0")),
                 vec![opt("b115200", None), opt("raw", None)],
             ),
         ),
@@ -116,7 +116,7 @@ fn forms() {
             "TCP-LISTEN:8080,mux,max-children=4",
         ),
         ("UDP-LISTEN:53,mux", "UDP-LISTEN:53,mux"),
-        ("FILE:/dev/ttyUSB0,b115200,raw", "FILE:/dev/ttyUSB0,b115200,raw"),
+        ("FILE:/dev/ttyUSB0,b115200,raw", "OPEN:/dev/ttyUSB0,b115200,raw"),
         (
             "WSS-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key",
             "WSS-LISTEN:0.0.0.0:443,cert=server.pem,key=server.key",
