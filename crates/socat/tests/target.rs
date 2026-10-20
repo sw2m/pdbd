@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use socat::{Address, Error, Inet, Kind, Mode, Net, Part, Target, Vsock};
 use std::num::NonZeroU32;
 use support::fixture::{exec, num, parse, same, table, text};
-use support::strategy::keywords;
+use support::strategy::{excluded, keywords};
 
 // #57
 #[test]
@@ -344,7 +344,7 @@ proptest! {
     // #57
     #[test]
     fn unknown(k in "[A-Z][A-Z0-9-]{0,10}") {
-        prop_assume!(!keywords().contains(&k));
+        prop_assume!(!keywords().contains(&k) && !excluded(&k));
         prop_assert_eq!(
             Address::parse(&format!("{k}:x")),
             Err(Error::new(0, Kind::Keyword(k.clone())))

@@ -246,3 +246,91 @@ fn excluded() {
         ("http://h", 0, Kind::Keyword("http".into())),
     ]);
 }
+
+// #57 v2.1 review (K3): arity, dalan continuation, offsets, boundaries
+#[test]
+fn review() {
+    same(&[
+        (
+            "socket-connect:1:0:'x2f74 6d70'",
+            "SOCKET-CONNECT:1:0:x2f746d70",
+        ),
+        (
+            "socket-connect:1:0:'x2f74 x6d70'",
+            "SOCKET-CONNECT:1:0:x2f746d70",
+        ),
+        ("SOCKET-SENDTO:2:2:17:'i1 2'", "SOCKET-SENDTO:2:2:17:i1i2"),
+        ("SOCKET-SENDTO:2:2:17:'i1 -2'", "SOCKET-SENDTO:2:2:17:i1i-2"),
+        (
+            "SOCKET-SENDTO:2:2:17:'S53 x7f000001'",
+            "SOCKET-SENDTO:2:2:17:S53x7f000001",
+        ),
+        ("SOCKET-CONNECT:1:0:'x0a b1'", "SOCKET-CONNECT:1:0:'x0a b1'"),
+        ("SOCKET-CONNECT:1:0:'x0a 0b'", "SOCKET-CONNECT:1:0:x0a0b"),
+        ("SOCKET-CONNECT:1:0:b127", "SOCKET-CONNECT:1:0:b127"),
+        ("SOCKET-CONNECT:1:0:b-128", "SOCKET-CONNECT:1:0:b-128"),
+        ("SOCKET-CONNECT:1:0:B255", "SOCKET-CONNECT:1:0:B255"),
+        (
+            "SOCKET-CONNECT:1:0:L18446744073709551615",
+            "SOCKET-CONNECT:1:0:L18446744073709551615",
+        ),
+        (
+            r#"SOCKET-CONNECT:1:0:'"a\nb"'"#,
+            r#"SOCKET-CONNECT:1:0:'"a\nb"'"#,
+        ),
+        ("POSIXMQ-WRITE:/q,fork", "POSIXMQ-WRITE:/q,mux"),
+    ]);
+    let dalan = |s: &str| Kind::Dalan(s.into());
+    table(&[
+        ("FD:3:4", 5, Kind::Extra("4".into())),
+        ("ACCEPT-FD:0:x", 12, Kind::Extra("x".into())),
+        ("ACCEPT:0:x", 9, Kind::Extra("x".into())),
+        ("SOCKET-CONNECT:1:0:x00zz", 22, dalan("x00zz")),
+        ("SOCKET-CONNECT:1:0:'x00 zz'", 23, dalan("x00 zz")),
+        ("SOCKET-CONNECT:1:0:b128", 19, dalan("b128")),
+        ("SOCKET-CONNECT:1:0:I-1", 19, dalan("I-1")),
+        ("SOCKET-CONNECT:1:0:i01", 19, dalan("i01")),
+        (
+            "SOCKET-CONNECT:1:0:L18446744073709551616",
+            19,
+            dalan("L18446744073709551616"),
+        ),
+        (
+            "SOCKET-CONNECT:1:0:'x00\u{a0}x01'",
+            22,
+            dalan("x00\u{a0}x01"),
+        ),
+        ("SOCKET-CONNECT:1:0:", 19, Kind::Missing(Part::Address)),
+        ("TUN:10.0.0.1/24:x", 16, Kind::Extra("x".into())),
+        ("TUN:fe80::1/64", 4, Kind::Host("fe80".into())),
+        ("POSIXMQ-READ:q", 13, Kind::Queue("q".into())),
+        ("POSIXMQ:q", 8, Kind::Queue("q".into())),
+    ]);
+}
+
+// #57 v2.1 review (K3): composition is for genuine stream roots, not aliases or SOCKET/SOCKS5
+#[test]
+fn composed() {
+    same(&[
+        ("TCP-C:h:1", "TCP-CONNECT:h:1"),
+        ("SCTP-C:h:1", "SCTP-CONNECT:h:1"),
+        ("L-UDPLITE:1", "UDPLITE-LISTEN:1"),
+        ("INET-L:1", "TCP-LISTEN:1"),
+        ("SOCKS5-LISTEN:p:h:1", "SOCKS5-LISTEN:p:h:1"),
+    ]);
+    let keyword = |k: &str| Kind::Keyword(k.into());
+    table(&[
+        ("LOCAL-L:/s", 0, keyword("LOCAL-L")),
+        ("LOCAL-CONNECT:/s", 0, keyword("LOCAL-CONNECT")),
+        ("L-LOCAL:/s", 0, keyword("L-LOCAL")),
+        ("INET-C:h:1", 0, keyword("INET-C")),
+        ("INET-CONNECT:h:1", 0, keyword("INET-CONNECT")),
+        ("C-INET:h:1", 0, keyword("C-INET")),
+        ("SOCKS5-L:p:h:1", 0, keyword("SOCKS5-L")),
+        ("L-SOCKS5:p:h:1", 0, keyword("L-SOCKS5")),
+        ("SOCKS5-C:p:h:1", 0, keyword("SOCKS5-C")),
+        ("SOCKET-C:1:0:x2f", 0, keyword("SOCKET-C")),
+        ("C-SOCKET:1:0:x2f", 0, keyword("C-SOCKET")),
+        ("L-SOCKET:1:0:x2f", 0, keyword("L-SOCKET")),
+    ]);
+}

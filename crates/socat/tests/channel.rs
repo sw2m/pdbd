@@ -104,3 +104,24 @@ fn unlinked() {
         assert!(!r.pairs(), "{r:?}");
     }
 }
+
+// #57 v2.1 review (K3): per-half gating, the write half's offsets, FromStr
+#[test]
+fn halves() {
+    assert_eq!(
+        parse("TCP-LISTEN:80,mux!!STDOUT").to_string(),
+        "TCP-LISTEN:80,mux!!STDOUT"
+    );
+    assert_eq!(
+        fail("STDIN!!TCP:h:1,mux"),
+        Error::new(15, Kind::Option("mux".into()))
+    );
+    assert_eq!(
+        fail("STDIN!!TCP:h:99999"),
+        Error::new(13, Kind::Port("99999".into()))
+    );
+    assert_eq!(
+        "STDIN!!STDOUT".parse::<Channel>(),
+        Channel::parse("STDIN!!STDOUT")
+    );
+}

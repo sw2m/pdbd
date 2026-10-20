@@ -42,6 +42,7 @@ pub enum Kind {
     Excluded(Exclusion),
     Deferred(u32),
     Dalan(String),
+    Queue(String),
     Bits(String),
     Number(String),
 }
@@ -108,6 +109,7 @@ impl fmt::Display for Kind {
             Self::Deferred(n) => write!(f, "address type deferred to #{n}"),
             Self::Dalan(d) => write!(f, "invalid socket address {d:?}: socat's dalan (x<hex>, i<int>, \"<string>\", ...)"),
             Self::Bits(b) => write!(f, "invalid prefix length {b:?}"),
+            Self::Queue(q) => write!(f, "invalid message queue name {q:?}: it starts with /"),
             Self::Number(n) => write!(f, "invalid number {n:?}"),
         }
     }
