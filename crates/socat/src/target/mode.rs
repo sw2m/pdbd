@@ -12,6 +12,10 @@ pub enum Mode {
 }
 
 impl Mode {
+    pub(crate) fn stream(self) -> bool {
+        matches!(self, Self::Connect | Self::Listen)
+    }
+
     pub(crate) fn suffix(word: &str) -> Option<Self> {
         match word {
             "SENDTO" => Some(Self::Sendto),

@@ -24,6 +24,7 @@ use std::fmt;
 use std::net::Ipv4Addr;
 
 const DEFERRED: u32 = 80; // INTERFACE, raw Ethernet frames: sw2m/pdbd#80
+const QUEUE: usize = 255; // NAME_MAX, the slash included: mq_overview(7)
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -184,7 +185,7 @@ impl Target {
             let inet = Inet::parse(params, mode)?;
             Ok(Self::Net { net, inet })
         };
-        let stream = matches!(mode, Mode::Connect | Mode::Listen);
+        let stream = mode.stream();
         Ok(match root {
             Root::Unix => Self::Unix {
                 mode,
@@ -238,7 +239,7 @@ impl Target {
 
     fn socket(mode: Mode, params: &Params) -> Result<Self, Error> {
         let domain = params.number(0, Part::Domain)?;
-        let stream = matches!(mode, Mode::Connect | Mode::Listen);
+        let stream = mode.stream();
         let kind = match stream {
             true => None,
             false => Some(params.number(1, Part::Type)?),
@@ -303,21 +304,18 @@ impl Target {
         let Some(tok) = params.tokens().first() else {
             return Ok(Self::Tun(None));
         };
-        if params.len() > 1 && !tok.text.contains('/') {
+        if tok.text.is_empty() {
+            return Err(tok.fail(Kind::Blank));
+        }
+        let Some((addr, bits)) = tok.text.split_once('/') else {
             return Err(match Host::parse(tok) {
                 Ok(Host::V4(_)) => {
                     Error::new(tok.end, Kind::Missing(Part::Bits))
                 }
                 _ => tok.fail(Kind::Host(tok.text.clone())),
             });
-        }
-        params.done(1)?;
-        if tok.text.is_empty() {
-            return Err(tok.fail(Kind::Blank));
-        }
-        let Some((addr, bits)) = tok.text.split_once('/') else {
-            return Err(Error::new(tok.end, Kind::Missing(Part::Bits)));
         };
+        params.done(1)?;
         let ip = match Host::parse(&Token::new(addr, tok.at)) {
             Ok(Host::V4(ip)) => ip,
             _ => return Err(tok.fail(Kind::Host(addr.into()))),
@@ -329,17 +327,55 @@ impl Target {
         Ok(tun)
     }
 
-    // see mq_overview(7): a queue name is "/somename"
     pub(crate) fn check(&self) -> Result<(), Kind> {
-        match self {
-            Self::Mq { name, .. } if !name.as_str().starts_with('/') => {
-                Err(Kind::Queue(name.as_str().into()))
+        let consistent = match self {
+            Self::Mq { name, .. } => {
+                let name = name.as_str();
+                let rest = name.strip_prefix('/').unwrap_or_default();
+                let queue = !rest.is_empty()
+                    && !rest.contains('/')
+                    && name.len() <= QUEUE;
+                return queue
+                    .then_some(())
+                    .ok_or_else(|| Kind::Queue(name.into()));
             }
             Self::Tun(Some((_, bits))) if *bits > 32 => {
-                Err(Kind::Bits(bits.to_string()))
+                return Err(Kind::Bits(bits.to_string()));
             }
-            _ => Ok(()),
-        }
+            Self::Unix { mode, .. } => Root::Unix.modes().contains(mode),
+            Self::Abstract { mode, .. } => {
+                Root::Abstract.modes().contains(mode)
+            }
+            Self::Gram {
+                gram,
+                mode,
+                host,
+                point,
+            } => {
+                let addressed = matches!(mode, Mode::Sendto | Mode::Datagram);
+                let ip = matches!(point, Point::Protocol(_));
+                !mode.stream()
+                    && Root::from(*gram).modes().contains(mode)
+                    && host.is_some() == addressed
+                    && ip == (*gram == Gram::Ip)
+            }
+            Self::Socket { mode, kind, .. } => {
+                Root::Socket.modes().contains(mode)
+                    && kind.is_some() != mode.stream()
+            }
+            Self::Socks {
+                socks: Socks::V5,
+                mode,
+                ..
+            } => Root::Socks5.modes().contains(mode),
+            Self::Socks { mode, via, .. } => {
+                *mode == Mode::Connect && via.is_none()
+            }
+            _ => true,
+        };
+        consistent
+            .then_some(())
+            .ok_or_else(|| Kind::Mismatch(self.to_string()))
     }
 
     pub fn single(&self) -> bool {

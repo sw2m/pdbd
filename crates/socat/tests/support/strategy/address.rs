@@ -177,9 +177,12 @@ pub(crate) fn extra() -> impl Strategy<Value = Target> {
         Just(Target::Stderr),
         proptest::option::of(texts()).prop_map(Target::Pipe),
         Just(Target::Socketpair),
-        (mq(), texts()).prop_map(|(mq, name)| Target::Mq {
-            mq,
-            name: Text::new(format!("/{}", name.as_str())).expect("queue"),
+        (mq(), texts()).prop_filter_map("queue", |(mq, name)| {
+            let name: String =
+                name.as_str().replace('/', "").chars().take(64).collect();
+            let name =
+                Text::new(format!("/{name}")).filter(|_| !name.is_empty())?;
+            Some(Target::Mq { mq, name })
         }),
         proptest::option::of((any::<u32>(), 0u8..=32)).prop_map(|t| {
             Target::Tun(t.map(|(ip, b)| (Ipv4Addr::from(ip), b)))

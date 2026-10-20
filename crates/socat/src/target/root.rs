@@ -1,4 +1,4 @@
-use crate::{Exclusion, Mode};
+use crate::{Exclusion, Gram, Mode};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,16 @@ const LOCAL: &[Mode] = &[
     Mode::Recv,
     Mode::Client,
 ];
+
+impl From<Gram> for Root {
+    fn from(gram: Gram) -> Self {
+        match gram {
+            Gram::Udp => Self::Udp,
+            Gram::Udplite => Self::Udplite,
+            Gram::Ip => Self::Ip,
+        }
+    }
+}
 
 impl Root {
     fn word(word: &str) -> Option<(Self, Option<Mode>)> {
@@ -92,7 +102,7 @@ impl Root {
         }
     }
 
-    fn modes(self) -> &'static [Mode] {
+    pub(crate) fn modes(self) -> &'static [Mode] {
         match self {
             Self::Udp | Self::Udplite | Self::Socket => GRAM,
             Self::Ip => RAW,
