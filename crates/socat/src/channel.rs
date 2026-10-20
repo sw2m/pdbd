@@ -1,5 +1,6 @@
 use crate::{Address, Error, Half, Kind, Nature, Reason, Unlinked};
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Channel {
@@ -57,7 +58,7 @@ impl fmt::Display for Channel {
     }
 }
 
-impl std::str::FromStr for Channel {
+impl FromStr for Channel {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Error> {

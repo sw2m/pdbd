@@ -162,10 +162,7 @@ impl Target {
                 return Err(keyword.fail(Kind::Excluded(Exclusion::Openssl)));
             }
             u => match Mq::word(u) {
-                Some(mq) => Self::Mq {
-                    mq,
-                    name: Self::queue(&params)?,
-                },
+                Some(mq) => Self::queue(mq, &params)?,
                 None => Self::modal(keyword, u, &params)?,
             },
         })
@@ -284,16 +281,13 @@ impl Target {
         })
     }
 
-    // see mq_overview(7): a queue name is "/somename"
-    fn queue(params: &Params) -> Result<Text, Error> {
+    fn queue(mq: Mq, params: &Params) -> Result<Self, Error> {
         let name = params.text(Part::Name)?;
-        match name.as_str().starts_with('/') {
-            true => Ok(name),
-            false => Err(Error::new(
-                params.tokens()[0].at,
-                Kind::Queue(name.as_str().into()),
-            )),
-        }
+        let queue = Self::Mq { mq, name };
+        queue
+            .check()
+            .map_err(|k| Error::new(params.tokens()[0].at, k))?;
+        Ok(queue)
     }
 
     fn proxy(params: &Params) -> Result<Self, Error> {
@@ -310,7 +304,12 @@ impl Target {
             return Ok(Self::Tun(None));
         };
         if params.len() > 1 && !tok.text.contains('/') {
-            return Err(tok.fail(Kind::Host(tok.text.clone())));
+            return Err(match Host::parse(tok) {
+                Ok(Host::V4(_)) => {
+                    Error::new(tok.end, Kind::Missing(Part::Bits))
+                }
+                _ => tok.fail(Kind::Host(tok.text.clone())),
+            });
         }
         params.done(1)?;
         if tok.text.is_empty() {
@@ -325,10 +324,22 @@ impl Target {
         };
         let at = tok.at + addr.len() + 1;
         let n: u8 = Token::new(bits, at).exact(Part::Bits, Kind::Bits)?;
-        if n > 32 {
-            return Err(Error::new(at, Kind::Bits(bits.into())));
+        let tun = Self::Tun(Some((ip, n)));
+        tun.check().map_err(|k| Error::new(at, k))?;
+        Ok(tun)
+    }
+
+    // see mq_overview(7): a queue name is "/somename"
+    pub(crate) fn check(&self) -> Result<(), Kind> {
+        match self {
+            Self::Mq { name, .. } if !name.as_str().starts_with('/') => {
+                Err(Kind::Queue(name.as_str().into()))
+            }
+            Self::Tun(Some((_, bits))) if *bits > 32 => {
+                Err(Kind::Bits(bits.to_string()))
+            }
+            _ => Ok(()),
         }
-        Ok(Self::Tun(Some((ip, n))))
     }
 
     pub fn single(&self) -> bool {

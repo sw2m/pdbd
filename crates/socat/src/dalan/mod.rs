@@ -85,10 +85,7 @@ impl Dalan {
             hex.push(h);
             chars.next();
         }
-        if hex.is_empty()
-            || hex.len() % 2 != 0
-            || !hex.bytes().all(|b| b.is_ascii_hexdigit())
-        {
+        if hex.is_empty() || hex.len() % 2 != 0 {
             return None;
         }
         let bytes = (0..hex.len())

@@ -95,7 +95,7 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 | descriptors | `FD:<n>` and its bare shorthand (`3`), `ACCEPT-FD` (alias `ACCEPT`) |
 | processes | `EXEC`, `SYSTEM`, `SHELL` (its command optional) |
 | files and streams | `OPEN` (alias `FILE`) and `GOPEN` (distinct), a bare path (= `GOPEN`), `CREATE`; `STDIO` (`-`), `STDIN`, `STDOUT`, `STDERR`, `PTY` |
-| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL`, `POSIXMQ`, each naming a queue that begins with `/` |
+| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL` and `POSIXMQ`, whose queue name begins with `/` |
 | others | `TUN[:<IPv4>/<bits>]`, `READLINE`, `STALL`, `TEXT` |
 | dual | `<read>!!<write>`: two single addresses, the first read from and the second written to, each with its own options |
 

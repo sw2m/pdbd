@@ -12,6 +12,7 @@ pub struct Address {
 
 impl Address {
     pub fn new(target: Target, options: Options) -> Result<Self, Kind> {
+        target.check()?;
         let typed = options.mux() || options.cap().is_some();
         if typed && !target.forks() {
             return Err(Kind::Option("mux".into()));
