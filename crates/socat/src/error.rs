@@ -44,6 +44,7 @@ pub enum Kind {
     Dalan(String),
     Queue(String),
     Bits(String),
+    Mismatch(String),
     Number(String),
 }
 
@@ -111,6 +112,9 @@ impl fmt::Display for Kind {
             Self::Bits(b) => write!(f, "invalid prefix length {b:?}"),
             Self::Queue(q) => write!(f, "invalid message queue name {q:?}: it starts with /"),
             Self::Number(n) => write!(f, "invalid number {n:?}"),
+            Self::Mismatch(t) => {
+                write!(f, "inconsistent target {t:?}: it would not parse back")
+            }
         }
     }
 }

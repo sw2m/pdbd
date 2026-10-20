@@ -44,6 +44,10 @@ pub(crate) fn local() -> impl Strategy<Value = Mode> {
     ]
 }
 
+pub(crate) fn every() -> impl Strategy<Value = Mode> {
+    prop_oneof![local(), Just(Mode::Datagram)]
+}
+
 pub(crate) fn datagram() -> impl Strategy<Value = Mode> {
     prop_oneof![
         Just(Mode::Sendto),
@@ -264,5 +268,81 @@ pub(crate) fn addresses() -> impl Strategy<Value = Address> {
             )
             .expect("valid options");
             Address::new(target, options).expect("valid address")
+        })
+}
+
+pub(crate) fn loose() -> impl Strategy<Value = Target> {
+    (
+        target(),
+        every(),
+        any::<(bool, bool)>(),
+        any::<u8>(),
+        texts(),
+    )
+        .prop_map(|(t, m, (a, b), n, s)| match t {
+            Target::Unix { path, .. } => Target::Unix { mode: m, path },
+            Target::Abstract { name, .. } => Target::Abstract { mode: m, name },
+            Target::Gram {
+                gram, host, point, ..
+            } => Target::Gram {
+                gram,
+                mode: m,
+                host: match a {
+                    true => host.xor(Some(Host::V4(Ipv4Addr::LOCALHOST))),
+                    false => host,
+                },
+                point: match (b, point) {
+                    (true, Point::Port(_)) => Point::Protocol(n),
+                    (true, Point::Protocol(p)) => {
+                        Point::Port(Port::Number(p.into()))
+                    }
+                    (false, p) => p,
+                },
+            },
+            Target::Socket {
+                domain,
+                kind,
+                protocol,
+                address,
+                ..
+            } => Target::Socket {
+                mode: m,
+                domain,
+                kind: match a {
+                    true => kind.xor(Some(n.into())),
+                    false => kind,
+                },
+                protocol,
+                address,
+            },
+            Target::Socks {
+                socks,
+                server,
+                via,
+                host,
+                port,
+                ..
+            } => Target::Socks {
+                socks,
+                mode: m,
+                server,
+                via: match a {
+                    true => via.xor(Some(Port::Number(1080))),
+                    false => via,
+                },
+                host,
+                port,
+            },
+            Target::Mq { mq, .. } => Target::Mq {
+                mq,
+                name: match a {
+                    true => s,
+                    false => {
+                        Text::new(format!("/{}", s.as_str())).expect("text")
+                    }
+                },
+            },
+            Target::Tun(Some((ip, _))) => Target::Tun(Some((ip, n))),
+            t => t,
         })
 }

@@ -2,13 +2,13 @@ mod support;
 
 use proptest::prelude::*;
 use socat::{
-    Address, Host, Inet, Kind, Mode, Mq, Name, Net, Opt, Options, Part,
-    Resource, Service, Target, Text, Unchecked, Vsock, Web, Zone,
+    Address, Gram, Host, Inet, Kind, Mode, Mq, Name, Net, Opt, Options, Part,
+    Point, Resource, Service, Socks, Target, Text, Unchecked, Vsock, Web, Zone,
 };
 use std::net::Ipv4Addr;
 use std::num::NonZeroU32;
 use support::fixture::{fail, name, num, opt, parse, plain, table, text, web};
-use support::strategy::{addresses, check, edit, respell, spelling};
+use support::strategy::{addresses, check, edit, loose, respell, spelling};
 
 // #57
 #[test]
@@ -330,10 +330,63 @@ fn invariants() {
         Address::new(tun, Options::default()),
         Err(Kind::Bits("33".into()))
     );
+    for name in ["/", "/a/b", &format!("/{}", "a".repeat(255))] {
+        let queue = Target::Mq {
+            mq: Mq::Read,
+            name: text(name),
+        };
+        assert_eq!(
+            Address::new(queue, Options::default()),
+            Err(Kind::Queue(name.into())),
+            "{name:?}"
+        );
+    }
+    let lo = Host::V4(Ipv4Addr::LOCALHOST);
+    let socks = Target::Socks {
+        socks: Socks::V4,
+        mode: Mode::Listen,
+        server: lo.clone(),
+        via: None,
+        host: lo.clone(),
+        port: num(80),
+    };
+    let ip = Target::Gram {
+        gram: Gram::Ip,
+        mode: Mode::Recv,
+        host: None,
+        point: Point::Port(num(80)),
+    };
+    let udp = Target::Gram {
+        gram: Gram::Udp,
+        mode: Mode::Recv,
+        host: None,
+        point: Point::Protocol(6),
+    };
+    let unix = Target::Unix {
+        mode: Mode::Datagram,
+        path: text("/tmp/x"),
+    };
+    for t in [socks, ip, udp, unix] {
+        let printed = t.to_string();
+        assert_eq!(
+            Address::new(t, Options::default()),
+            Err(Kind::Mismatch(printed.clone())),
+            "{printed:?}"
+        );
+    }
 }
 
 proptest! {
     #![proptest_config(support::strategy::config())]
+
+    // #57
+    #[test]
+    fn gated(t in loose()) {
+        if let Ok(a) = Address::new(t, Options::default()) {
+            let s = a.to_string();
+            prop_assert_eq!(Address::parse(&s), Ok(a), "{:?}", s);
+        }
+    }
 
     // #57
     #[test]
