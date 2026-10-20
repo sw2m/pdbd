@@ -2,8 +2,8 @@ mod support;
 
 use proptest::prelude::*;
 use socat::{
-    Address, Host, Inet, Kind, Mode, Name, Net, Opt, Options, Part, Resource,
-    Service, Target, Text, Unchecked, Vsock, Web, Zone,
+    Address, Host, Inet, Kind, Mode, Mq, Name, Net, Opt, Options, Part,
+    Resource, Service, Target, Text, Unchecked, Vsock, Web, Zone,
 };
 use std::net::Ipv4Addr;
 use std::num::NonZeroU32;
@@ -316,6 +316,19 @@ fn invariants() {
     assert_eq!(
         Address::new(listen, mux).expect("address").to_string(),
         "TCP-LISTEN:80,mux,max-children=1"
+    );
+    let queue = Target::Mq {
+        mq: Mq::Read,
+        name: text("A"),
+    };
+    assert_eq!(
+        Address::new(queue, Options::default()),
+        Err(Kind::Queue("A".into()))
+    );
+    let tun = Target::Tun(Some((Ipv4Addr::LOCALHOST, 33)));
+    assert_eq!(
+        Address::new(tun, Options::default()),
+        Err(Kind::Bits("33".into()))
     );
 }
 

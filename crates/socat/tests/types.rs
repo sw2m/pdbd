@@ -302,6 +302,7 @@ fn review() {
         ),
         ("SOCKET-CONNECT:1:0:", 19, Kind::Missing(Part::Address)),
         ("TUN:10.0.0.1/24:x", 16, Kind::Extra("x".into())),
+        ("TUN:10.0.0.1:x", 12, Kind::Missing(Part::Bits)),
         ("TUN:fe80::1/64", 4, Kind::Host("fe80".into())),
         ("POSIXMQ-READ:q", 13, Kind::Queue("q".into())),
         ("POSIXMQ:q", 8, Kind::Queue("q".into())),
