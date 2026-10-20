@@ -1,3 +1,6 @@
+cache = "provisioned"  # see README "Benchmarks": provisioning is cached, keyed on resolved.json
+resolved = "resolved.json"  # written by the benchmark hook with the fixture's resolve
+
 [fixture]
 path = "fixture"  # a symlink to the pdbd-bench flake input, made by the benchmark hook
 runner = "transport"

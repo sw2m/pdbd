@@ -755,7 +755,8 @@ get a read-only token, so `report` skips them; the job summaries still carry the
 
 **Comparators float.** A benchmark that races another implementation resolves that
 comparator's latest release at run time, outside the workspace `Cargo.lock` and the root
-`flake.lock`, and reports the version it raced. Pinning one is a deliberate "stop racing
+`flake.lock`, and reports the version it raced. The hook's `build` writes what it resolved to
+`bench/resolved.json` (gitignored) with the runner's own `resolve`, before every run. Pinning one is a deliberate "stop racing
 it" decision, committed beside the benchmark. `transport` races `pppd` built from ppp's
 latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it. `socat`
 races socat, websocat, oittaa/socat and tocat at their latest releases;
@@ -767,8 +768,18 @@ bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
 the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
 `pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, jq, a Rust
 toolchain that also targets musl, and three variables the hook uses: `$MUSL_TARGET`,
-`$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP` (bencher's `ci/setup.sh`). They
-avoid the `BENCHER_` prefix, which bencher reads as its own settings.
+`$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP` (bencher's `ci/setup.sh`), plus the
+`python3` that the runners' `resolve` needs. The variables avoid the `BENCHER_` prefix, which
+bencher reads as its own settings.
+
+**Provisioning is cached.** Each `bench.toml` sets `cache = "provisioned"`: bencher keeps the
+runner's image after provisioning (the oracles and toolchains it builds) in its L2 cache,
+`~/.cache/bencher/images`, keyed on the runner, its params and `bench/resolved.json`. A run with
+the same comparators reuses the image and skips provisioning; a new upstream release changes
+`resolved.json`, so the next run misses and provisions it afresh. On GitHub, the `check` job
+restores and saves that cache per crate (`bencher-images-<os>-<crate>-`), saves only when the
+images changed, and warns when it restored one, since a hit races what that image was
+provisioned with.
 
 The `benchmark` hook is shared, like `build`: it lives in `bench/lefthook.yml`, and a crate opts
 in by extending it and committing a `bench/`. It resolves the crate from `$LEFTHOOK_CONFIG` (or
@@ -777,8 +788,9 @@ in by extending it and committing a `bench/`. It resolves the crate from `$LEFTH
 1. **build**: every `[artifacts]` entry in `bench/bench.toml` named after one of the crate's
    examples (`examples/<name>.rs`) is built static (`$MUSL_TARGET`) and copied to the artifact's
    path, since it runs in bencher's Debian guest, not on the build host; `bench/fixture` is
-   linked to the pdbd-bench input. Both are gitignored. `transport` builds `linkup`, `socat`
-   builds `verdict`;
+   linked to the pdbd-bench input, and when `bench.toml` names `resolved`, that file is written
+   with the runner's `resolve` (`python3 bench/fixture/<runner>/resolve bench`). All are
+   gitignored. `transport` builds `linkup`, `socat` builds `verdict`;
 2. **incus**: installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't
    there, which needs `sudo -n`, as the benchmark already does;
 3. **run**: `bencher run <crate>/bench`, then renders its report (`bench/report.jq`) into the

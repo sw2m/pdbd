@@ -23,6 +23,9 @@ benchmark:
         $artifacts
         END
         {nixsh} -c 'ln -sfn "$BENCH_FIXTURE" "$1/bench/fixture"' _ "$dir"
+        resolved=$(yq -p toml -o tsv '.resolved // ""' "$dir/bench/bench.toml")
+        runner=$(yq -p toml -o tsv '.fixture.runner' "$dir/bench/bench.toml")
+        [ -z "$resolved" ] || {nixsh} -c 'python3 "$1/bench/fixture/$2/resolve" "$1/bench" > "$1/bench/$3"' _ "$dir" "$runner" "$resolved"
     - name: incus
       tags:
         - privileged
