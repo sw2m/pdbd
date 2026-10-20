@@ -750,6 +750,21 @@ A benchmark with no committed expectations is purely reportive: whenever its mea
 were taken, it exits 0, whatever they show. A crate opts into gating by committing its
 expectations; without them, poor or regressed performance never fails or blocks CI.
 
+**A PR closes on its benchmark, so a spec is written to its benchmark.** A benchmark does QA that
+a CI test can't: a quality analysis and a comparison against the prior art, freeform rather than
+tightly blocking. So closing a PR includes reading its benchmark comment until its author is
+satisfied with what it shows, not only green checks. A spec narrower than its benchmark leaves
+that gap to be closed on the PR, push after push: #67 began as "parse the README's addresses",
+and only its benchmark showed how far that was from competitive, days into review, widening it to
+socat's whole grammar. So, for anything a benchmark measures:
+
+- **benchmark first**: before writing the spec, sketch the benchmark that would show the gold
+  standard (the prior art to race, the corpus, the classes a result falls into), then write the
+  spec to that;
+- **mind the gap**: authoring or reviewing an issue or spec includes comparing it with that
+  benchmark. A spec shorter than its benchmark is a short spec. Widen it before the work starts,
+  not on the PR.
+
 **Reporting contract.** A benchmark job appends a markdown section (headed by its crate,
 e.g. `### transport`) to the file named by `$BENCHMARK_REPORT`, or to stdout when it's
 unset (locally): `>> "${BENCHMARK_REPORT:-/dev/stdout}"`. A gating benchmark's section
