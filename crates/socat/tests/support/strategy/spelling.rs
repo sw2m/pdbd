@@ -54,10 +54,15 @@ pub(crate) fn synonyms(t: &Target) -> Vec<String> {
             modal("IP", &[("IP", Mode::Sendto)])
         }
         Target::Gram { gram, .. } => modal(&gram.to_string(), &[]),
-        Target::Socket { .. } => modal("SOCKET", &[]),
+        Target::Socket { mode, .. } => vec![format!("SOCKET-{mode}")],
+        Target::Socks {
+            socks: Socks::V5,
+            mode: Mode::Listen,
+            ..
+        } => vec!["SOCKS5-LISTEN".into(), "SOCKS5-BIND".into()],
         Target::Socks {
             socks: Socks::V5, ..
-        } => modal("SOCKS5", &[("SOCKS5", Mode::Connect)]),
+        } => vec!["SOCKS5-CONNECT".into(), "SOCKS5".into()],
         Target::Socks {
             socks: Socks::V4, ..
         } => vec!["SOCKS4".into(), "SOCKS".into()],
@@ -215,6 +220,11 @@ pub(crate) fn respell(a: &Address, sp: &Spelling) -> String {
         if sp.empty {
             out.push(',');
         }
+    }
+    if let Some(access) = a.options().access() {
+        let word = access.to_string().to_uppercase();
+        out.push(',');
+        out.push_str(&scramble(&word, sp.mask.rotate_left(11)));
     }
     let mux = a
         .options()

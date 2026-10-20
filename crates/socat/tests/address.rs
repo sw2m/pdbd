@@ -299,8 +299,9 @@ fn invariants() {
     }
     assert_eq!(opt("RAW", None).name(), "raw");
     let cap = NonZeroU32::new(1);
-    assert_eq!(Options::new(false, cap, Unchecked::default()), None);
-    let mux = Options::new(true, cap, Unchecked::default()).expect("options");
+    assert_eq!(Options::new(false, cap, None, Unchecked::default()), None);
+    let mux =
+        Options::new(true, cap, None, Unchecked::default()).expect("options");
     assert_eq!(
         Address::new(Target::Stdio, mux.clone()),
         Err(Kind::Option("mux".into()))

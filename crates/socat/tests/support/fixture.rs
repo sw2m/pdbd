@@ -45,8 +45,9 @@ pub(crate) fn address(
     cap: u32,
     rest: Vec<Opt>,
 ) -> Address {
-    let options = Options::new(mux, NonZeroU32::new(cap), Unchecked::new(rest))
-        .expect("valid options");
+    let options =
+        Options::new(mux, NonZeroU32::new(cap), None, Unchecked::new(rest))
+            .expect("valid options");
     Address::new(target, options).expect("valid address")
 }
 

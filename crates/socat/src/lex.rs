@@ -8,6 +8,7 @@ pub(crate) struct Token {
     pub(crate) at: usize,
     pub(crate) end: usize,
     pub(crate) eq: Option<usize>,
+    pub(crate) cooked: bool,
 }
 
 #[derive(Debug, Default)]
@@ -33,6 +34,7 @@ impl Token {
             at,
             end: at + text.len(),
             eq: None,
+            cooked: false,
         }
     }
 
@@ -170,6 +172,7 @@ impl Lexed {
 
         while let Some((i, c)) = chars.next() {
             let top = stack.is_empty();
+            tok.cooked |= matches!(c, '\\' | '\'' | '"');
             match c {
                 ':' if top && !options => out.push(&mut tok, i, false),
                 ',' if top => {

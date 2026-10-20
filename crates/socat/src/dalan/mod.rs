@@ -16,6 +16,14 @@ pub struct Dalan(Vec<Item>);
 
 impl Dalan {
     pub fn new(items: Vec<Item>) -> Option<Self> {
+        let mut merged: Vec<Item> = Vec::with_capacity(items.len());
+        for item in items {
+            match (merged.last_mut(), item) {
+                (Some(Item::Bytes(run)), Item::Bytes(more)) => run.extend(more),
+                (_, item) => merged.push(item),
+            }
+        }
+        let items = merged;
         let valid = !items.is_empty()
             && items.iter().all(|i| match i {
                 Item::Bytes(b) => !b.is_empty(),
@@ -30,29 +38,57 @@ impl Dalan {
     }
 
     pub(crate) fn parse(tok: &Token) -> Result<Self, Error> {
-        let bad = || tok.fail(Kind::Dalan(tok.text.clone()));
-        let mut items = Vec::new();
-        let mut chars = tok.text.chars().peekable();
+        let text = tok.text.as_str();
+        let bad = |at: usize| {
+            let at = if tok.cooked { 0 } else { at };
+            Error::new(tok.at + at, Kind::Dalan(text.into()))
+        };
+        let mut items: Vec<Item> = Vec::new();
+        let mut chars = text.chars().peekable();
+        let mut at = 0;
+        let mut gap = false;
         while let Some(c) = chars.next() {
-            let item = match c {
-                c if c.is_whitespace() => continue,
-                'x' => Self::bytes(&mut chars),
-                '"' => Self::text(&mut chars),
-                '\'' => Self::char(&mut chars),
-                c => Width::of(c).and_then(|w| Self::int(w, &mut chars)),
+            let start = at;
+            at += c.len_utf8();
+            if c.is_ascii_whitespace() {
+                gap = true;
+                continue;
+            }
+            let item = match (c, items.last()) {
+                ('x', _) => Self::bytes(None, &mut chars),
+                ('"', _) => Self::text(&mut chars),
+                ('\'', _) => Self::char(&mut chars),
+                (c, _) if Width::of(c).is_some() => {
+                    Width::of(c).and_then(|w| Self::int(w, None, &mut chars))
+                }
+                (c, Some(Item::Bytes(_))) if gap && c.is_ascii_hexdigit() => {
+                    Self::bytes(Some(c), &mut chars)
+                }
+                (c, Some(Item::Int(w, _)))
+                    if gap && (c.is_ascii_digit() || c == '-') =>
+                {
+                    Self::int(*w, Some(c), &mut chars)
+                }
+                _ => None,
             };
-            items.push(item.ok_or_else(bad)?);
+            let item = item.ok_or_else(|| bad(start))?;
+            at = text.len() - chars.clone().map(char::len_utf8).sum::<usize>();
+            gap = false;
+            items.push(item);
         }
-        Self::new(items).ok_or_else(bad)
+        Self::new(items).ok_or_else(|| bad(0))
     }
 
-    fn bytes(chars: &mut Peekable<Chars>) -> Option<Item> {
-        let mut hex = String::new();
+    fn bytes(first: Option<char>, chars: &mut Peekable<Chars>) -> Option<Item> {
+        let mut hex: String = first.into_iter().collect();
         while let Some(&h) = chars.peek().filter(|h| h.is_ascii_hexdigit()) {
             hex.push(h);
             chars.next();
         }
-        if hex.is_empty() || hex.len() % 2 != 0 {
+        if hex.is_empty()
+            || hex.len() % 2 != 0
+            || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             return None;
         }
         let bytes = (0..hex.len())
@@ -63,9 +99,13 @@ impl Dalan {
         Some(Item::Bytes(bytes))
     }
 
-    fn int(width: Width, chars: &mut Peekable<Chars>) -> Option<Item> {
-        let mut digits = String::new();
-        if chars.peek() == Some(&'-') {
+    fn int(
+        width: Width,
+        first: Option<char>,
+        chars: &mut Peekable<Chars>,
+    ) -> Option<Item> {
+        let mut digits: String = first.into_iter().collect();
+        if first.is_none() && chars.peek() == Some(&'-') {
             digits.push('-');
             chars.next();
         }

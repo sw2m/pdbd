@@ -87,15 +87,15 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 | Group | Types |
 | --- | --- |
 | streams | `TCP` (alias `INET`), `UDP`, `UDPLITE`, `SCTP`, `DCCP`: `-CONNECT` (the bare type), `-LISTEN` with pdbd's optional bind host |
-| datagrams | `-SENDTO` (alias `-SEND`), `-DATAGRAM` (alias `-DGRAM`), `-RECVFROM`, `-RECV` for `UDP`, `UDPLITE` and `IP` (a protocol number; bare `IP` is `IP-SENDTO`); `-SENDTO`, `-RECVFROM`, `-RECV`, `-CLIENT` for `UNIX` and `ABSTRACT` |
+| datagrams | `-SENDTO` (alias `-SEND`), `-DATAGRAM` (alias `-DGRAM`), `-RECVFROM`, `-RECV` for `UDP`, `UDPLITE` and `IP` (a protocol number; bare `IP` is `IP-SENDTO`); `-SENDTO` (`UNIX-SEND` too), `-RECVFROM`, `-RECV`, `-CLIENT` for `UNIX` and `ABSTRACT` |
 | local | `UNIX` and `ABSTRACT`, `-CONNECT`/`-LISTEN`; bare `UNIX` and `ABSTRACT` are the `-CLIENT` forms (connect, or send datagrams to a datagram socket), and `LOCAL` is `UNIX-CONNECT`; `VSOCK-CONNECT:cid:port` (bare `VSOCK`), `VSOCK-LISTEN:port` |
 | web | `WS` / `WSS` / `WEBTRANSPORT`, `-CONNECT`/`-LISTEN` with an optional resource path (`WS-CONNECT:host:443/socket`), and `ws://`, `wss://`, `https://` (WebTransport) URLs |
-| generic | `SOCKET-CONNECT`/`-LISTEN:<domain>:<protocol>:<address>`, `SOCKET-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM:<domain>:<type>:<protocol>:<address>`, the address in socat's dalan (`x7f000001`, typed integers like `S80`, `"strings"`) |
+| generic | `SOCKET-CONNECT`/`-LISTEN:<domain>:<protocol>:<address>`, `SOCKET-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM:<domain>:<type>:<protocol>:<address>`, the address in socat's dalan (`x7f000001`, typed integers like `S80`, `"strings"`), whose items continue across whitespace as socat's do (`x2f74 6d70` is `x2f746d70`) |
 | proxies | `SOCKS4`, `SOCKS4A`, `SOCKS5-CONNECT`/`-LISTEN` (an optional SOCKS port), `PROXY` (HTTP `CONNECT`) |
 | descriptors | `FD:<n>` and its bare shorthand (`3`), `ACCEPT-FD` (alias `ACCEPT`) |
 | processes | `EXEC`, `SYSTEM`, `SHELL` (its command optional) |
 | files and streams | `OPEN` (alias `FILE`) and `GOPEN` (distinct), a bare path (= `GOPEN`), `CREATE`; `STDIO` (`-`), `STDIN`, `STDOUT`, `STDERR`, `PTY` |
-| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL`, `POSIXMQ` |
+| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL`, `POSIXMQ`, each naming a queue that begins with `/` |
 | others | `TUN[:<IPv4>/<bits>]`, `READLINE`, `STALL`, `TEXT` |
 | dual | `<read>!!<write>`: two single addresses, the first read from and the second written to, each with its own options |
 
@@ -112,7 +112,7 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 
 Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. The three libraries build without `std` (#29); the `socat` crate itself does not yet.
 
-Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N`, on the types socat forks for (every `-LISTEN` and `-RECVFROM`, `ACCEPT-FD`, the `POSIXMQ` receive and send forms), and `rdonly`/`wronly` on `OPEN` (`FILE`), `GOPEN` and a named `PIPE`. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement: a serial line's `b115200,rawer` among them.
+Each direction-bearing type but `IP`, `SOCKET` and `SOCKS5` also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …), while socat's alias roots take only socat's own suffixes (`INET-L`, not `INET-C` or `LOCAL-L`). Options are `,mux` (alias `,fork`) and `max-children=N`, on the types socat forks for (every `-LISTEN` and `-RECVFROM`, `ACCEPT-FD`, the `POSIXMQ` receive and send forms), and `rdonly`/`wronly` on `OPEN` (`FILE`), `GOPEN` and a named `PIPE`. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement: a serial line's `b115200,rawer` among them.
 
 **Left out, each with its own positioned error:**
 

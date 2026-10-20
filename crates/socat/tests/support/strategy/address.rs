@@ -173,7 +173,10 @@ pub(crate) fn extra() -> impl Strategy<Value = Target> {
         Just(Target::Stderr),
         proptest::option::of(texts()).prop_map(Target::Pipe),
         Just(Target::Socketpair),
-        (mq(), texts()).prop_map(|(mq, name)| Target::Mq { mq, name }),
+        (mq(), texts()).prop_map(|(mq, name)| Target::Mq {
+            mq,
+            name: Text::new(format!("/{}", name.as_str())).expect("queue"),
+        }),
         proptest::option::of((any::<u32>(), 0u8..=32)).prop_map(|t| {
             Target::Tun(t.map(|(ip, b)| (Ipv4Addr::from(ip), b)))
         }),
@@ -239,13 +242,27 @@ pub(crate) fn rest() -> impl Strategy<Value = Vec<Opt>> {
 }
 
 pub(crate) fn addresses() -> impl Strategy<Value = Address> {
-    (target(), rest(), any::<bool>(), any::<Option<NonZeroU32>>()).prop_map(
-        |(target, rest, mux, cap)| {
-            let mux = target.forks() && (mux || cap.is_some());
-            let options =
-                Options::new(mux, cap.filter(|_| mux), Unchecked::new(rest))
-                    .expect("valid options");
-            Address::new(target, options).expect("valid address")
-        },
+    let access = proptest::option::of(prop_oneof![
+        Just(Access::Read),
+        Just(Access::Write)
+    ]);
+    (
+        target(),
+        rest(),
+        any::<bool>(),
+        any::<Option<NonZeroU32>>(),
+        access,
     )
+        .prop_map(|(target, rest, mux, cap, access)| {
+            let mux = target.forks() && (mux || cap.is_some());
+            let access = access.filter(|_| target.access());
+            let options = Options::new(
+                mux,
+                cap.filter(|_| mux),
+                access,
+                Unchecked::new(rest),
+            )
+            .expect("valid options");
+            Address::new(target, options).expect("valid address")
+        })
 }

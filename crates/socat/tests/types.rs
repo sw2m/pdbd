@@ -54,7 +54,7 @@ fn generic() {
         ("SOCKET-LISTEN:1:0:x2F746D70", "SOCKET-LISTEN:1:0:x2f746d70"),
         (
             "socket-datagram:2:2:17:x007bxc0a80100x0000000000000000",
-            "SOCKET-DATAGRAM:2:2:17:x007bxc0a80100x0000000000000000",
+            "SOCKET-DATAGRAM:2:2:17:x007bc0a801000000000000000000",
         ),
         (
             "socket-sendto:2:2:17:S53x7f000001",
@@ -62,7 +62,7 @@ fn generic() {
         ),
         (
             "socket-recvfrom:2:2:17:'x00 x01'",
-            "SOCKET-RECVFROM:2:2:17:x00x01",
+            "SOCKET-RECVFROM:2:2:17:x0001",
         ),
         ("socket-recv:2:2:17:i-1B7", "SOCKET-RECV:2:2:17:i-1B7"),
         (
@@ -286,7 +286,7 @@ fn review() {
         ("ACCEPT-FD:0:x", 12, Kind::Extra("x".into())),
         ("ACCEPT:0:x", 9, Kind::Extra("x".into())),
         ("SOCKET-CONNECT:1:0:x00zz", 22, dalan("x00zz")),
-        ("SOCKET-CONNECT:1:0:'x00 zz'", 23, dalan("x00 zz")),
+        ("SOCKET-CONNECT:1:0:'x00 zz'", 19, dalan("x00 zz")),
         ("SOCKET-CONNECT:1:0:b128", 19, dalan("b128")),
         ("SOCKET-CONNECT:1:0:I-1", 19, dalan("I-1")),
         ("SOCKET-CONNECT:1:0:i01", 19, dalan("i01")),
@@ -297,7 +297,7 @@ fn review() {
         ),
         (
             "SOCKET-CONNECT:1:0:'x00\u{a0}x01'",
-            22,
+            19,
             dalan("x00\u{a0}x01"),
         ),
         ("SOCKET-CONNECT:1:0:", 19, Kind::Missing(Part::Address)),

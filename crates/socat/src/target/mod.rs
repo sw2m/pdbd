@@ -130,8 +130,16 @@ impl Target {
                 Self::Pipe(params.optional(Part::Path)?)
             }
             "TEXT" => Self::Text(params.text(Part::Text)?),
-            "FD" => Self::Fd(params.number(0, Part::Fd)?),
-            "ACCEPT" | "ACCEPT-FD" => Self::Accept(params.number(0, Part::Fd)?),
+            "FD" => Self::Fd(
+                params
+                    .number(0, Part::Fd)
+                    .and_then(|n| params.done(1).map(|()| n))?,
+            ),
+            "ACCEPT" | "ACCEPT-FD" => Self::Accept(
+                params
+                    .number(0, Part::Fd)
+                    .and_then(|n| params.done(1).map(|()| n))?,
+            ),
             "TUN" => Self::tun(&params)?,
             "SOCKS4" | "SOCKS" => {
                 Self::socks(Socks::V4, Mode::Connect, &params)?
@@ -156,7 +164,7 @@ impl Target {
             u => match Mq::word(u) {
                 Some(mq) => Self::Mq {
                     mq,
-                    name: params.text(Part::Name)?,
+                    name: Self::queue(&params)?,
                 },
                 None => Self::modal(keyword, u, &params)?,
             },
@@ -242,7 +250,7 @@ impl Target {
         let protocol = params.number(at, Part::Protocol)?;
         let tok = params.get(at + 1, Part::Address)?;
         if tok.text.is_empty() {
-            return Err(tok.fail(Kind::Blank));
+            return Err(tok.fail(Kind::Missing(Part::Address)));
         }
         let address = Dalan::parse(tok)?;
         params.done(at + 2)?;
@@ -276,6 +284,18 @@ impl Target {
         })
     }
 
+    // see mq_overview(7): a queue name is "/somename"
+    fn queue(params: &Params) -> Result<Text, Error> {
+        let name = params.text(Part::Name)?;
+        match name.as_str().starts_with('/') {
+            true => Ok(name),
+            false => Err(Error::new(
+                params.tokens()[0].at,
+                Kind::Queue(name.as_str().into()),
+            )),
+        }
+    }
+
     fn proxy(params: &Params) -> Result<Self, Error> {
         let proxy = Host::parse(params.get(0, Part::Host)?)?;
         let host = Host::parse(params.get(1, Part::Host)?)?;
@@ -289,9 +309,10 @@ impl Target {
         let Some(tok) = params.tokens().first() else {
             return Ok(Self::Tun(None));
         };
-        if params.len() > 1 {
+        if params.len() > 1 && !tok.text.contains('/') {
             return Err(tok.fail(Kind::Host(tok.text.clone())));
         }
+        params.done(1)?;
         if tok.text.is_empty() {
             return Err(tok.fail(Kind::Blank));
         }

@@ -88,12 +88,13 @@ impl Options {
     pub fn new(
         mux: bool,
         cap: Option<NonZeroU32>,
+        access: Option<Access>,
         rest: Unchecked,
     ) -> Option<Self> {
         (mux || cap.is_none()).then_some(Self {
             mux,
             cap,
-            access: None,
+            access,
             rest,
         })
     }

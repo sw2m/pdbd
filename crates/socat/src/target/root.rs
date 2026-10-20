@@ -78,6 +78,20 @@ impl Root {
         pinnable.then_some((root, bare, true))
     }
 
+    fn short(self) -> bool {
+        !matches!(self, Self::Ip | Self::Socket | Self::Socks5)
+    }
+
+    // the mode words socat's -hhh allows after an alias root word, None for a genuine root
+    fn limited(word: &str) -> Option<&'static [&'static str]> {
+        let base = word.strip_suffix(['4', '6']).unwrap_or(word);
+        match base {
+            "INET" => Some(&["L", "LISTEN"]),
+            "LOCAL" => Some(&[]),
+            _ => None,
+        }
+    }
+
     fn modes(self) -> &'static [Mode] {
         match self {
             Self::Udp | Self::Udplite | Self::Socket => GRAM,
@@ -122,12 +136,18 @@ impl Root {
         }
         let (a, b) = upper.split_once('-')?;
         if let Some((root, _, pinned)) = Self::lookup(a) {
-            if let Some(mode) = Mode::suffix(b).or_else(|| root.alias(b)) {
+            let allowed = match Self::limited(a) {
+                Some(words) => words.contains(&b),
+                None => root.short() || !matches!(b, "C" | "L"),
+            };
+            let mode = Mode::suffix(b).or_else(|| root.alias(b));
+            if let Some(mode) = mode.filter(|_| allowed) {
                 return root.check(mode, pinned);
             }
         }
         let mode = Mode::prefix(a)?;
         let (root, _, pinned) = Self::lookup(b)?;
+        (root.short() && Self::limited(b).is_none()).then_some(())?;
         root.check(mode, pinned)
     }
 }

@@ -60,7 +60,7 @@ impl fmt::Display for Channel {
 impl std::str::FromStr for Channel {
     type Err = Error;
 
-    fn from_str(_s: &str) -> Result<Self, Error> {
-        todo!()
+    fn from_str(s: &str) -> Result<Self, Error> {
+        Self::parse(s)
     }
 }
