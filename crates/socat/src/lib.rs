@@ -3,6 +3,7 @@
 mod access;
 mod address;
 mod channel;
+mod dalan;
 mod error;
 mod exclusion;
 mod half;
@@ -20,6 +21,7 @@ mod unlinked;
 pub use access::Access;
 pub use address::Address;
 pub use channel::Channel;
+pub use dalan::{Dalan, Item, Width};
 pub use error::{Error, Kind, Part};
 pub use exclusion::Exclusion;
 pub use half::Half;

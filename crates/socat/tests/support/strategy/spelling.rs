@@ -1,6 +1,10 @@
 use super::*;
 
-pub(crate) fn modal(root: &str, mode: Mode, bare: &[&str]) -> Vec<String> {
+pub(crate) fn modal(
+    root: &str,
+    mode: Mode,
+    bare: &[(&str, Mode)],
+) -> Vec<String> {
     let mut all: Vec<String> = match mode {
         Mode::Connect => vec![
             format!("{root}-CONNECT"),
@@ -16,36 +20,50 @@ pub(crate) fn modal(root: &str, mode: Mode, bare: &[&str]) -> Vec<String> {
         ],
         mode => vec![format!("{root}-{mode}")],
     };
-    if mode == Mode::Connect {
-        all.extend(bare.iter().map(|b| b.to_string()));
-    }
+    all.extend(
+        bare.iter()
+            .filter(|(_, m)| *m == mode)
+            .map(|(b, _)| b.to_string()),
+    );
     all
 }
 
 pub(crate) fn synonyms(t: &Target) -> Vec<String> {
     let modal = |root, bare| modal(root, t.mode().expect("modal"), bare);
     match t {
-        Target::File(_) => vec!["FILE".into()],
-        Target::Open(_) => vec!["OPEN".into()],
+        Target::Open(_) => vec!["OPEN".into(), "FILE".into()],
         Target::Gopen(p) if p.as_str().contains('/') => {
             vec!["GOPEN".into(), String::new()]
         }
         Target::Gopen(_) => vec!["GOPEN".into()],
-        Target::Unix { .. } => modal("UNIX", &["UNIX", "LOCAL"]),
-        Target::Abstract { .. } => modal("ABSTRACT", &[]),
-        Target::Vsock(_) => modal("VSOCK", &[]),
+        Target::Unix { .. } => {
+            modal("UNIX", &[("UNIX", Mode::Client), ("LOCAL", Mode::Connect)])
+        }
+        Target::Abstract { .. } => {
+            modal("ABSTRACT", &[("ABSTRACT", Mode::Client)])
+        }
+        Target::Vsock(_) => modal("VSOCK", &[("VSOCK", Mode::Connect)]),
+        Target::Net { net: Net::Tcp, .. } => {
+            modal("TCP", &[("TCP", Mode::Connect), ("INET", Mode::Connect)])
+        }
         Target::Net { net, .. } => {
             let root = net.to_string();
-            modal(&root, &[&root])
+            modal(&root, &[(&root, Mode::Connect)])
+        }
+        Target::Gram { gram: Gram::Ip, .. } => {
+            modal("IP", &[("IP", Mode::Sendto)])
         }
         Target::Gram { gram, .. } => modal(&gram.to_string(), &[]),
         Target::Socket { .. } => modal("SOCKET", &[]),
         Target::Socks {
             socks: Socks::V5, ..
-        } => modal("SOCKS5", &[]),
+        } => modal("SOCKS5", &[("SOCKS5", Mode::Connect)]),
+        Target::Socks {
+            socks: Socks::V4, ..
+        } => vec!["SOCKS4".into(), "SOCKS".into()],
         Target::Socks { socks, .. } => vec![socks.to_string()],
-        Target::Proxy { .. } => vec!["PROXY".into()],
-        Target::Create(_) => vec!["CREATE".into()],
+        Target::Proxy { .. } => vec!["PROXY".into(), "PROXY-CONNECT".into()],
+        Target::Create(_) => vec!["CREATE".into(), "CREAT".into()],
         Target::System(_) => vec!["SYSTEM".into()],
         Target::Shell(_) => vec!["SHELL".into()],
         Target::Fd(_) => vec!["FD".into(), String::new()],
@@ -53,7 +71,7 @@ pub(crate) fn synonyms(t: &Target) -> Vec<String> {
         Target::Stdin => vec!["STDIN".into()],
         Target::Stdout => vec!["STDOUT".into()],
         Target::Stderr => vec!["STDERR".into()],
-        Target::Pipe(_) => vec!["PIPE".into()],
+        Target::Pipe(_) => vec!["PIPE".into(), "ECHO".into(), "FIFO".into()],
         Target::Socketpair => vec!["SOCKETPAIR".into()],
         Target::Mq {
             mq: Mq::Receive, ..

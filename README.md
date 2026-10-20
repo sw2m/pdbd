@@ -82,16 +82,22 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 
 Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `pdbd` implements this socat-style address dialect **natively** — the inject-and-play goal is **one** binary on the target, never `pdbd` *plus* a `socat` binary. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe — but it runs *whatever program is already there*; it is never a dependency on `socat` being present. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
 
-**The address dialect is a supported subset of socat's, not all of it** (crate `socat`, #57). Supported:
+**The address dialect is socat's whole grammar, minus what no universal L1 can be defined for** (crate `socat`, #57). Every address type in socat 1.8's manual parses, prints canonically and round-trips, with socat's own alias table (`socat -hhh`), reimplemented from that documentation (§License). An alias prints as the type it names:
 
-| Type | Forms |
+| Group | Types |
 | --- | --- |
-| TCP / UDP | `TCP`/`UDP` (connect), `-CONNECT`/`-LISTEN`; host is a name, IPv4, or bracketed IPv6 with an optional `%zone`; port is decimal or a service name |
-| `WS` / `WSS` / `WEBTRANSPORT` | `-CONNECT`/`-LISTEN` with an optional resource path (`WS-CONNECT:host:443/socket`), and `ws://`, `wss://`, `https://` (WebTransport) URLs |
-| `UNIX` / `ABSTRACT` | `-CONNECT`/`-LISTEN` (`UNIX`/`LOCAL` alone = connect) |
-| `VSOCK` | `VSOCK-CONNECT:cid:port`, `VSOCK-LISTEN:port` |
-| files | `FILE`, `OPEN`, `GOPEN` (distinct), or a bare path (= `GOPEN`) |
-| `EXEC`, `STDIO` (`-`), `PTY` | as in socat |
+| streams | `TCP` (alias `INET`), `UDP`, `UDPLITE`, `SCTP`, `DCCP`: `-CONNECT` (the bare type), `-LISTEN` with pdbd's optional bind host |
+| datagrams | `-SENDTO` (alias `-SEND`), `-DATAGRAM` (alias `-DGRAM`), `-RECVFROM`, `-RECV` for `UDP`, `UDPLITE` and `IP` (a protocol number; bare `IP` is `IP-SENDTO`); `-SENDTO`, `-RECVFROM`, `-RECV`, `-CLIENT` for `UNIX` and `ABSTRACT` |
+| local | `UNIX` and `ABSTRACT`, `-CONNECT`/`-LISTEN`; bare `UNIX` and `ABSTRACT` are the `-CLIENT` forms (connect, or send datagrams to a datagram socket), and `LOCAL` is `UNIX-CONNECT`; `VSOCK-CONNECT:cid:port` (bare `VSOCK`), `VSOCK-LISTEN:port` |
+| web | `WS` / `WSS` / `WEBTRANSPORT`, `-CONNECT`/`-LISTEN` with an optional resource path (`WS-CONNECT:host:443/socket`), and `ws://`, `wss://`, `https://` (WebTransport) URLs |
+| generic | `SOCKET-CONNECT`/`-LISTEN:<domain>:<protocol>:<address>`, `SOCKET-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM:<domain>:<type>:<protocol>:<address>`, the address in socat's dalan (`x7f000001`, typed integers like `S80`, `"strings"`) |
+| proxies | `SOCKS4`, `SOCKS4A`, `SOCKS5-CONNECT`/`-LISTEN` (an optional SOCKS port), `PROXY` (HTTP `CONNECT`) |
+| descriptors | `FD:<n>` and its bare shorthand (`3`), `ACCEPT-FD` (alias `ACCEPT`) |
+| processes | `EXEC`, `SYSTEM`, `SHELL` (its command optional) |
+| files and streams | `OPEN` (alias `FILE`) and `GOPEN` (distinct), a bare path (= `GOPEN`), `CREATE`; `STDIO` (`-`), `STDIN`, `STDOUT`, `STDERR`, `PTY` |
+| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL`, `POSIXMQ` |
+| others | `TUN[:<IPv4>/<bits>]`, `READLINE`, `STALL`, `TEXT` |
+| dual | `<read>!!<write>`: two single addresses, the first read from and the second written to, each with its own options |
 
 **Where a standard governs a part, the standard decides, through a library rather than a hand-rolled check:**
 
@@ -106,22 +112,23 @@ Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/un
 
 Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. The three libraries build without `std` (#29); the `socat` crate itself does not yet.
 
-Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N` on LISTEN addresses. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement. **Deliberately unsupported, and rejected with a positioned error:**
+Each direction-bearing type also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …). Options are `,mux` (alias `,fork`) and `max-children=N`, on the types socat forks for (every `-LISTEN` and `-RECVFROM`, `ACCEPT-FD`, the `POSIXMQ` receive and send forms), and `rdonly`/`wronly` on `OPEN` (`FILE`), `GOPEN` and a named `PIPE`. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement: a serial line's `b115200,rawer` among them.
 
-- `TCP4`/`TCP6`/`UDP4`/`UDP6` family pins;
-- socat's datagram modes (`UDP-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM`, `UNIX-SENDTO`/`-RECVFROM`/`-RECV`/`-SEND`/`-CLIENT`, `ABSTRACT-SENDTO`/`-RECVFROM`/`-RECV`) and the generic `SOCKET-*`/`DATAGRAM`/`SENDTO` addresses;
-- `FD`, the numeric-FD shorthand, and `ACCEPT`/`ACCEPT-FD`;
-- `STDIN`/`STDOUT`/`STDERR`, `SYSTEM`/`SHELL`, `PIPE`/`FIFO`, `CREATE`;
-- `OPENSSL*` and `DTLS*`, `SOCKS*`, `PROXY`: secure and proxied pipes compose externally via `EXEC:` (see *Crypto*);
-- `SCTP`, `DCCP`, `UDPLITE`, `IP-*`, `TUN`, `INTERFACE`, `READLINE`, `POSIXMQ`;
-- `!!` dual addresses (a literal `!!` is quoted when printed);
-- the `\0` escape: socat truncates its string there, and we refuse to copy that silent data loss;
-- socat's base-0 numbers (`010`, `0x50`, any `0`-led alphanumeric) for VSOCK ids and `max-children`;
-- socat's `inet_aton` host forms whose top label is all-numeric (`1`, `0x7f.1`, `01.2.3.4`): a name's top label never is (RFC 1123 §2.1), so spell the dotted quad (`0.0.0.1`, `127.0.0.1`, `1.2.3.4`). Forms whose top label carries hex letters (`0x50`, `0xff.0xff.0xff.0xff`) are valid host names and parse as names, which socat's resolver would read as IPv4;
-- in a URL, userinfo, IPvFuture, a fragment, and an IPv6 zone (RFC 9844 §3: use the `TCP`-style form, `WS-CONNECT:[fe80::1%lo]:80`);
-- an empty positional parameter (`TCP:h:80:`, `STDIO:`); empty *option* fields are skipped instead.
+**Left out, each with its own positioned error:**
 
-Adding one is a deliberate spec change here plus a consumer that opens it (#59, #60), not a parser tweak. Which forms the prior-art parsers accept, and how we compare, is in [`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md) and the `socat` benchmark.
+- **excluded, because no universal L1 can be defined for it:** `OPENSSL*` and `DTLS*`. SSL-based transports are orchestrated in countless ways (raw TLS or QUIC on a socket, IPsec, VPNs), so secured pipes compose externally through `EXEC:` (see *Crypto*);
+- **excluded, as an accepted exception:** the address-family pins (`TCP4`/`TCP6`, `UDP4`/`UDP6`, `UDPLITE4`/`6`, `SCTP4`/`6`, `DCCP4`/`6`, `IP4-*`/`IP6-*`). The unpinned type with a literal of that family covers the use; the error names it;
+- **deferred:** `INTERFACE` (raw Ethernet frames), after the first release (#80);
+- **invalid, because a standard or socat's own quirk says so:**
+  - the `\0` escape: socat truncates its string there, and we refuse to copy that silent data loss;
+  - socat's base-0 numbers (`010`, `0x50`, any `0`-led alphanumeric) for VSOCK ids, file descriptors, socket numbers and `max-children`;
+  - socat's `inet_aton` host forms whose top label is all-numeric (`1`, `0x7f.1`, `01.2.3.4`): a name's top label never is (RFC 1123 §2.1), so spell the dotted quad (`0.0.0.1`, `127.0.0.1`, `1.2.3.4`). Forms whose top label carries hex letters (`0x50`, `0xff.0xff.0xff.0xff`) are valid host names and parse as names, which socat's resolver would read as IPv4;
+  - in a URL, userinfo, IPvFuture, a fragment, and an IPv6 zone (RFC 9844 §3: use the `TCP`-style form, `WS-CONNECT:[fe80::1%lo]:80`);
+  - an empty parameter (`TCP:h:80:`, `STDIO:`, `SHELL:`); empty *option* fields are skipped instead.
+
+**Which addresses can be an L1.** Every address above is valid wherever socat's rules apply (the `socat` command, a bridge end). Only some can carry the PPP link, and the crate says which (`Channel::link`), with a reason when not: a single address that both reads and writes to a peer, or a dual pairing a readable half with a writable one. So `STDIN!!STDOUT` and `PIPE:/tmp/a!!PIPE:/tmp/b` qualify, while a bare `STDIN` (one-way), a lone named `PIPE` (it echoes), `SOCKETPAIR`, `STALL`, `TEXT` and `READLINE` (it edits its input) don't.
+
+Changing what's left out is a deliberate spec change here (#57's scope revision), not a parser tweak; opening an address is #59's. Which forms the prior-art parsers accept, and how we compare, is in [`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md) and the `socat` benchmark.
 
 ### L2 — PPP, in userspace
 
@@ -401,7 +408,7 @@ pdb list                                                       # show the tunnel
     pdb daemon:bind:0.0.0.0:8080  client:forward:127.0.0.1:3000  # reverse — just swap the sides
     ```
 
-  - **raw socat** — any address type the dialect supports (*L1 — the transport*; not all of socat's), for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
+  - **raw socat** — any address type the dialect supports (*L1 — the transport*: socat's whole grammar, minus what's left out there), for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
 
     ```
     pdb client:TCP-LISTEN:8080      daemon:EXEC:'/usr/local/bin/sensor'  # one connection, bridged, done
@@ -804,22 +811,27 @@ in by extending it and committing a `bench/`. It resolves the crate from `$LEFTH
 per-input verdicts, and its `expect.tsv` is the expected-results matrix, so any difference fails
 the check. Its `bench/` holds `bench.toml`, `expect.tsv`, `hand.jsonl` (hand-written corpus
 entries, one JSON string per line, `# section` lines naming their family), `alternatives.jsonl`
-(`[input, form]`: an input we reject and the form we accept instead) and `report.jq` (the oracles
-raced, class counts, missed rules, and coverage per corpus, per socat type family and per socat
-option group). `examples/verdict.rs` is ours in the race: one JSON string per line in,
-`{"ok": true, "canonical": …}` or `{"ok": false, "kind": …, "at": …}` out.
+(`[input, form, fit]`: an input we reject, the form we accept instead, and whether that form is a
+`full` or `partial` stand-in, each chosen explicitly) and `report.jq` (the oracles raced, class
+counts, missed rules, and coverage per corpus, per socat type family and per socat option group).
+`examples/verdict.rs` is ours in the race: one JSON string per line in, parsed as a dual-capable
+`Channel`, and `{"ok": true, "canonical": …}` or `{"ok": false, "class": …, "kind": …, "at": …}`
+out, where `class` is `excluded-openssl`, `excluded-family`, `deferred` or `invalid` (*L1 — the
+transport*, "Left out").
 
 - **A row's class follows from its rules.** `supported` is `parse {impl: ours} == "ok"` plus a
   `print {input, canonical}` row, so a changed canonical print leaves a stale rule and fails;
-  `rejected` is `parse {impl: ours} == "err"`; `alternative` adds an `alternative {input, form}`
-  row that must be `"ok"`. Oracle rows record only verdicts, so a new oracle release fails the
+  a rejection is `parse {impl: ours} == "err"` plus a `class {input}` row naming why (excluded,
+  deferred or invalid), so a type moving between classes fails too; `alternative` adds an
+  `alternative {input, form, fit}` row that must be `"ok"`. Oracle rows record only verdicts, so a new oracle release fails the
   check only when it changes one. `parse {} rules >= 1` and `print {} rules >= 1` count only exact
   rules, so a new corpus entry or canonical print fails until someone decides it.
 - **Resolving a failure is a developer decision.** Run the crate's benchmark, then
   `nix develop .#benchmark --no-update-lock-file -c bencher bless crates/socat/bench --report crates/socat/bench/report.json`,
   which updates every exact rule and appends one for every undecided row. Read the diff and decide
-  each changed row: support it (a change to *L1 — the transport* and to the crate), reject it
-  deliberately, or add an alternative to `alternatives.jsonl`. Commit with the reason.
+  each changed row: support it (a change to *L1 — the transport* and to the crate), leave it out
+  deliberately (#57's scope revision), or add an alternative to `alternatives.jsonl`, full or
+  partial, chosen explicitly. Commit with the reason.
 
 ### Git hooks
 

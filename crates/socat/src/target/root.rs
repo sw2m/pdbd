@@ -40,30 +40,33 @@ const LOCAL: &[Mode] = &[
 ];
 
 impl Root {
-    fn word(word: &str) -> Option<Self> {
+    fn word(word: &str) -> Option<(Self, Option<Mode>)> {
         Some(match word {
-            "TCP" => Self::Tcp,
-            "UDP" => Self::Udp,
-            "UDPLITE" => Self::Udplite,
-            "SCTP" => Self::Sctp,
-            "DCCP" => Self::Dccp,
-            "IP" => Self::Ip,
-            "UNIX" | "LOCAL" => Self::Unix,
-            "ABSTRACT" => Self::Abstract,
-            "VSOCK" => Self::Vsock,
-            "WS" => Self::Ws,
-            "WSS" => Self::Wss,
-            "WEBTRANSPORT" => Self::Webtransport,
-            "SOCKET" => Self::Socket,
-            "SOCKS5" => Self::Socks5,
+            "TCP" | "INET" => (Self::Tcp, Some(Mode::Connect)),
+            "UDP" => (Self::Udp, Some(Mode::Connect)),
+            "UDPLITE" => (Self::Udplite, Some(Mode::Connect)),
+            "SCTP" => (Self::Sctp, Some(Mode::Connect)),
+            "DCCP" => (Self::Dccp, Some(Mode::Connect)),
+            "IP" => (Self::Ip, Some(Mode::Sendto)),
+            "UNIX" => (Self::Unix, Some(Mode::Client)),
+            "LOCAL" => (Self::Unix, Some(Mode::Connect)),
+            "ABSTRACT" => (Self::Abstract, Some(Mode::Client)),
+            "VSOCK" => (Self::Vsock, Some(Mode::Connect)),
+            "WS" => (Self::Ws, None),
+            "WSS" => (Self::Wss, None),
+            "WEBTRANSPORT" => (Self::Webtransport, None),
+            "SOCKET" => (Self::Socket, None),
+            "SOCKS5" => (Self::Socks5, Some(Mode::Connect)),
             _ => return None,
         })
     }
 
-    fn pin(word: &str) -> Option<Self> {
-        let base = word.strip_suffix(['4', '6'])?;
-        let root = Self::word(base)?;
-        matches!(
+    fn lookup(word: &str) -> Option<(Self, Option<Mode>, bool)> {
+        if let Some((root, bare)) = Self::word(word) {
+            return Some((root, bare, false));
+        }
+        let (root, bare) = Self::word(word.strip_suffix(['4', '6'])?)?;
+        let pinnable = matches!(
             root,
             Self::Tcp
                 | Self::Udp
@@ -71,8 +74,8 @@ impl Root {
                 | Self::Sctp
                 | Self::Dccp
                 | Self::Ip
-        )
-        .then_some(root)
+        );
+        pinnable.then_some((root, bare, true))
     }
 
     fn modes(self) -> &'static [Mode] {
@@ -84,47 +87,48 @@ impl Root {
         }
     }
 
-    fn bare(self) -> bool {
-        matches!(
-            self,
-            Self::Tcp
-                | Self::Udp
-                | Self::Udplite
-                | Self::Sctp
-                | Self::Dccp
-                | Self::Unix
-        )
+    fn alias(self, word: &str) -> Option<Mode> {
+        match (self, word) {
+            (Self::Udp | Self::Udplite | Self::Ip | Self::Unix, "SEND") => {
+                Some(Mode::Sendto)
+            }
+            (Self::Udp | Self::Udplite | Self::Ip, "DGRAM") => {
+                Some(Mode::Datagram)
+            }
+            (Self::Socks5, "BIND") => Some(Mode::Listen),
+            _ => None,
+        }
     }
 
-    fn fits(word: &str, mode: Mode) -> Option<Result<(Self, Mode), Exclusion>> {
-        if let Some(root) = Self::word(word) {
-            return root.modes().contains(&mode).then_some(Ok((root, mode)));
+    fn check(
+        self,
+        mode: Mode,
+        pinned: bool,
+    ) -> Option<Result<(Self, Mode), Exclusion>> {
+        if !self.modes().contains(&mode) {
+            return None;
         }
-        let root = Self::pin(word)?;
-        root.modes()
-            .contains(&mode)
-            .then(|| Err(Exclusion::Family(format!("{root}-{mode}"))))
+        Some(match pinned {
+            true => Err(Exclusion::Family(format!("{self}-{mode}"))),
+            false => Ok((self, mode)),
+        })
     }
 
     pub(crate) fn resolve(
         upper: &str,
     ) -> Option<Result<(Self, Mode), Exclusion>> {
-        if let Some(found) = Self::fits(upper, Mode::Connect) {
-            let bare = match &found {
-                Ok((root, _)) => root.bare(),
-                Err(_) => Self::pin(upper).is_some_and(Self::bare),
-            };
-            if bare {
-                return Some(found);
-            }
+        if let Some((root, bare, pinned)) = Self::lookup(upper) {
+            return root.check(bare?, pinned);
         }
         let (a, b) = upper.split_once('-')?;
-        if let Some(mode) = Mode::suffix(b) {
-            if let Some(found) = Self::fits(a, mode) {
-                return Some(found);
+        if let Some((root, _, pinned)) = Self::lookup(a) {
+            if let Some(mode) = Mode::suffix(b).or_else(|| root.alias(b)) {
+                return root.check(mode, pinned);
             }
         }
-        Self::fits(b, Mode::prefix(a)?)
+        let mode = Mode::prefix(a)?;
+        let (root, _, pinned) = Self::lookup(b)?;
+        root.check(mode, pinned)
     }
 }
 

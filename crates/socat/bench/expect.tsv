@@ -2,6 +2,7 @@
 # see README.md §"Benchmarks"
 parse	{}	rules	>=	1
 print	{}	rules	>=	1
+class	{}	rules	>=	1
 alternative	{}	verdict	==	"ok"
 oracle	{}	verdict	==	"ok"
 corpus	{}	verdict	==	"ok"

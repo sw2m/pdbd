@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.4.0"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench"; # see README "Benchmarks"
+      url = "github:sw2m/pdbd-bench/feat/class"; # sw2m/pdbd-bench#5, until it merges
       flake = false;
     };
   };
@@ -102,7 +102,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-NCap+kU4Jw+D1uXkl4xTkP/ajFL5WFUyT7PBh884g+Y=";
+          "x86_64-linux" = "sha256-YDfTIw1PSvFGUuz5IHykD9xsGnbw1X2jZLiXn+3YdlQ=";
         };
       };
 }

@@ -87,7 +87,7 @@ pub(crate) fn socket() -> impl Strategy<Value = Target> {
         any::<u32>(),
         any::<u32>(),
         any::<u32>(),
-        prop::collection::vec(any::<u8>(), 1..=8),
+        dalan(),
     )
         .prop_map(|(mode, domain, kind, protocol, address)| {
             let stream = matches!(mode, Mode::Connect | Mode::Listen);
@@ -99,6 +99,33 @@ pub(crate) fn socket() -> impl Strategy<Value = Target> {
                 address,
             }
         })
+}
+
+pub(crate) fn item() -> impl Strategy<Value = Item> {
+    let width = prop_oneof![
+        Just(Width::I32),
+        Just(Width::U32),
+        Just(Width::I64),
+        Just(Width::U64),
+        Just(Width::I16),
+        Just(Width::U16),
+        Just(Width::I8),
+        Just(Width::U8),
+    ];
+    prop_oneof![
+        prop::collection::vec(any::<u8>(), 1..=6).prop_map(Item::Bytes),
+        (width, any::<i64>()).prop_map(|(w, n)| {
+            let n = i128::from(n);
+            Item::Int(w, if w.fits(n) { n } else { n.rem_euclid(100) })
+        }),
+        "\\PC{0,6}".prop_map(Item::Text),
+        any::<char>().prop_map(Item::Char),
+    ]
+}
+
+pub(crate) fn dalan() -> impl Strategy<Value = Dalan> {
+    prop::collection::vec(item(), 1..=4)
+        .prop_map(|items| Dalan::new(items).expect("valid dalan"))
 }
 
 pub(crate) fn socks() -> impl Strategy<Value = Target> {
@@ -178,7 +205,6 @@ pub(crate) fn target() -> impl Strategy<Value = Target> {
     let web =
         prop_oneof![Just(Web::Ws), Just(Web::Wss), Just(Web::Webtransport)];
     prop_oneof![
-        texts().prop_map(Target::File),
         texts().prop_map(Target::Open),
         paths().prop_map(Target::Gopen),
         (local(), texts()).prop_map(|(mode, path)| Target::Unix { mode, path }),

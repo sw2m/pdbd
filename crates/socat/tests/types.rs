@@ -69,7 +69,10 @@ fn generic() {
             r#"SOCKET-CONNECT:1:0:'"/tmp/s"'"#,
             r#"SOCKET-CONNECT:1:0:'"/tmp/s"'"#,
         ),
-        (r#"SOCKET-CONNECT:1:0:"'a'""#, r#"SOCKET-CONNECT:1:0:"'a'""#),
+        (
+            r#"SOCKET-CONNECT:1:0:"'a'""#,
+            r"SOCKET-CONNECT:1:0:''\''a'\'''",
+        ),
     ]);
     table(&[
         (
@@ -87,7 +90,7 @@ fn generic() {
         ("SOCKET-CONNECT:1:0:X2f", 19, Kind::Dalan("X2f".into())),
         ("SOCKET-CONNECT:1:0", 18, Kind::Missing(Part::Address)),
         ("SOCKET-CONNECT:010:0:x2f", 15, Kind::Base("010".into())),
-        ("SOCKET-CONNECT:1:2:x33:x2f", 22, Kind::Extra("x2f".into())),
+        ("SOCKET-CONNECT:1:2:x33:x2f", 23, Kind::Extra("x2f".into())),
         ("SOCKET-SENDTO:2:2:17", 20, Kind::Missing(Part::Address)),
     ]);
 }

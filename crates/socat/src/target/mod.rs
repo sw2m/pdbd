@@ -16,7 +16,9 @@ pub use vsock::Vsock;
 pub use web::Web;
 
 use crate::lex::{Params, Quoted, Token};
-use crate::{Error, Exclusion, Host, Kind, Nature, Part, Port, Resource, Text};
+use crate::{
+    Dalan, Error, Exclusion, Host, Kind, Nature, Part, Port, Resource, Text,
+};
 use root::Root;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -25,7 +27,6 @@ const DEFERRED: u32 = 80; // INTERFACE, raw Ethernet frames: sw2m/pdbd#80
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    File(Text),
     Open(Text),
     Gopen(Text),
     Create(Text),
@@ -53,7 +54,7 @@ pub enum Target {
         domain: u32,
         kind: Option<u32>,
         protocol: u32,
-        address: Vec<u8>,
+        address: Dalan,
     },
     Socks {
         socks: Socks,
@@ -119,26 +120,37 @@ impl Target {
             "SOCKETPAIR" => none(Self::Socketpair)?,
             "READLINE" => none(Self::Readline)?,
             "STALL" => none(Self::Stall)?,
-            "FILE" => Self::File(params.text(Part::Path)?),
-            "OPEN" => Self::Open(params.text(Part::Path)?),
+            "OPEN" | "FILE" => Self::Open(params.text(Part::Path)?),
             "GOPEN" => Self::Gopen(params.text(Part::Path)?),
-            "CREATE" => Self::Create(params.text(Part::Path)?),
+            "CREATE" | "CREAT" => Self::Create(params.text(Part::Path)?),
             "EXEC" => Self::Exec(params.text(Part::Command)?),
             "SYSTEM" => Self::System(params.text(Part::Command)?),
             "SHELL" => Self::Shell(params.optional(Part::Command)?),
-            "PIPE" => Self::Pipe(params.optional(Part::Path)?),
+            "PIPE" | "ECHO" | "FIFO" => {
+                Self::Pipe(params.optional(Part::Path)?)
+            }
             "TEXT" => Self::Text(params.text(Part::Text)?),
             "FD" => Self::Fd(params.number(0, Part::Fd)?),
             "ACCEPT" | "ACCEPT-FD" => Self::Accept(params.number(0, Part::Fd)?),
             "TUN" => Self::tun(&params)?,
-            "SOCKS4" => Self::socks(Socks::V4, Mode::Connect, &params)?,
+            "SOCKS4" | "SOCKS" => {
+                Self::socks(Socks::V4, Mode::Connect, &params)?
+            }
             "SOCKS4A" => Self::socks(Socks::V4a, Mode::Connect, &params)?,
-            "PROXY" => Self::proxy(&params)?,
-            "INTERFACE" => return Err(keyword.fail(Kind::Deferred(DEFERRED))),
+            "PROXY" | "PROXY-CONNECT" => Self::proxy(&params)?,
+            "DATAGRAM" | "DGRAM" => Self::socket(Mode::Datagram, &params)?,
+            "SENDTO" => Self::socket(Mode::Sendto, &params)?,
+            "INTERFACE" | "IF" => {
+                return Err(keyword.fail(Kind::Deferred(DEFERRED)))
+            }
             "WS" if url => Self::url(Web::Ws, &params)?,
             "WSS" if url => Self::url(Web::Wss, &params)?,
             "HTTPS" if url => Self::url(Web::Webtransport, &params)?,
-            u if u.starts_with("OPENSSL") || u == "SSL" || u == "SSL-L" => {
+            u if u.starts_with("OPENSSL")
+                || u.starts_with("DTLS")
+                || u == "SSL"
+                || u == "SSL-L" =>
+            {
                 return Err(keyword.fail(Kind::Excluded(Exclusion::Openssl)));
             }
             u => match Mq::word(u) {
@@ -228,7 +240,11 @@ impl Target {
         };
         let at = usize::from(!stream) + 1;
         let protocol = params.number(at, Part::Protocol)?;
-        let address = Self::hex(params.get(at + 1, Part::Address)?)?;
+        let tok = params.get(at + 1, Part::Address)?;
+        if tok.text.is_empty() {
+            return Err(tok.fail(Kind::Blank));
+        }
+        let address = Dalan::parse(tok)?;
         params.done(at + 2)?;
         Ok(Self::Socket {
             mode,
@@ -237,21 +253,6 @@ impl Target {
             protocol,
             address,
         })
-    }
-
-    fn hex(tok: &Token) -> Result<Vec<u8>, Error> {
-        let text = tok.text.as_str();
-        if text.is_empty() {
-            return Err(tok.fail(Kind::Blank));
-        }
-        let bad = || tok.fail(Kind::Hex(text.into()));
-        if text.len() % 2 != 0 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(bad());
-        }
-        (0..text.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| bad()))
-            .collect()
     }
 
     fn socks(socks: Socks, mode: Mode, params: &Params) -> Result<Self, Error> {
@@ -315,8 +316,7 @@ impl Target {
             | Self::Unix { mode, .. }
             | Self::Abstract { mode, .. }
             | Self::Socket { mode, .. } => *mode == Mode::Recv,
-            Self::File(_)
-            | Self::Open(_)
+            Self::Open(_)
             | Self::Gopen(_)
             | Self::Create(_)
             | Self::Stdio
@@ -362,13 +362,7 @@ impl Target {
     }
 
     pub fn access(&self) -> bool {
-        matches!(
-            self,
-            Self::File(_)
-                | Self::Open(_)
-                | Self::Gopen(_)
-                | Self::Pipe(Some(_))
-        )
+        matches!(self, Self::Open(_) | Self::Gopen(_) | Self::Pipe(Some(_)))
     }
 
     pub(crate) fn nature(&self) -> Nature {
@@ -421,7 +415,6 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let q = |t: &Text| Quoted(t.as_str()).to_string();
         match self {
-            Self::File(p) => write!(f, "FILE:{}", q(p)),
             Self::Open(p) => write!(f, "OPEN:{}", q(p)),
             Self::Gopen(p) => write!(f, "GOPEN:{}", q(p)),
             Self::Create(p) => write!(f, "CREATE:{}", q(p)),
@@ -453,8 +446,7 @@ impl fmt::Display for Target {
                 if let Some(k) = kind {
                     write!(f, "{k}:")?;
                 }
-                write!(f, "{protocol}:")?;
-                address.iter().try_for_each(|b| write!(f, "{b:02x}"))
+                write!(f, "{protocol}:{}", Quoted(&address.to_string()))
             }
             Self::Socks {
                 socks,

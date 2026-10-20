@@ -28,10 +28,17 @@ The [socat(1)](http://www.dest-unreach.org/socat/doc/socat.html) manual and `doc
 reference grammar. socat is GPL-2.0, so it is read for its documentation and probed for its
 behaviour, and its code is never consulted.
 
-Adopted: the address-spec grammar, case-insensitive keywords and options, the `-` synonym, the
-bare-path `GOPEN` rule, the quote, bracket and escape rules, `!!` as the dual separator, `TCP`/
-`UDP`/`UNIX`/`LOCAL` meaning connect, `OPEN` and `GOPEN` as distinct types, `ABSTRACT-*`,
-service-name ports, `fork` and `max-children`.
+Adopted: the address-spec grammar and every address type in the 1.8 manual except the
+`OPENSSL*` types, the address-family pins and `INTERFACE` (#57's scope revision, README *L1 —
+the transport*); case-insensitive keywords and options; the `-` synonym; the bare-path `GOPEN`
+rule and the numeric `FD` shorthand; the quote, bracket and escape rules; `!!` dual addresses,
+the first half read from and the second written to; `TCP`/`UDP`/`UDPLITE`/`SCTP`/`DCCP`/`UNIX`/
+`LOCAL` meaning connect; `OPEN` and `GOPEN` as distinct types; service-name ports; `fork` and
+`max-children` on exactly the types the manual lists `fork` for; and `rdonly`/`wronly`.
+
+One line of the manual is stale: its address-specification section says "TCP for TCP4", which
+the 1.8 `TCP` entry ("IP version 4 or 6 depending on address specification") contradicts. The
+grammar and the benchmark's corpus follow the type entries.
 
 Confirmed by probing socat 1.8.0.0, and overriding any reimplementation that disagrees:
 
@@ -68,7 +75,8 @@ CLI rather than its packages: v1.0.3, its latest release, lacks master's `xio.Pr
 
 `doc.md` and `specparse.rs` (Rust): the direction prefixes `X-L`/`L-X`/`LISTEN-X` and
 `X-C`/`C-X`/`CONNECT-X`, and `ws://`/`wss://` URLs with paths, both adopted. Its overlays and most
-of its address types aren't, so the benchmark records them as rejected or as an alternative.
+of its address types aren't, so the benchmark records them as invalid or as an explicit
+alternative.
 
 ### tocat
 
