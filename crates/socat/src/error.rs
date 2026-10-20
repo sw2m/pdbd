@@ -11,6 +11,11 @@ pub enum Part {
     Name,
     Address,
     Bits,
+    Fd,
+    Protocol,
+    Domain,
+    Type,
+    Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +43,7 @@ pub enum Kind {
     Deferred(u32),
     Hex(String),
     Bits(String),
+    Number(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +69,11 @@ impl fmt::Display for Part {
             Self::Name => "name",
             Self::Address => "socket address",
             Self::Bits => "prefix length",
+            Self::Fd => "file descriptor",
+            Self::Protocol => "protocol",
+            Self::Domain => "socket domain",
+            Self::Type => "socket type",
+            Self::Text => "text",
         })
     }
 }
@@ -84,7 +95,9 @@ impl fmt::Display for Kind {
             Self::Value(o) => write!(f, "invalid value for option {o:?}"),
             Self::Duplicate(o) => write!(f, "duplicate option {o:?}"),
             Self::Cap => write!(f, "max-children without mux"),
-            Self::Dual => write!(f, "dual address \"!!\" is not supported"),
+            Self::Dual => {
+                write!(f, "dual address \"!!\" where one address is expected")
+            }
             Self::Base(n) => {
                 write!(f, "ambiguous number {n:?}: write it in plain decimal")
             }
@@ -95,6 +108,7 @@ impl fmt::Display for Kind {
             Self::Deferred(n) => write!(f, "address type deferred to #{n}"),
             Self::Hex(h) => write!(f, "invalid hex socket address {h:?}"),
             Self::Bits(b) => write!(f, "invalid prefix length {b:?}"),
+            Self::Number(n) => write!(f, "invalid number {n:?}"),
         }
     }
 }

@@ -1,5 +1,6 @@
 use crate::lex::Lexed;
-use crate::{Error, Kind, Mode, Options, Target};
+use crate::option::Allow;
+use crate::{Access, Error, Kind, Mode, Nature, Options, Target};
 use std::fmt;
 use std::str::FromStr;
 
@@ -12,8 +13,11 @@ pub struct Address {
 impl Address {
     pub fn new(target: Target, options: Options) -> Result<Self, Kind> {
         let typed = options.mux() || options.cap().is_some();
-        if typed && target.mode() != Some(Mode::Listen) {
+        if typed && !target.forks() {
             return Err(Kind::Option("mux".into()));
+        }
+        if let Some(a) = options.access().filter(|_| !target.access()) {
+            return Err(Kind::Option(a.to_string()));
         }
         Ok(Self { target, options })
     }
@@ -24,7 +28,11 @@ impl Address {
         }
         let Lexed { params, options } = Lexed::lex(s)?;
         let target = Target::parse(&params)?;
-        let options = Options::parse(&options, target.mode())?;
+        let allow = Allow {
+            fork: target.forks(),
+            access: target.access(),
+        };
+        let options = Options::parse(&options, allow)?;
         Ok(Self { target, options })
     }
 
@@ -38,6 +46,18 @@ impl Address {
 
     pub fn mode(&self) -> Option<Mode> {
         self.target.mode()
+    }
+
+    pub(crate) fn nature(&self) -> Nature {
+        self.target.nature()
+    }
+
+    pub(crate) fn reads(&self) -> bool {
+        self.target.reads() && self.options.access() != Some(Access::Write)
+    }
+
+    pub(crate) fn writes(&self) -> bool {
+        self.target.writes() && self.options.access() != Some(Access::Read)
     }
 }
 

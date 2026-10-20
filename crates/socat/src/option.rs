@@ -1,5 +1,5 @@
 use crate::lex::{Quoted, Token};
-use crate::{Error, Kind, Mode, Part};
+use crate::{Access, Error, Kind, Part};
 use std::fmt;
 use std::num::NonZeroU32;
 
@@ -16,13 +16,21 @@ pub struct Unchecked(Vec<Opt>);
 pub struct Options {
     mux: bool,
     cap: Option<NonZeroU32>,
+    access: Option<Access>,
     rest: Unchecked,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Allow {
+    pub(crate) fork: bool,
+    pub(crate) access: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Typed {
     Mux,
     Cap,
+    Access(Access),
 }
 
 impl Typed {
@@ -35,6 +43,8 @@ impl Typed {
         match key.as_str() {
             "mux" | "fork" => Some(Self::Mux),
             "maxchildren" => Some(Self::Cap),
+            "rdonly" => Some(Self::Access(Access::Read)),
+            "wronly" => Some(Self::Access(Access::Write)),
             _ => None,
         }
     }
@@ -80,7 +90,12 @@ impl Options {
         cap: Option<NonZeroU32>,
         rest: Unchecked,
     ) -> Option<Self> {
-        (mux || cap.is_none()).then_some(Self { mux, cap, rest })
+        (mux || cap.is_none()).then_some(Self {
+            mux,
+            cap,
+            access: None,
+            rest,
+        })
     }
 
     pub fn mux(&self) -> bool {
@@ -91,17 +106,17 @@ impl Options {
         self.cap
     }
 
+    pub fn access(&self) -> Option<Access> {
+        self.access
+    }
+
     pub fn rest(&self) -> &Unchecked {
         &self.rest
     }
 
-    pub(crate) fn parse(
-        tokens: &[Token],
-        mode: Option<Mode>,
-    ) -> Result<Self, Error> {
+    pub(crate) fn parse(tokens: &[Token], allow: Allow) -> Result<Self, Error> {
         let mut out = Self::default();
         let mut cap: Option<&Token> = None;
-        let listen = mode == Some(Mode::Listen);
         for tok in tokens {
             if tok.text.is_empty() && tok.eq.is_none() {
                 continue;
@@ -115,7 +130,24 @@ impl Options {
             }
             let lower = name.to_ascii_lowercase();
             match Typed::of(name) {
-                Some(_) if !listen => return Err(tok.fail(Kind::Option(lower))),
+                Some(Typed::Mux | Typed::Cap) if !allow.fork => {
+                    return Err(tok.fail(Kind::Option(lower)));
+                }
+                Some(Typed::Access(_)) if !allow.access => {
+                    return Err(tok.fail(Kind::Option(lower)));
+                }
+                Some(Typed::Access(access)) => {
+                    if value.is_some() {
+                        return Err(tok.fail(Kind::Value(lower)));
+                    }
+                    match out.access {
+                        Some(a) if a == access => {
+                            return Err(tok.fail(Kind::Duplicate(lower)));
+                        }
+                        Some(_) => return Err(tok.fail(Kind::Option(lower))),
+                        None => out.access = Some(access),
+                    }
+                }
                 Some(Typed::Mux) => {
                     if value.is_some() {
                         return Err(tok.fail(Kind::Value(lower)));
@@ -170,6 +202,9 @@ impl fmt::Display for Options {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for o in &self.rest.0 {
             write!(f, ",{o}")?;
+        }
+        if let Some(a) = self.access {
+            write!(f, ",{a}")?;
         }
         if self.mux {
             f.write_str(",mux")?;

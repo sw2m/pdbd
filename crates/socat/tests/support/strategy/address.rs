@@ -33,6 +33,132 @@ pub(crate) fn mode() -> impl Strategy<Value = Mode> {
     prop_oneof![Just(Mode::Connect), Just(Mode::Listen)]
 }
 
+pub(crate) fn local() -> impl Strategy<Value = Mode> {
+    prop_oneof![
+        Just(Mode::Connect),
+        Just(Mode::Listen),
+        Just(Mode::Sendto),
+        Just(Mode::Recvfrom),
+        Just(Mode::Recv),
+        Just(Mode::Client),
+    ]
+}
+
+pub(crate) fn datagram() -> impl Strategy<Value = Mode> {
+    prop_oneof![
+        Just(Mode::Sendto),
+        Just(Mode::Datagram),
+        Just(Mode::Recvfrom),
+        Just(Mode::Recv),
+    ]
+}
+
+pub(crate) fn gram() -> impl Strategy<Value = Target> {
+    let point = |ip: bool| -> BoxedStrategy<Point> {
+        match ip {
+            true => any::<u8>().prop_map(Point::Protocol).boxed(),
+            false => port().prop_map(Point::Port).boxed(),
+        }
+    };
+    (
+        prop_oneof![Just(Gram::Udp), Just(Gram::Udplite), Just(Gram::Ip)],
+        datagram(),
+    )
+        .prop_flat_map(move |(gram, mode)| {
+            let addressed = matches!(mode, Mode::Sendto | Mode::Datagram);
+            let host = match addressed {
+                true => host().prop_map(Some).boxed(),
+                false => Just(None).boxed(),
+            };
+            (host, point(gram == Gram::Ip)).prop_map(move |(host, point)| {
+                Target::Gram {
+                    gram,
+                    mode,
+                    host,
+                    point,
+                }
+            })
+        })
+}
+
+pub(crate) fn socket() -> impl Strategy<Value = Target> {
+    (
+        prop_oneof![mode(), datagram()],
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
+        prop::collection::vec(any::<u8>(), 1..=8),
+    )
+        .prop_map(|(mode, domain, kind, protocol, address)| {
+            let stream = matches!(mode, Mode::Connect | Mode::Listen);
+            Target::Socket {
+                mode,
+                domain,
+                kind: (!stream).then_some(kind),
+                protocol,
+                address,
+            }
+        })
+}
+
+pub(crate) fn socks() -> impl Strategy<Value = Target> {
+    (
+        prop_oneof![Just(Socks::V4), Just(Socks::V4a), Just(Socks::V5)],
+        mode(),
+        host(),
+        proptest::option::of(port()),
+        host(),
+        port(),
+    )
+        .prop_map(|(socks, mode, server, via, host, port)| {
+            let v5 = socks == Socks::V5;
+            Target::Socks {
+                socks,
+                mode: if v5 { mode } else { Mode::Connect },
+                server,
+                via: via.filter(|_| v5),
+                host,
+                port,
+            }
+        })
+}
+
+pub(crate) fn mq() -> impl Strategy<Value = Mq> {
+    prop_oneof![
+        Just(Mq::Read),
+        Just(Mq::Receive),
+        Just(Mq::Send),
+        Just(Mq::Write),
+        Just(Mq::Bidirectional),
+        Just(Mq::Plain),
+    ]
+}
+
+pub(crate) fn extra() -> impl Strategy<Value = Target> {
+    prop_oneof![
+        texts().prop_map(Target::Create),
+        texts().prop_map(Target::System),
+        proptest::option::of(texts()).prop_map(Target::Shell),
+        any::<u32>().prop_map(Target::Fd),
+        any::<u32>().prop_map(Target::Accept),
+        Just(Target::Stdin),
+        Just(Target::Stdout),
+        Just(Target::Stderr),
+        proptest::option::of(texts()).prop_map(Target::Pipe),
+        Just(Target::Socketpair),
+        (mq(), texts()).prop_map(|(mq, name)| Target::Mq { mq, name }),
+        proptest::option::of((any::<u32>(), 0u8..=32)).prop_map(|t| {
+            Target::Tun(t.map(|(ip, b)| (Ipv4Addr::from(ip), b)))
+        }),
+        Just(Target::Readline),
+        Just(Target::Stall),
+        texts().prop_map(Target::Text),
+        (host(), host(), port()).prop_map(|(proxy, host, port)| {
+            Target::Proxy { proxy, host, port }
+        }),
+    ]
+}
+
 pub(crate) fn inet() -> impl Strategy<Value = Inet> {
     prop_oneof![
         (host(), port()).prop_map(|(host, port)| Inet::Connect { host, port }),
@@ -42,15 +168,21 @@ pub(crate) fn inet() -> impl Strategy<Value = Inet> {
 }
 
 pub(crate) fn target() -> impl Strategy<Value = Target> {
-    let net = prop_oneof![Just(Net::Tcp), Just(Net::Udp)];
+    let net = prop_oneof![
+        Just(Net::Tcp),
+        Just(Net::Udp),
+        Just(Net::Udplite),
+        Just(Net::Sctp),
+        Just(Net::Dccp),
+    ];
     let web =
         prop_oneof![Just(Web::Ws), Just(Web::Wss), Just(Web::Webtransport)];
     prop_oneof![
         texts().prop_map(Target::File),
         texts().prop_map(Target::Open),
         paths().prop_map(Target::Gopen),
-        (mode(), texts()).prop_map(|(mode, path)| Target::Unix { mode, path }),
-        (mode(), texts())
+        (local(), texts()).prop_map(|(mode, path)| Target::Unix { mode, path }),
+        (local(), texts())
             .prop_map(|(mode, name)| Target::Abstract { mode, name }),
         (any::<u32>(), any::<u32>()).prop_map(|(cid, port)| {
             Target::Vsock(Vsock::Connect { cid, port })
@@ -67,6 +199,10 @@ pub(crate) fn target() -> impl Strategy<Value = Target> {
         texts().prop_map(Target::Exec),
         Just(Target::Stdio),
         Just(Target::Pty),
+        gram(),
+        socket(),
+        socks(),
+        extra(),
     ]
 }
 
@@ -79,8 +215,7 @@ pub(crate) fn rest() -> impl Strategy<Value = Vec<Opt>> {
 pub(crate) fn addresses() -> impl Strategy<Value = Address> {
     (target(), rest(), any::<bool>(), any::<Option<NonZeroU32>>()).prop_map(
         |(target, rest, mux, cap)| {
-            let listen = target.mode() == Some(Mode::Listen);
-            let mux = listen && (mux || cap.is_some());
+            let mux = target.forks() && (mux || cap.is_some());
             let options =
                 Options::new(mux, cap.filter(|_| mux), Unchecked::new(rest))
                     .expect("valid options");

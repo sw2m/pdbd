@@ -1,5 +1,6 @@
 // see README.md §"L1 — the transport" and §"License"
 
+mod access;
 mod address;
 mod channel;
 mod error;
@@ -7,6 +8,7 @@ mod exclusion;
 mod half;
 mod host;
 mod lex;
+mod nature;
 mod option;
 mod port;
 mod reason;
@@ -15,6 +17,7 @@ mod target;
 mod text;
 mod unlinked;
 
+pub use access::Access;
 pub use address::Address;
 pub use channel::Channel;
 pub use error::{Error, Kind, Part};
@@ -25,6 +28,8 @@ pub use option::{Opt, Options, Unchecked};
 pub use port::{Port, Service};
 pub use reason::Reason;
 pub use resource::Resource;
-pub use target::{Inet, Mode, Net, Target, Vsock, Web};
+pub use target::{Gram, Inet, Mode, Mq, Net, Point, Socks, Target, Vsock, Web};
 pub use text::Text;
 pub use unlinked::Unlinked;
+
+pub(crate) use nature::Nature;

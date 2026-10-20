@@ -14,6 +14,7 @@ pub(crate) fn modal(root: &str, mode: Mode, bare: &[&str]) -> Vec<String> {
             format!("L-{root}"),
             format!("LISTEN-{root}"),
         ],
+        mode => vec![format!("{root}-{mode}")],
     };
     if mode == Mode::Connect {
         all.extend(bare.iter().map(|b| b.to_string()));
@@ -33,8 +34,35 @@ pub(crate) fn synonyms(t: &Target) -> Vec<String> {
         Target::Unix { .. } => modal("UNIX", &["UNIX", "LOCAL"]),
         Target::Abstract { .. } => modal("ABSTRACT", &[]),
         Target::Vsock(_) => modal("VSOCK", &[]),
-        Target::Net { net: Net::Tcp, .. } => modal("TCP", &["TCP"]),
-        Target::Net { net: Net::Udp, .. } => modal("UDP", &["UDP"]),
+        Target::Net { net, .. } => {
+            let root = net.to_string();
+            modal(&root, &[&root])
+        }
+        Target::Gram { gram, .. } => modal(&gram.to_string(), &[]),
+        Target::Socket { .. } => modal("SOCKET", &[]),
+        Target::Socks {
+            socks: Socks::V5, ..
+        } => modal("SOCKS5", &[]),
+        Target::Socks { socks, .. } => vec![socks.to_string()],
+        Target::Proxy { .. } => vec!["PROXY".into()],
+        Target::Create(_) => vec!["CREATE".into()],
+        Target::System(_) => vec!["SYSTEM".into()],
+        Target::Shell(_) => vec!["SHELL".into()],
+        Target::Fd(_) => vec!["FD".into(), String::new()],
+        Target::Accept(_) => vec!["ACCEPT-FD".into(), "ACCEPT".into()],
+        Target::Stdin => vec!["STDIN".into()],
+        Target::Stdout => vec!["STDOUT".into()],
+        Target::Stderr => vec!["STDERR".into()],
+        Target::Pipe(_) => vec!["PIPE".into()],
+        Target::Socketpair => vec!["SOCKETPAIR".into()],
+        Target::Mq {
+            mq: Mq::Receive, ..
+        } => vec!["POSIXMQ-RECEIVE".into(), "POSIXMQ-RECV".into()],
+        Target::Mq { mq, .. } => vec![mq.to_string()],
+        Target::Tun(_) => vec!["TUN".into()],
+        Target::Readline => vec!["READLINE".into()],
+        Target::Stall => vec!["STALL".into()],
+        Target::Text(_) => vec!["TEXT".into()],
         Target::Web { web: Web::Ws, .. } => modal("WS", &[]),
         Target::Web { web: Web::Wss, .. } => modal("WSS", &[]),
         Target::Web {

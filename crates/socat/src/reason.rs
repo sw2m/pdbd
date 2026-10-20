@@ -10,6 +10,6 @@ pub enum Reason {
 
 impl Reason {
     pub fn pairs(self) -> bool {
-        todo!()
+        matches!(self, Self::Oneway | Self::Queue)
     }
 }

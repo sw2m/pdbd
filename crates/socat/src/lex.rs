@@ -101,6 +101,22 @@ impl<'a> Params<'a> {
             .join(":")
     }
 
+    pub(crate) fn number<T: FromStr>(
+        &self,
+        i: usize,
+        part: Part,
+    ) -> Result<T, Error> {
+        self.get(i, part)?.exact(part, Kind::Number)
+    }
+
+    pub(crate) fn optional(&self, part: Part) -> Result<Option<Text>, Error> {
+        match self.tokens.first() {
+            None => Ok(None),
+            Some(t) if self.joined().is_empty() => Err(t.fail(Kind::Blank)),
+            Some(_) => self.text(part).map(Some),
+        }
+    }
+
     pub(crate) fn text(&self, part: Part) -> Result<Text, Error> {
         Text::new(self.joined()).ok_or_else(|| {
             let at = self.tokens.first().map_or(self.end, |t| t.at);

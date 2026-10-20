@@ -2,8 +2,8 @@ use super::fixture::plain;
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use socat::{
-    Address, Host, Inet, Mode, Name, Net, Opt, Options, Port, Resource,
-    Service, Target, Text, Unchecked, Vsock, Web, Zone,
+    Address, Gram, Host, Inet, Mode, Mq, Name, Net, Opt, Options, Point, Port,
+    Resource, Service, Socks, Target, Text, Unchecked, Vsock, Web, Zone,
 };
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;

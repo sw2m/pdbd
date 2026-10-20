@@ -268,7 +268,7 @@ fn display() {
     assert_eq!(fail("TCP:host").to_string(), "at byte 8: missing port");
     assert_eq!(
         fail("STDIO!!STDIO").to_string(),
-        "at byte 5: dual address \"!!\" is not supported"
+        "at byte 5: dual address \"!!\" where one address is expected"
     );
 }
 

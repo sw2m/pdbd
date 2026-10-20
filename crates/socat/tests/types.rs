@@ -98,7 +98,7 @@ fn descriptors() {
         ("010", 0, Kind::Base("010".into())),
         ("FD:010", 3, Kind::Base("010".into())),
         ("3foo", 0, Kind::Keyword("3foo".into())),
-        ("FD:", 3, Kind::Blank),
+        ("FD:", 3, Kind::Missing(Part::Fd)),
     ]);
 }
 
@@ -111,7 +111,10 @@ fn processes() {
         ("shell", "SHELL"),
         ("shell:ls", "SHELL:ls"),
     ]);
-    table(&[("SHELL:", 6, Kind::Blank), ("EXEC:''", 5, Kind::Blank)]);
+    table(&[
+        ("SHELL:", 6, Kind::Blank),
+        ("EXEC:''", 5, Kind::Missing(Part::Command)),
+    ]);
 }
 
 // #57
@@ -164,7 +167,7 @@ fn others() {
         ("TUN:10.0.0.1/33", 13, Kind::Bits("33".into())),
         ("TUN:10.0.0.1", 12, Kind::Missing(Part::Bits)),
         ("TUN:fe80::1/64", 4, Kind::Host("fe80".into())),
-        ("TEXT:", 5, Kind::Blank),
+        ("TEXT:", 5, Kind::Missing(Part::Text)),
     ]);
 }
 
