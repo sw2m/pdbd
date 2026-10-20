@@ -5,7 +5,7 @@
 
   outputs = { root, ... }: {
     output = { # expected build output per system; `lefthook run build:update` rewrites it
-      "x86_64-linux" = "sha256-leU+CI/Y8Ks7Q4pHcbIalYYjB8g2aZIOkesqrNAlOoc=";
+      "x86_64-linux" = "sha256-aW56Gqv2FgvC8Od6ogVIBMn5Ifsqtw2RFwTBrv3HfQY=";
     };
     packages = builtins.mapAttrs (system: packages: {
       default = packages.socat;
