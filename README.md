@@ -752,11 +752,13 @@ expectations; without them, poor or regressed performance never fails or blocks 
 
 **A PR closes on its benchmark, so a spec is written to its benchmark.** A benchmark does QA that
 a CI test can't: a quality analysis and a comparison against the prior art, freeform rather than
-tightly blocking. So closing a PR includes reading its benchmark comment until its author is
-satisfied with what it shows, not only green checks. A spec narrower than its benchmark leaves
-that gap to be closed on the PR, push after push: #67 began as "parse the README's addresses",
-and only its benchmark showed how far that was from competitive, days into review, widening it to
-socat's whole grammar. So, for anything a benchmark measures:
+tightly blocking. The check gates only through published expectations (above), but closing a PR
+also takes the author's judgement: reading its benchmark comment (the sticky PR comment, see
+*Reporting contract* below) until satisfied with what it shows. A spec shorter than its benchmark
+leaves that gap to be closed on the PR, push after push. #67's spec began as "every address the
+README names", and its benchmark comment showed how far that was from competitive (most of
+socat's families supported nothing), days into review, which widened it to socat's whole grammar.
+So, for anything a benchmark measures:
 
 - **benchmark first**: before writing the spec, sketch the benchmark that would show the gold
   standard (the prior art to race, the corpus, the classes a result falls into), then write the
