@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench";
+      url = "github:sw2m/pdbd-bench/fix/socket"; # sw2m/pdbd-bench#6, until it merges
       flake = false;
     };
   };
