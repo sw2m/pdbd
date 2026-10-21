@@ -1,29 +1,45 @@
 use crate::flow::{self, ABORTED};
-use crate::frame::Proto;
-use crate::{Error, Event, Transmit};
+use crate::frame::{Proto, Reader, Unit, MAX};
+use crate::hold::Hold;
+use crate::{Error, Event, Held, Pull, Source, Transmit};
 use std::collections::VecDeque;
-use std::ops::Range;
 
 pub const ID: u32 = 0; // never a multi-channel flow id, which starts at 1
-const ROOM: usize = 1 << 16; // one socket read
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Single {
+    proto: Proto,
+    reader: Reader,
+    hold: Hold,
+    held: u32,
+    events: VecDeque<Event>,
+    wants: bool,
     sent: bool,
     received: bool,
     reset: bool,
-    events: VecDeque<Event<Range<usize>>>,
-    inbox: Vec<u8>,
-    end: usize,
-    out: Vec<u8>,
-    at: usize,
     shut: bool,
     abort: bool,
 }
 
 impl Single {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(proto: Proto) -> Self {
+        let unit = match proto {
+            Proto::Tcp => Unit::Bare,
+            Proto::Udp => Unit::Datagram,
+        };
+        Self {
+            proto,
+            reader: Reader::with(unit),
+            hold: Hold::default(),
+            held: 0,
+            events: VecDeque::new(),
+            wants: false,
+            sent: false,
+            received: false,
+            reset: false,
+            shut: false,
+            abort: false,
+        }
     }
 
     fn check(&self, id: u32) -> Result<(), Error> {
@@ -45,28 +61,40 @@ impl Single {
         self.received || self.reset
     }
 
+    fn keep(&self) -> usize {
+        self.hold
+            .front()
+            .map_or(self.reader.at(), |piece| piece.start)
+    }
+
     pub fn spare(&mut self) -> &mut [u8] {
         if self.dead() {
             return &mut [];
         }
-        if !self.events.iter().any(|e| matches!(e, Event::Data(..))) {
-            self.end = 0;
+        let keep = self.keep();
+        let stuck = keep < self.reader.at() && self.reader.pending() == 0;
+        if stuck
+            && self.reader.spare(keep).is_empty()
+            && !self.events.iter().any(|e| matches!(e, Event::Data(..)))
+        {
+            self.hold.spill(&self.reader);
         }
-        if self.inbox.is_empty() {
-            self.inbox.resize(ROOM, 0);
-        }
-        &mut self.inbox[self.end..]
+        let keep = self.keep();
+        self.reader.spare(keep)
     }
 
     pub fn fill(&mut self, n: usize) -> Result<(), Error> {
         if self.dead() {
             return Err(Error::Dead);
         }
-        assert!(self.end + n <= self.inbox.len(), "filled past spare()");
-        if n > 0 {
-            self.events
-                .push_back(Event::Data(ID, self.end..self.end + n));
-            self.end += n;
+        self.reader.fill(n);
+        while let Some(range) = self.reader.advance().map_err(Error::Frame)? {
+            let n = range.len() as u32;
+            if n > 0 {
+                self.hold.push(range);
+                self.held += n;
+            }
+            self.events.push_back(Event::Data(ID, n));
         }
         Ok(())
     }
@@ -78,8 +106,7 @@ impl Single {
         while !bytes.is_empty() {
             let room = self.spare();
             if room.is_empty() {
-                let size = self.inbox.len() * 2;
-                self.inbox.resize(size, 0);
+                self.reader.grow();
                 continue;
             }
             let n = room.len().min(bytes.len());
@@ -94,6 +121,10 @@ impl Single {
         if self.dead() {
             return Err(Error::Dead);
         }
+        if !self.reader.whole() {
+            self.fail();
+            return Err(Error::Truncated);
+        }
         self.received = true;
         self.events.push_back(Event::Closed(ID));
         Ok(())
@@ -103,33 +134,88 @@ impl Single {
         if self.reset {
             return;
         }
-        self.reset = true;
-        self.discard();
+        self.halt();
         self.events.push_back(Event::Reset(ID, ABORTED));
     }
 
-    fn discard(&mut self) {
-        self.out.clear();
-        self.at = 0;
+    fn halt(&mut self) {
+        self.reset = true;
+        self.wants = false;
         self.shut = false;
     }
 
-    pub fn poll(&mut self) -> Option<Event<&[u8]>> {
-        let event = self.events.pop_front()?;
-        Some(event.map(|range| &self.inbox[range]))
+    pub fn poll(&mut self) -> Option<Event> {
+        self.events.pop_front()
     }
 
-    pub fn transmit(&mut self) -> Option<Transmit<&[u8]>> {
-        if self.at < self.out.len() {
-            let at = std::mem::replace(&mut self.at, self.out.len());
-            return Some(Transmit::Bytes(&self.out[at..]));
+    pub fn held(&self, id: u32) -> Held<'_> {
+        static EMPTY: Hold = Hold::EMPTY;
+        match id {
+            ID => self.hold.lend(&self.reader),
+            _ => EMPTY.lend(&self.reader),
         }
-        self.out.clear();
-        self.at = 0;
+    }
+
+    pub fn ready(&mut self, id: u32) -> Result<(), Error> {
+        self.writable(id)?;
+        self.wants = true;
+        Ok(())
+    }
+
+    pub fn pull(
+        &mut self,
+        out: &mut [u8],
+        source: &mut impl Source,
+    ) -> Transmit {
+        let head = match self.proto {
+            Proto::Tcp => 0,
+            Proto::Udp => 2,
+        };
+        let mut at = 0;
+        while self.wants && out.len() - at > head {
+            let room = match self.proto {
+                Proto::Tcp => out.len() - at,
+                Proto::Udp => (out.len() - at - head).min(MAX as usize),
+            };
+            let body = &mut out[at + head..at + head + room];
+            match source.pull(ID, body) {
+                Pull::Bytes(n) if n > room => {
+                    self.halt();
+                    self.abort = true;
+                }
+                Pull::Bytes(0) if self.proto == Proto::Tcp => {
+                    self.wants = false
+                }
+                Pull::Bytes(n) => {
+                    if self.proto == Proto::Udp {
+                        out[at..at + 2]
+                            .copy_from_slice(&(n as u16).to_be_bytes());
+                    }
+                    at += head + n;
+                }
+                Pull::Blocked => break,
+                Pull::Wait => self.wants = false,
+                Pull::End => {
+                    self.wants = false;
+                    self.sent = true;
+                    self.shut = true;
+                }
+                Pull::Fail => {
+                    self.halt();
+                    self.abort = true;
+                }
+            }
+        }
+        if at > 0 && !self.abort {
+            return Transmit::Bytes(at);
+        }
+        if std::mem::take(&mut self.abort) {
+            return Transmit::Abort;
+        }
         if std::mem::take(&mut self.shut) {
-            return Some(Transmit::Shutdown);
+            return Transmit::Shutdown;
         }
-        std::mem::take(&mut self.abort).then_some(Transmit::Abort)
+        Transmit::Bytes(0)
     }
 
     pub fn open(&mut self, _: Proto) -> Result<u32, Error> {
@@ -140,21 +226,15 @@ impl Single {
         Err(Error::Mode)
     }
 
-    pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
-        self.writable(id)?;
-        if data.is_empty() {
-            return Err(Error::Flow(ID, flow::Error::Empty));
+    pub fn consume(&mut self, id: u32, n: u32) -> Result<(), Error> {
+        self.check(id)?;
+        if n > self.held {
+            let over = flow::Error::Consume { n, held: self.held };
+            return Err(Error::Flow(ID, over));
         }
-        if self.at == self.out.len() {
-            self.out.clear();
-            self.at = 0;
-        }
-        self.out.extend_from_slice(data);
-        Ok(data.len())
-    }
-
-    pub fn consume(&mut self, id: u32, _: u32) -> Result<(), Error> {
-        self.check(id)
+        self.held -= n;
+        self.hold.consume(n as usize);
+        Ok(())
     }
 
     pub fn flush(&mut self, id: u32) -> Result<(), Error> {
@@ -164,6 +244,7 @@ impl Single {
     pub fn close(&mut self, id: u32) -> Result<(), Error> {
         self.writable(id)?;
         self.sent = true;
+        self.wants = false;
         self.shut = true;
         Ok(())
     }
@@ -173,8 +254,7 @@ impl Single {
         if self.reset {
             return Err(Error::Flow(ID, flow::Error::Closed));
         }
-        self.reset = true;
-        self.discard();
+        self.halt();
         self.abort = true;
         Ok(())
     }
@@ -196,7 +276,7 @@ impl Single {
     }
 
     pub fn done(&self) -> bool {
-        self.reset || (self.sent && self.received)
+        self.reset || (self.sent && self.received && self.held == 0)
     }
 }
 

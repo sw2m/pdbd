@@ -374,12 +374,12 @@ Independent implementations (`gopdb`, `jpdb`, a Rust `pdbd`) must interoperate o
 
 The bridge's mux runs its tunnel in one of two **modes, fixed when the tunnel is created**. Both ends learn the mode out of band, from the `Socat` request that set the tunnel up; which mode a bridge uses is the bridge's call, not the mux's. Neither mode sends a preamble or a version byte: `Hello`'s `wire_version` already versions this contract.
 
-**Single-channel mode** is permanently one channel. The tunnel's bytes *are* the channel's bytes: no header, no window, no credit. A single-channel end is therefore wire-identical to a raw TCP stream, and a plain `socat` on the far end interoperates. The channel's lifecycle rides the tunnel's TCP:
+**Single-channel mode** is permanently one channel. A stream channel's tunnel bytes *are* the channel's bytes: no header, no window, no credit. A single-channel stream end is therefore wire-identical to a raw TCP stream, and a plain `socat` on the far end interoperates. The channel's lifecycle rides the tunnel's TCP:
 
 - **open** — the tunnel's establishment. There is no other channel to open, ever.
 - **half-close** — a write shutdown (`shutdown(SHUT_WR)`, a TCP FIN). The peer reads EOF as the channel's close in that direction. Each direction closes on its own; the channel is finished once both have.
 - **reset** — abort the tunnel (a TCP RST, e.g. `SO_LINGER` 0); unsent bytes are dropped. A read or write error on the tunnel is a reset.
-- It carries the caller's bytes **unchanged**, so a single-channel UDP flow keeps its datagram boundaries by framing them itself: the bridge sends each datagram as a 2-byte big-endian length, then the payload, never split (#59's *Channels*). The mux's own datagram-per-frame accounting, credit included, is multi-channel only.
+- A stream channel carries the caller's bytes **unchanged**. A datagram channel keeps its boundaries: each datagram crosses as a 2-byte big-endian length, then the payload, never split (#59's *Channels*). There's no credit in either; that's multi-channel only.
 
 **Multi-channel mode** carries framed flows: TCP stream flows and UDP datagrams, each with its own credit. It runs from one flow up to the cap; a multi-channel tunnel that drops to one flow stays multi-channel and keeps framing.
 
@@ -431,7 +431,8 @@ Every frame is a 10-byte header in network byte order, followed by a payload on 
 - **A receive budget across all flows** (smux's `MaxReceiveBuffer`): bytes delivered but not yet consumed, summed over every flow, are bounded by a budget the caller must choose, at least one maximum frame (65535). When the next valid DATA would exceed it, the mux stops decoding and the caller stops reading the tunnel until consumption, a stop, a close or a reset refunds room. The pause never defers a violation: a header the decoder rejects, DATA after CLOSE, or DATA beyond credit is fatal at once, however full the budget is. It is local because a shared *window* on the wire would let one unread flow stall every other one (yamux has none; Nerdbank.Streams v2 moved to per-channel windows for this reason).
 - **A flow cap** (`max-children`) is always set; the caller chooses it, so the flow table and its event queue are bounded too.
 - **Expiry.** A flow left opening, pending, half-closed, or stopped without the CLOSE the peer owes, longer than the caller's deadline, is reset with code 1, freeing its cap slot (yamux's stream open and close timeouts). The caller supplies the clock.
-- **Scheduling.** Control frames are sent before any DATA, and flows with queued DATA take turns, one bounded chunk each.
+- **Scheduling.** Data is pulled from a flow's source only when a frame goes out, and only up to its credit (#58 §"Data path"). Control frames go before any DATA, then ready flows take turns, one frame each: at most 16 KiB of a stream, or one datagram.
+- **Holding.** Received bytes stay where they arrived until the caller consumes them. When the shared read buffer needs their room, they move to their flow's own buffer, so a flow that holds its bytes never stalls another.
 - **No ping, keepalive or drain frame.** Liveness is L2's (LCP echo), and a graceful drain or teardown is the control plane's (`Drop`); the tunnel adds neither.
 
 ---

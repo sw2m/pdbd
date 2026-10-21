@@ -11,7 +11,7 @@ fn frame(flow: u32, proto: Proto, body: Body<'_>) -> Frame<'_> {
     Frame { flow, proto, body }
 }
 
-// #58 — the wire layout is the cross-language contract; pin it byte for byte
+// #58
 #[test]
 fn layout() {
     let cases = [
@@ -54,7 +54,7 @@ fn layout() {
     }
 }
 
-// #58 — a short buffer is "need more", never an error
+// #58
 #[test]
 fn partial() {
     let whole = bytes(&frame(1, Proto::Tcp, Body::Data(b"hello")));
@@ -89,7 +89,7 @@ fn rejects() {
     }
 }
 
-// #58 — a header error surfaces before the body arrives
+// #58
 #[test]
 fn header() {
     assert_eq!(
@@ -113,7 +113,7 @@ fn order() {
     assert_eq!(r.pending(), 0);
 }
 
-// #58 — a stream chunk is never empty; an empty datagram is legal
+// #58
 #[test]
 fn empty() {
     let tcp = [0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 0];
@@ -123,8 +123,7 @@ fn empty() {
     assert_eq!(Frame::decode(&udp), Ok(Some((want, 10))));
 }
 
-// #58 — DATA is written from the caller's payload, byte-identical to encode,
-// into exactly the frame's size
+// #58
 #[test]
 fn put() {
     let f = Frame::data(7, Proto::Tcp, b"abc").unwrap();
@@ -137,7 +136,7 @@ fn put() {
     assert_eq!(out[f.size()], 0xaa);
 }
 
-// #58 — a DATA frame the decoder would reject can't be built
+// #58
 #[test]
 fn checked() {
     let big = vec![0u8; MAX as usize + 1];
@@ -150,7 +149,7 @@ fn checked() {
     assert!(Frame::data(7, Proto::Udp, b"").is_ok());
 }
 
-// #58 — parsing a coalesced burst is linear in its bytes, not quadratic
+// #58
 #[test]
 fn many() {
     let n = 200_000;
@@ -235,7 +234,7 @@ pub fn arbitrary() -> impl Strategy<Value = Any> {
 }
 
 proptest! {
-    // #58 — decode ∘ encode is the identity, consuming exactly the frame
+    // #58
     #[test]
     fn roundtrip(f in arbitrary()) {
         let f = f.frame();
@@ -243,7 +242,7 @@ proptest! {
         prop_assert_eq!(Frame::decode(&b), Ok(Some((f, b.len()))));
     }
 
-    // #58 — trailing bytes are left for the next frame
+    // #58
     #[test]
     fn trailing(f in arbitrary(), tail in prop::collection::vec(any::<u8>(), 0..32)) {
         let f = f.frame();
@@ -253,7 +252,7 @@ proptest! {
         prop_assert_eq!(Frame::decode(&b), Ok(Some((f, n))));
     }
 
-    // #58 — any split of a frame stream into reads yields the same frames
+    // #58
     #[test]
     fn reads(
         frames in prop::collection::vec(arbitrary(), 0..16),
@@ -280,7 +279,7 @@ proptest! {
         prop_assert_eq!(r.pending(), 0);
     }
 
-    // #58 — arbitrary bytes never panic, and accepted frames re-encode
+    // #58
     #[test]
     fn noise(b in prop::collection::vec(any::<u8>(), 0..64)) {
         if let Ok(Some((f, n))) = Frame::decode(&b) {

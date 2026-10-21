@@ -1,30 +1,143 @@
 use super::*;
 use crate::flow::{self, State, ABORTED, REFUSED};
-use crate::frame::{self, Body, Frame, HEADER, MAX};
+use crate::frame::{self, Body, Frame, HEADER, MAX, WHOLE};
 use proptest::prelude::*;
-use std::collections::BTreeMap;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::{Deref, DerefMut};
 
 const ROOM: u64 = u64::MAX; // a budget that never pauses
 const ALL: u32 = u32::MAX; // a cap that never refuses
+const OUT: usize = 2 * WHOLE; // a pull buffer that always fits a whole datagram frame
 
-fn wire(m: &mut Multi) -> Vec<u8> {
-    let mut out = Vec::new();
-    while let Some(t) = m.transmit() {
-        match t {
-            Transmit::Bytes(b) => out.extend(b),
-            t => panic!("multi-channel never emits {t:?}"),
-        }
-    }
-    out
+#[derive(Debug, Default)]
+struct Queue {
+    items: BTreeMap<u32, VecDeque<Vec<u8>>>,
+    whole: BTreeSet<u32>,
+    ends: BTreeSet<u32>,
+    taken: BTreeMap<u32, Vec<u8>>,
 }
 
-fn link(a: &mut Multi, b: &mut Multi) {
+impl Source for Queue {
+    fn pull(&mut self, id: u32, buf: &mut [u8]) -> Pull {
+        let items = self.items.entry(id).or_default();
+        let Some(front) = items.front_mut() else {
+            return match self.ends.remove(&id) {
+                true => Pull::End,
+                false => Pull::Wait,
+            };
+        };
+        let n = match self.whole.contains(&id) {
+            true if front.len() > buf.len() => return Pull::Blocked,
+            true => front.len(),
+            false => front.len().min(buf.len()),
+        };
+        buf[..n].copy_from_slice(&front[..n]);
+        self.taken.entry(id).or_default().extend(&front[..n]);
+        match n == front.len() {
+            true => drop(items.pop_front()),
+            false => drop(front.drain(..n)),
+        }
+        Pull::Bytes(n)
+    }
+}
+
+#[derive(Debug)]
+struct Peer {
+    m: Multi,
+    q: Queue,
+    seen: BTreeMap<u32, usize>,
+}
+
+impl Deref for Peer {
+    type Target = Multi;
+
+    fn deref(&self) -> &Multi {
+        &self.m
+    }
+}
+
+impl DerefMut for Peer {
+    fn deref_mut(&mut self) -> &mut Multi {
+        &mut self.m
+    }
+}
+
+impl Peer {
+    fn new(side: Side, window: u32, cap: u32, budget: u64) -> Self {
+        Self {
+            m: Multi::new(side, window, cap, budget).unwrap(),
+            q: Queue::default(),
+            seen: BTreeMap::new(),
+        }
+    }
+
+    fn send(&mut self, id: u32, data: &[u8]) -> Result<(), Error> {
+        if self.m.flow(id).is_some_and(|f| f.proto() == Proto::Udp) {
+            self.q.whole.insert(id);
+        } else if data.is_empty() {
+            return self.m.ready(id);
+        }
+        self.q.items.entry(id).or_default().push_back(data.to_vec());
+        self.m.ready(id)
+    }
+
+    fn finish(&mut self, id: u32) -> Result<(), Error> {
+        self.q.ends.insert(id);
+        self.m.ready(id)
+    }
+
+    fn bytes(&self, id: u32) -> Vec<u8> {
+        self.m.held(id).flatten().copied().collect()
+    }
+
+    fn consume(&mut self, id: u32, n: u32) -> Result<(), Error> {
+        self.m.consume(id, n)?;
+        let seen = self.seen.entry(id).or_default();
+        *seen = seen.saturating_sub(n as usize);
+        Ok(())
+    }
+
+    fn stop(&mut self, id: u32) -> Result<(), Error> {
+        self.m.stop(id)?;
+        self.seen.remove(&id);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<Event<Vec<u8>>> {
+        let event = self.m.poll()?;
+        Some(match event {
+            Event::Data(id, n) => {
+                let bytes = self.bytes(id);
+                let seen = self.seen.entry(id).or_default();
+                let got = bytes[*seen..*seen + n as usize].to_vec();
+                *seen += n as usize;
+                Event::Data(id, got)
+            }
+            e => e.map(|_| Vec::new()),
+        })
+    }
+}
+
+fn wire(p: &mut Peer) -> Vec<u8> {
+    let mut out = vec![0; OUT];
+    let mut all = Vec::new();
+    loop {
+        let n = p.m.pull(&mut out, &mut p.q);
+        if n == 0 {
+            return all;
+        }
+        all.extend(&out[..n]);
+    }
+}
+
+fn link(a: &mut Peer, b: &mut Peer) {
     let bytes = wire(a);
     b.feed(&bytes).unwrap();
 }
 
-fn events(m: &mut Multi) -> Vec<Event<Vec<u8>>> {
-    std::iter::from_fn(|| m.poll().map(Event::owned)).collect()
+fn events(p: &mut Peer) -> Vec<Event<Vec<u8>>> {
+    std::iter::from_fn(|| p.take()).collect()
 }
 
 fn frames(mut bytes: &[u8]) -> Vec<Frame<'_>> {
@@ -53,14 +166,14 @@ fn tcp(flow: u32, body: Body) -> Frame {
     }
 }
 
-fn pair(wc: u32, wd: u32) -> (Multi, Multi) {
+fn pair(wc: u32, wd: u32) -> (Peer, Peer) {
     (
-        Multi::new(Side::Client, wc, ALL, ROOM).unwrap(),
-        Multi::new(Side::Daemon, wd, ALL, ROOM).unwrap(),
+        Peer::new(Side::Client, wc, ALL, ROOM),
+        Peer::new(Side::Daemon, wd, ALL, ROOM),
     )
 }
 
-fn established(c: &mut Multi, d: &mut Multi, proto: Proto) -> u32 {
+fn established(c: &mut Peer, d: &mut Peer, proto: Proto) -> u32 {
     let id = c.open(proto).unwrap();
     link(c, d);
     assert_eq!(events(d), vec![Event::Open(id, proto)]);
@@ -70,7 +183,13 @@ fn established(c: &mut Multi, d: &mut Multi, proto: Proto) -> u32 {
     id
 }
 
-// #58 — yamux §StreamID: one parity per side, 0 reserved
+fn put(m: &mut Multi, bytes: &[u8]) {
+    let s = m.spare();
+    s[..bytes.len()].copy_from_slice(bytes);
+    m.fill(bytes.len()).unwrap();
+}
+
+// #58
 #[test]
 fn ids() {
     let (mut c, mut d) = pair(10, 10);
@@ -82,7 +201,7 @@ fn ids() {
     assert_eq!(c.flow(1).unwrap().state(), State::Opening);
 }
 
-// #58 — an OPEN surfaces as an event; the caller accepts it with this end's window
+// #58
 #[test]
 fn handshake() {
     let (mut c, mut d) = pair(MAX, MAX + 10);
@@ -103,8 +222,8 @@ fn handshake() {
     link(&mut d, &mut c);
     assert_eq!(events(&mut c), vec![Event::Accepted(id)]);
     assert_eq!(c.flow(id).unwrap().credit(), MAX + 10);
-    assert_eq!(c.send(id, b"dgram"), Ok(5));
-    assert_eq!(c.send(id, b""), Ok(0));
+    c.send(id, b"dgram").unwrap();
+    c.send(id, b"").unwrap();
     link(&mut c, &mut d);
     assert_eq!(
         events(&mut d),
@@ -112,12 +231,12 @@ fn handshake() {
     );
 }
 
-// #58 — a datagram flow needs a window of at least one maximum datagram
+// #58
 #[test]
 fn small() {
     let (mut c, mut d) = pair(MAX - 1, MAX - 1);
     assert_eq!(c.open(Proto::Udp), Err(Error::Window(MAX - 1)));
-    let mut big = Multi::new(Side::Client, MAX, ALL, ROOM).unwrap();
+    let mut big = Peer::new(Side::Client, MAX, ALL, ROOM);
     let id = big.open(Proto::Udp).unwrap();
     link(&mut big, &mut d);
     assert_eq!(
@@ -134,7 +253,7 @@ fn small() {
     assert_eq!(d.feed(&liar), Err(Error::Peer(1, flow::Error::Window(9))));
 }
 
-// #58 — the acceptor may refuse; the opener sees a RESET(0)
+// #58
 #[test]
 fn refuse() {
     let (mut c, mut d) = pair(10, 10);
@@ -148,7 +267,7 @@ fn refuse() {
     assert!(c.is_empty());
 }
 
-// #58 — a received RESET code other than refused reads as aborted
+// #58
 #[test]
 fn codes() {
     let (mut c, mut d) = pair(10, 10);
@@ -157,11 +276,11 @@ fn codes() {
     assert_eq!(events(&mut c), vec![Event::Reset(id, ABORTED)]);
 }
 
-// #58 — socat `max-children` is the cap; peer opens beyond it are refused
+// #58
 #[test]
 fn cap() {
-    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 10, 1, ROOM).unwrap();
+    let mut c = Peer::new(Side::Client, 10, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, 10, 1, ROOM);
     let a = c.open(Proto::Tcp).unwrap();
     let b = c.open(Proto::Tcp).unwrap();
     link(&mut c, &mut d);
@@ -174,22 +293,26 @@ fn cap() {
     assert!(d.open(Proto::Tcp).is_ok());
 }
 
-// #58
+// #58 "Data path"
 #[test]
 fn local() {
-    let mut c = Multi::new(Side::Client, 10, 2, ROOM).unwrap();
+    let mut c = Peer::new(Side::Client, 10, 2, ROOM);
     let a = c.open(Proto::Tcp).unwrap();
     c.open(Proto::Tcp).unwrap();
     assert_eq!(c.open(Proto::Tcp), Err(Error::Cap(2)));
     assert_eq!(c.accept(9), Err(Error::Unknown(9)));
-    assert_eq!(c.send(9, b"x"), Err(Error::Unknown(9)));
+    assert_eq!(c.ready(9), Err(Error::Unknown(9)));
     assert_eq!(c.stop(9), Err(Error::Unknown(9)));
     assert_eq!(c.grow(9, 1), Err(Error::Unknown(9)));
     assert_eq!(c.accept(a), Err(Error::Flow(a, flow::Error::State)));
-    assert_eq!(c.send(a, b"x"), Err(Error::Flow(a, flow::Error::Blocked)));
+    assert_eq!(c.send(a, b"x"), Ok(()));
+    let opens = wire(&mut c);
+    assert!(frames(&opens)
+        .iter()
+        .all(|f| matches!(f.body, Body::Open(_))));
 }
 
-// #58 — every peer violation is fatal to the tunnel, and stays fatal
+// #58
 #[test]
 fn violations() {
     let cases = [
@@ -222,8 +345,7 @@ fn violations() {
     }
 }
 
-// #58 — an empty stream chunk is a violation and surfaces no event; an
-// empty datagram is delivered
+// #58
 #[test]
 fn empty() {
     let (mut c, mut d) = pair(10, 10);
@@ -235,11 +357,10 @@ fn empty() {
     assert!(events(&mut d).is_empty());
 }
 
-// #58 — RFC 9113 §5.1.1: an OPEN retires every lower unopened id of that
-// parity, so frames for them are ignored, not strays
+// #58 RFC 9113 §5.1.1
 #[test]
 fn retire() {
-    let mut d = Multi::new(Side::Daemon, 10, ALL, ROOM).unwrap();
+    let mut d = Peer::new(Side::Daemon, 10, ALL, ROOM);
     d.feed(&encode(&[tcp(3, Body::Open(10))])).unwrap();
     assert_eq!(events(&mut d), vec![Event::Open(3, Proto::Tcp)]);
     d.feed(&encode(&[tcp(1, Body::Close)])).unwrap();
@@ -249,7 +370,7 @@ fn retire() {
     assert_eq!(d.feed(&late), Err(Error::Duplicate(1)));
 }
 
-// #58 — RFC 9113 §6.9: a WINDOW that crosses this side's CLOSE is legal
+// #58 RFC 9113 §6.9
 #[test]
 fn crossing() {
     let (mut c, mut d) = pair(10, 10);
@@ -259,7 +380,7 @@ fn crossing() {
     assert_eq!(events(&mut c), vec![Event::Window(id, 1)]);
 }
 
-// #58 — RFC 9113 §6.9.1: DATA beyond the granted credit
+// #58 RFC 9113 §6.9.1
 #[test]
 fn overrun() {
     let (mut c, mut d) = pair(10, 4);
@@ -271,7 +392,7 @@ fn overrun() {
     );
 }
 
-// #58 — a finished flow leaves the table; its id is never reused
+// #58
 #[test]
 fn reap() {
     let (mut c, mut d) = pair(10, 10);
@@ -287,7 +408,7 @@ fn reap() {
     assert_eq!(c.open(Proto::Tcp), Ok(3));
 }
 
-// #58 — RFC 9113 §5.1 "closed": frames racing a flow's teardown are ignored
+// #58 RFC 9113 §5.1
 #[test]
 fn stale() {
     let (mut c, mut d) = pair(10, 10);
@@ -297,6 +418,7 @@ fn stale() {
     assert_eq!(events(&mut d), vec![Event::Closed(id)]);
     d.send(id, b"abcdefgh").unwrap();
     link(&mut d, &mut c);
+    events(&mut c);
     c.consume(id, 8).unwrap();
     let late = wire(&mut c);
     assert!(!late.is_empty());
@@ -310,11 +432,11 @@ fn stale() {
     assert_eq!(d.feed(&never), Err(Error::Stray(5)));
 }
 
-// #58 — a refused id is past, so the opener's racing frames are stale
+// #58
 #[test]
 fn race() {
-    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 10, 0, ROOM).unwrap();
+    let mut c = Peer::new(Side::Client, 10, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, 10, 0, ROOM);
     let id = c.open(Proto::Tcp).unwrap();
     link(&mut c, &mut d);
     assert!(events(&mut d).is_empty());
@@ -334,7 +456,7 @@ fn exhausted() {
     assert_eq!(c.open(Proto::Tcp), Err(Error::Exhausted));
 }
 
-// #58 — tunnel EOF resets every live flow; a torn frame is an error
+// #58
 #[test]
 fn end() {
     let (mut c, mut d) = pair(10, 10);
@@ -355,7 +477,7 @@ fn end() {
     assert!(d.done());
 }
 
-// #58 — a failed tunnel resets every live flow
+// #58
 #[test]
 fn fail() {
     let (mut c, mut d) = pair(10, 10);
@@ -367,27 +489,25 @@ fn fail() {
     assert!(events(&mut d).is_empty());
 }
 
-// #58 — a window update surfaces so a blocked writer can retry
+// #58
 #[test]
 fn window() {
     let (mut c, mut d) = pair(10, 4);
     let id = established(&mut c, &mut d, Proto::Tcp);
-    assert_eq!(c.send(id, b"abcdef"), Ok(4));
-    assert_eq!(
-        c.send(id, b"ef"),
-        Err(Error::Flow(id, flow::Error::Blocked))
-    );
+    c.send(id, b"abcdef").unwrap();
     link(&mut c, &mut d);
     assert_eq!(events(&mut d), vec![Event::Data(id, b"abcd".to_vec())]);
+    assert!(wire(&mut c).is_empty());
     d.consume(id, 1).unwrap();
     assert!(wire(&mut d).is_empty());
     d.flush(id).unwrap();
     link(&mut d, &mut c);
     assert_eq!(events(&mut c), vec![Event::Window(id, 1)]);
-    assert_eq!(c.send(id, b"ef"), Ok(1));
+    link(&mut c, &mut d);
+    assert_eq!(events(&mut d), vec![Event::Data(id, b"e".to_vec())]);
 }
 
-// #58 — a receiver over-grants to enlarge its window
+// #58
 #[test]
 fn grow() {
     let (mut c, mut d) = pair(10, 4);
@@ -400,8 +520,7 @@ fn grow() {
     assert_eq!(d.grow(id, 50), Err(Error::Flow(id, flow::Error::State)));
 }
 
-// #58 — QUIC STOP_SENDING: the reader stops one direction; the peer's
-// writer gets a terminal result, closes, and in-flight data is discarded
+// #58
 #[test]
 fn stop() {
     let (mut c, mut d) = pair(10, 4);
@@ -409,18 +528,19 @@ fn stop() {
     c.send(id, b"ab").unwrap();
     link(&mut c, &mut d);
     assert_eq!(d.used(), 2);
-    c.send(id, b"cd").unwrap();
-    assert_eq!(c.send(id, b"e"), Err(Error::Flow(id, flow::Error::Blocked)));
+    c.send(id, b"cde").unwrap();
     let inflight = wire(&mut c);
+    assert_eq!(frames(&inflight), vec![tcp(id, Body::Data(b"cd"))]);
     d.stop(id).unwrap();
     assert_eq!(d.used(), 0);
+    assert_eq!(d.held(id).count(), 0);
     assert_eq!(d.stop(id), Err(Error::Flow(id, flow::Error::Closed)));
     d.feed(&inflight).unwrap();
-    assert_eq!(events(&mut d), vec![Event::Data(id, b"ab".to_vec())]);
+    assert!(events(&mut d).is_empty());
     assert_eq!(d.used(), 0);
     link(&mut d, &mut c);
     assert_eq!(events(&mut c), vec![Event::Stopped(id)]);
-    assert_eq!(c.send(id, b"e"), Err(Error::Flow(id, flow::Error::Closed)));
+    assert_eq!(c.ready(id), Err(Error::Flow(id, flow::Error::Closed)));
     link(&mut c, &mut d);
     assert_eq!(events(&mut d), vec![Event::Closed(id)]);
     d.send(id, b"back").unwrap();
@@ -429,10 +549,13 @@ fn stop() {
     d.close(id).unwrap();
     link(&mut d, &mut c);
     assert_eq!(events(&mut c), vec![Event::Closed(id)]);
-    assert!(c.is_empty() && d.is_empty());
+    assert!(d.is_empty());
+    assert_eq!(c.len(), 1);
+    c.consume(id, 4).unwrap();
+    assert!(c.is_empty());
 }
 
-// #58 — a STOP drops this side's unsent data and closes in its place
+// #58
 #[test]
 fn discard() {
     let (mut c, mut d) = pair(100, 100);
@@ -449,17 +572,16 @@ fn discard() {
     assert_eq!(frames(&wire(&mut c)), vec![tcp(id, Body::Close)]);
 }
 
-// #58 — smux MaxReceiveBuffer: a local budget bounds bytes held across all
-// flows; when it is spent, decoding pauses until consumption refunds it
+// #58
 #[test]
 fn budget() {
-    let mut c = Multi::new(Side::Client, 40_000, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 40_000, ALL, 70_000).unwrap();
+    let mut c = Peer::new(Side::Client, 70_000, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, 70_000, ALL, 70_000);
     let ids: Vec<u32> = (0..4)
-        .map(|_| established(&mut c, &mut d, Proto::Tcp))
+        .map(|_| established(&mut c, &mut d, Proto::Udp))
         .collect();
     for &id in &ids {
-        assert_eq!(c.send(id, &[7; 30_000]), Ok(30_000));
+        c.send(id, &[7; 30_000]).unwrap();
     }
     link(&mut c, &mut d);
     let got = events(&mut d);
@@ -468,18 +590,14 @@ fn budget() {
     d.feed(&[]).unwrap();
     assert!(events(&mut d).is_empty());
     d.consume(ids[0], 30_000).unwrap();
-    assert_eq!((d.used(), d.paused()), (30_000, true));
-    d.feed(&[]).unwrap();
-    assert_eq!(events(&mut d), vec![Event::Data(ids[2], vec![7; 30_000])]);
     assert_eq!((d.used(), d.paused()), (60_000, true));
+    assert_eq!(events(&mut d), vec![Event::Data(ids[2], vec![7; 30_000])]);
     d.reset(ids[1], ABORTED).unwrap();
-    assert_eq!(d.used(), 30_000);
-    d.feed(&[]).unwrap();
-    assert_eq!(events(&mut d), vec![Event::Data(ids[3], vec![7; 30_000])]);
     assert_eq!((d.used(), d.paused()), (60_000, false));
+    assert_eq!(events(&mut d), vec![Event::Data(ids[3], vec![7; 30_000])]);
 }
 
-// #58 — a budget below one maximum frame could never admit one
+// #58
 #[test]
 fn floor() {
     let b = u64::from(MAX) - 1;
@@ -488,9 +606,9 @@ fn floor() {
     assert!(Multi::new(Side::Client, 10, ALL, u64::from(MAX)).is_ok());
 }
 
-fn spent() -> (Multi, Multi, u32) {
-    let mut c = Multi::new(Side::Client, 30_000, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 30_000, ALL, 70_000).unwrap();
+fn spent() -> (Peer, Peer, u32) {
+    let mut c = Peer::new(Side::Client, 30_000, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, 30_000, ALL, 70_000);
     let ids: Vec<u32> = (0..3)
         .map(|_| established(&mut c, &mut d, Proto::Tcp))
         .collect();
@@ -504,8 +622,7 @@ fn spent() -> (Multi, Multi, u32) {
     (c, d, b)
 }
 
-// #58 — a header the decoder rejects is fatal at the header, even while
-// the budget is spent: it never pauses the tunnel
+// #58
 #[test]
 fn poison() {
     let (_, mut d, b) = spent();
@@ -519,8 +636,7 @@ fn poison() {
     assert!(!d.paused() && d.done());
 }
 
-// #58 — DATA after CLOSE, or beyond credit, is fatal even behind a spent
-// budget; DATA within credit waits for room
+// #58
 #[test]
 fn guilty() {
     let (mut c, mut d, b) = spent();
@@ -544,7 +660,7 @@ fn guilty() {
     assert!(d.paused() && !d.done());
 }
 
-// #58 — EOF while paused mid-frame is still a torn frame
+// #58
 #[test]
 fn torn() {
     let (mut c, mut d, b) = spent();
@@ -562,7 +678,7 @@ fn torn() {
     assert_eq!(d.end(), Ok(()));
 }
 
-// #58 — growing a flow before its ACCEPT arrives grants the extra once it opens
+// #58
 #[test]
 fn opening() {
     let (mut c, mut d) = pair(10, 10);
@@ -580,14 +696,14 @@ fn opening() {
     assert_eq!(d.flow(id).unwrap().credit(), 50);
 }
 
-// #58 — once the tunnel is dead, every call says so
+// #58
 #[test]
 fn dead() {
     let (mut c, mut d) = pair(10, 10);
     let id = established(&mut c, &mut d, Proto::Tcp);
     c.fail();
     assert_eq!(c.accept(id), Err(Error::Dead));
-    assert_eq!(c.send(id, b"x"), Err(Error::Dead));
+    assert_eq!(c.ready(id), Err(Error::Dead));
     assert_eq!(c.consume(id, 0), Err(Error::Dead));
     assert_eq!(c.flush(id), Err(Error::Dead));
     assert_eq!(c.close(id), Err(Error::Dead));
@@ -595,13 +711,14 @@ fn dead() {
     assert_eq!(c.stop(id), Err(Error::Dead));
     assert_eq!(c.grow(id, 20), Err(Error::Dead));
     assert_eq!(c.open(Proto::Tcp), Err(Error::Dead));
+    assert!(wire(&mut c).is_empty());
 }
 
-// #58 — a STOP the peer never answers with CLOSE expires like any stuck flow
+// #58
 #[test]
 fn unanswered() {
-    let mut c = Multi::new(Side::Client, 10, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 10, 1, ROOM).unwrap();
+    let mut c = Peer::new(Side::Client, 10, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, 10, 1, ROOM);
     c.tick(0);
     d.tick(0);
     let id = established(&mut c, &mut d, Proto::Tcp);
@@ -617,7 +734,7 @@ fn unanswered() {
     assert!(d.open(Proto::Tcp).is_ok());
 }
 
-// #58 — every way a flow ends with unread bytes refunds the budget
+// #58
 #[test]
 fn refund() {
     for end in 0..4 {
@@ -636,20 +753,23 @@ fn refund() {
                 c.close(id).unwrap();
                 link(&mut c, &mut d);
                 d.close(id).unwrap();
+                assert_eq!((d.used(), d.len()), (30, 1));
+                assert_eq!(d.bytes(id), vec![1; 30]);
+                d.consume(id, 30).unwrap();
+                assert!(d.is_empty());
             }
             _ => d.fail(),
         }
         assert_eq!(d.used(), 0, "end {end}");
+        assert_eq!(d.held(id).count(), 0, "end {end}");
     }
 }
 
-// #58 — yamux StreamOpenTimeout/StreamCloseTimeout, driven by the caller's
-// clock: overdue opening, pending and half-closed flows are reset and free
-// their cap slots
+// #58
 #[test]
 fn expire() {
-    let mut c = Multi::new(Side::Client, 10, 4, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, 10, ALL, ROOM).unwrap();
+    let mut c = Peer::new(Side::Client, 10, 4, ROOM);
+    let mut d = Peer::new(Side::Daemon, 10, ALL, ROOM);
     c.tick(0);
     d.tick(0);
     let open = established(&mut c, &mut d, Proto::Tcp);
@@ -683,37 +803,353 @@ fn expire() {
     assert!(c.open(Proto::Tcp).is_ok());
 }
 
-// #58 — control frames go first, then each flow's data in turn, a bounded
-// chunk per flow per transmit
+// #58 "Data path"
 #[test]
 fn schedule() {
     let (mut c, mut d) = pair(1 << 20, 1 << 20);
     let busy = established(&mut c, &mut d, Proto::Tcp);
     let quiet = established(&mut c, &mut d, Proto::Tcp);
     let doomed = established(&mut c, &mut d, Proto::Tcp);
-    let mut sent = 0;
-    while sent < 4 * MAX as usize {
-        sent += c.send(busy, &vec![1; 4 * MAX as usize - sent]).unwrap();
-    }
+    c.send(busy, &vec![1; 4 * MAX as usize]).unwrap();
     c.send(quiet, b"hi").unwrap();
     c.reset(doomed, ABORTED).unwrap();
-    let sent: Vec<Vec<u8>> = std::iter::from_fn(|| {
-        c.transmit().map(|t| match t {
-            Transmit::Bytes(b) => b.to_vec(),
-            t => panic!("{t:?}"),
+    let mut out = vec![0; 1 << 20];
+    let n = c.m.pull(&mut out, &mut c.q);
+    let sent = frames(&out[..n]);
+    assert_eq!(sent[0], tcp(doomed, Body::Reset(ABORTED)));
+    assert_eq!(sent[1].flow, busy);
+    assert_eq!(sent[2], tcp(quiet, Body::Data(b"hi")));
+    let slice = 1 << 14;
+    let total: usize = sent[1..]
+        .iter()
+        .filter(|f| f.flow == busy)
+        .map(|f| match f.body {
+            Body::Data(b) => {
+                assert!(b.len() <= slice);
+                b.len()
+            }
+            b => panic!("{b:?}"),
         })
-    })
-    .collect();
-    let chunk = HEADER + MAX as usize;
-    assert_eq!(frames(&sent[0]), vec![tcp(doomed, Body::Reset(ABORTED))]);
-    assert!(frames(&sent[1]).iter().all(|f| f.flow == busy));
-    assert_eq!(frames(&sent[2]), vec![tcp(quiet, Body::Data(b"hi"))]);
-    assert!(sent[1..].iter().all(|b| b.len() <= chunk));
-    let total: usize = sent[1..].iter().map(Vec::len).sum();
-    assert_eq!(total, 4 * chunk + HEADER + 2);
+        .sum();
+    assert_eq!(total, 4 * MAX as usize);
 }
 
-// #58 — a coalesced burst of tiny frames parses in linear time
+// #58 "Data path"
+#[test]
+fn bound() {
+    let (mut c, mut d) = pair(1 << 20, 1 << 20);
+    let ids: Vec<u32> = (0..5)
+        .map(|_| established(&mut c, &mut d, Proto::Tcp))
+        .collect();
+    for (i, &id) in ids.iter().enumerate() {
+        c.send(id, &vec![i as u8; (i + 1) * 40_000]).unwrap();
+    }
+    let all = wire(&mut c);
+    let order: Vec<u32> = frames(&all).iter().map(|f| f.flow).collect();
+    for &id in &ids {
+        let at: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, &f)| f == id)
+            .map(|(k, _)| k)
+            .collect();
+        let live =
+            |k: usize| ids.iter().filter(|&&o| order[k..].contains(&o)).count();
+        for w in at.windows(2) {
+            assert!(
+                w[1] - w[0] <= live(w[0]),
+                "flow {id} waited {}",
+                w[1] - w[0]
+            );
+        }
+    }
+}
+
+// #58 "Data path"
+#[test]
+fn finish() {
+    let (mut c, mut d) = pair(100, 100);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.send(id, b"last").unwrap();
+    c.finish(id).unwrap();
+    let bytes = wire(&mut c);
+    assert_eq!(
+        frames(&bytes),
+        vec![tcp(id, Body::Data(b"last")), tcp(id, Body::Close)]
+    );
+    assert_eq!(c.ready(id), Err(Error::Flow(id, flow::Error::Closed)));
+    d.feed(&bytes).unwrap();
+    assert_eq!(
+        events(&mut d),
+        vec![Event::Data(id, b"last".to_vec()), Event::Closed(id)]
+    );
+}
+
+// #58 "Data path"
+#[test]
+fn broke() {
+    let (mut c, mut d) = pair(100, 100);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.ready(id).unwrap();
+    let mut out = vec![0; OUT];
+    let n = c.m.pull(&mut out, &mut |_, _: &mut [u8]| Pull::Fail);
+    assert_eq!(frames(&out[..n]), vec![tcp(id, Body::Reset(ABORTED))]);
+    assert!(c.is_empty());
+}
+
+// #58 "Data path"
+#[test]
+fn overclaim() {
+    let (mut c, mut d) = pair(8, 8);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.ready(id).unwrap();
+    let mut out = vec![0; OUT];
+    let n =
+        c.m.pull(&mut out, &mut |_, b: &mut [u8]| Pull::Bytes(b.len() + 1));
+    assert_eq!(frames(&out[..n]), vec![tcp(id, Body::Reset(ABORTED))]);
+}
+
+// #58 "Data path"
+#[test]
+fn nothing() {
+    let (mut c, mut d) = pair(100, 100);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.ready(id).unwrap();
+    let calls = Cell::new(0);
+    let mut out = vec![0; OUT];
+    let mut zero = |_: u32, _: &mut [u8]| {
+        calls.set(calls.get() + 1);
+        Pull::Bytes(0)
+    };
+    assert_eq!(c.m.pull(&mut out, &mut zero), 0);
+    assert_eq!(c.m.pull(&mut out, &mut zero), 0);
+    assert_eq!(calls.get(), 1);
+    c.ready(id).unwrap();
+    assert_eq!(c.m.pull(&mut out, &mut zero), 0);
+    assert_eq!(calls.get(), 2);
+}
+
+// #58 "Data path"
+#[test]
+fn readiness() {
+    let (mut c, mut d) = pair(100, 100);
+    let id = c.open(Proto::Tcp).unwrap();
+    link(&mut c, &mut d);
+    events(&mut d);
+    assert_eq!(d.ready(id), Err(Error::Flow(id, flow::Error::State)));
+    d.accept(id).unwrap();
+    assert_eq!(d.ready(id), Ok(()));
+    d.close(id).unwrap();
+    assert_eq!(d.ready(id), Err(Error::Flow(id, flow::Error::Closed)));
+    link(&mut d, &mut c);
+    events(&mut c);
+    c.reset(id, ABORTED).unwrap();
+    assert_eq!(c.ready(id), Err(Error::Unknown(id)));
+}
+
+// #58 "Data path"
+#[test]
+fn room() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let big = established(&mut c, &mut d, Proto::Udp);
+    let other = established(&mut c, &mut d, Proto::Tcp);
+    c.send(big, &[9; 1000]).unwrap();
+    c.send(other, b"x").unwrap();
+    let mut out = vec![0; 500];
+    let n = c.m.pull(&mut out, &mut c.q);
+    assert_eq!(frames(&out[..n]), vec![tcp(other, Body::Data(b"x"))]);
+    c.send(other, b"y").unwrap();
+    let mut out = vec![0; OUT];
+    let n = c.m.pull(&mut out, &mut c.q);
+    let sent = frames(&out[..n]);
+    assert_eq!(sent[0].flow, big);
+    assert_eq!(sent[1], tcp(other, Body::Data(b"y")));
+}
+
+// #58 "Data path"
+#[test]
+fn starved() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Udp);
+    c.send(id, &vec![1; MAX as usize - 100]).unwrap();
+    c.send(id, &[2; 1000]).unwrap();
+    link(&mut c, &mut d);
+    assert_eq!(c.flow(id).unwrap().credit(), 100);
+    let calls = Cell::new(0);
+    let mut out = vec![0; OUT];
+    let mut count = |id: u32, buf: &mut [u8]| {
+        calls.set(calls.get() + 1);
+        c.q.pull(id, buf)
+    };
+    assert_eq!(c.m.pull(&mut out, &mut count), 0);
+    assert_eq!(c.m.pull(&mut out, &mut count), 0);
+    assert!(
+        calls.get() <= 1,
+        "pulled {} times without new credit",
+        calls.get()
+    );
+    let got = events(&mut d);
+    assert_eq!(got.len(), 1);
+    d.consume(id, MAX - 100).unwrap();
+    d.flush(id).unwrap();
+    link(&mut d, &mut c);
+    events(&mut c);
+    link(&mut c, &mut d);
+    assert_eq!(events(&mut d), vec![Event::Data(id, vec![2; 1000])]);
+}
+
+// #58 "Receiving lends"
+#[test]
+fn place() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.send(id, b"in place").unwrap();
+    let bytes = wire(&mut c);
+    let s = d.spare();
+    s[..bytes.len()].copy_from_slice(&bytes);
+    let at = s.as_ptr() as usize;
+    d.fill(bytes.len()).unwrap();
+    assert_eq!(d.poll(), Some(Event::Data(id, 8)));
+    let lent: Vec<&[u8]> = d.held(id).collect();
+    assert_eq!(lent, vec![&b"in place"[..]]);
+    assert_eq!(lent[0].as_ptr() as usize, at + HEADER);
+}
+
+// #58 "Receiving lends"
+#[test]
+fn held() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    for chunk in [&b"first"[..], b"second"] {
+        c.send(id, chunk).unwrap();
+        let bytes = wire(&mut c);
+        put(&mut d, &bytes);
+    }
+    assert_eq!(
+        events(&mut d),
+        vec![
+            Event::Data(id, b"first".to_vec()),
+            Event::Data(id, b"second".to_vec())
+        ]
+    );
+}
+
+// #58 "Receiving lends"
+#[test]
+fn lend() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let a = established(&mut c, &mut d, Proto::Tcp);
+    let b = established(&mut c, &mut d, Proto::Tcp);
+    c.send(a, b"hold me").unwrap();
+    link(&mut c, &mut d);
+    assert_eq!(d.poll(), Some(Event::Data(a, 7)));
+    for _ in 0..8 {
+        c.send(b, &[5; 5000]).unwrap();
+        c.send(a, b"!").unwrap();
+        link(&mut c, &mut d);
+        while let Some(e) = d.poll() {
+            if let Event::Data(id, n) = e {
+                if id == b {
+                    d.m.consume(b, n).unwrap();
+                }
+            }
+        }
+    }
+    assert_eq!(d.bytes(a), b"hold me!!!!!!!!".to_vec());
+    assert!(d.held(a).count() > 1);
+    d.m.consume(a, 5).unwrap();
+    assert_eq!(d.bytes(a), b"me!!!!!!!!".to_vec());
+    let over = flow::Error::Consume { n: 11, held: 10 };
+    assert_eq!(d.m.consume(a, 11), Err(Error::Flow(a, over)));
+    d.m.consume(a, 10).unwrap();
+    assert_eq!(d.held(a).count(), 0);
+}
+
+// #58 "Receiving lends"
+#[test]
+fn unseen() {
+    let (mut c, mut d) = pair(1 << 30, 1 << 30);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.send(id, &vec![3; 1 << 20]).unwrap();
+    let bytes = wire(&mut c);
+    let first = d.spare().as_ptr() as usize;
+    let mut at = 0;
+    while at < bytes.len() {
+        let s = d.spare();
+        if s.is_empty() {
+            break;
+        }
+        let n = s.len().min(bytes.len() - at);
+        s[..n].copy_from_slice(&bytes[at..at + n]);
+        d.fill(n).unwrap();
+        at += n;
+    }
+    assert!(at < bytes.len(), "the buffer never filled");
+    assert!(d.spare().is_empty());
+    let lent = d.held(id).next().unwrap().as_ptr() as usize;
+    assert_eq!(lent, first + HEADER);
+    let mut seen = 0;
+    while let Some(Event::Data(_, n)) = d.poll() {
+        seen += n;
+    }
+    d.m.consume(id, seen).unwrap();
+    assert!(!d.spare().is_empty());
+    assert_eq!(d.spare().as_ptr() as usize, first);
+}
+
+// #58 "A holding flow never stalls another"
+#[test]
+fn spill() {
+    let window = 100_000;
+    let (mut c, mut d) = pair(1 << 30, window);
+    let hold = established(&mut c, &mut d, Proto::Tcp);
+    let flow = established(&mut c, &mut d, Proto::Tcp);
+    let kept: Vec<u8> = (0..window).map(|i| (i % 251) as u8).collect();
+    c.send(hold, &kept).unwrap();
+    link(&mut c, &mut d);
+    let mut moved = 0;
+    for round in 0..64u8 {
+        c.send(flow, &vec![round; 60_000]).unwrap();
+        let bytes = wire(&mut c);
+        let mut at = 0;
+        while at < bytes.len() {
+            let s = d.spare();
+            assert!(!s.is_empty(), "no room in round {round}");
+            let n = s.len().min(bytes.len() - at);
+            s[..n].copy_from_slice(&bytes[at..at + n]);
+            d.fill(n).unwrap();
+            at += n;
+            while let Some(e) = d.poll() {
+                if let Event::Data(id, n) = e {
+                    if id == flow {
+                        moved += n as usize;
+                        d.m.consume(flow, n).unwrap();
+                        d.flush(flow).unwrap();
+                    }
+                }
+            }
+        }
+        link(&mut d, &mut c);
+        events(&mut c);
+    }
+    assert_eq!(moved, 64 * 60_000);
+    assert_eq!(d.bytes(hold), kept);
+    assert_eq!(d.used(), u64::from(window));
+}
+
+// #58 "Receiving lends"
+#[test]
+fn stopped() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.send(id, b"gone").unwrap();
+    link(&mut c, &mut d);
+    d.m.stop(id).unwrap();
+    assert_eq!(d.held(id).count(), 0);
+    assert_eq!(d.poll(), None);
+}
+
+// #58
 #[test]
 fn many() {
     let (mut c, mut d) = pair(10, 10);
@@ -727,56 +1163,16 @@ fn many() {
     assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is well under 1s in debug; the quadratic parser took ~20s
 }
 
-// #58 "Minimal copy" — a read into spare() is delivered in place, not copied
-#[test]
-fn place() {
-    let (mut c, mut d) = pair(MAX, MAX);
-    let id = established(&mut c, &mut d, Proto::Tcp);
-    c.send(id, b"in place").unwrap();
-    let bytes = wire(&mut c);
-    let s = d.spare();
-    s[..bytes.len()].copy_from_slice(&bytes);
-    let at = s.as_ptr() as usize;
-    d.fill(bytes.len()).unwrap();
-    let Some(Event::Data(got, data)) = d.poll() else {
-        panic!("no data")
-    };
-    assert_eq!((got, data), (id, &b"in place"[..]));
-    assert_eq!(data.as_ptr() as usize, at + HEADER);
-}
-
-// #58 "Minimal copy" — reading on before polling keeps the unpolled payloads
-#[test]
-fn held() {
-    let (mut c, mut d) = pair(MAX, MAX);
-    let id = established(&mut c, &mut d, Proto::Tcp);
-    for chunk in [&b"first"[..], b"second"] {
-        c.send(id, chunk).unwrap();
-        let bytes = wire(&mut c);
-        let s = d.spare();
-        s[..bytes.len()].copy_from_slice(&bytes);
-        d.fill(bytes.len()).unwrap();
-    }
-    assert_eq!(
-        events(&mut d),
-        vec![
-            Event::Data(id, b"first".to_vec()),
-            Event::Data(id, b"second".to_vec())
-        ]
-    );
-}
-
-// #58 "Minimal copy" — spare() offers no room once the budget pauses decoding
-// and the buffer fills, and decoding resumes after consumption refunds it
+// #58
 #[test]
 fn backpressure() {
-    let mut c = Multi::new(Side::Client, MAX, ALL, ROOM).unwrap();
-    let mut d = Multi::new(Side::Daemon, MAX, ALL, u64::from(MAX)).unwrap();
+    let mut c = Peer::new(Side::Client, MAX, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, MAX, ALL, u64::from(MAX));
     let ids: Vec<u32> = (0..8)
-        .map(|_| established(&mut c, &mut d, Proto::Tcp))
+        .map(|_| established(&mut c, &mut d, Proto::Udp))
         .collect();
     for (i, &id) in ids.iter().enumerate() {
-        assert_eq!(c.send(id, &[i as u8; MAX as usize]), Ok(MAX as usize));
+        c.send(id, &[i as u8; MAX as usize]).unwrap();
     }
     let mut bytes = wire(&mut c);
     loop {
@@ -811,9 +1207,7 @@ fn datagrams() -> impl Strategy<Value = Vec<usize>> {
 }
 
 proptest! {
-    // #58 "Minimal copy" — reads of any size into spare() deliver every
-    // datagram whole, in one lent slice, and spare() always has room while
-    // every event is polled and decoding is not paused
+    // #58 "Receiving lends"
     #[test]
     fn pieces(sizes in datagrams(), reads in prop::collection::vec(1usize..70_000, 1..16)) {
         let total: usize = sizes.iter().sum();
@@ -823,7 +1217,7 @@ proptest! {
         let mut sent = Vec::new();
         for (i, &n) in sizes.iter().enumerate() {
             let payload: Vec<u8> = (0..n).map(|k| (i + k) as u8).collect();
-            prop_assert_eq!(c.send(id, &payload), Ok(n));
+            prop_assert_eq!(c.send(id, &payload), Ok(()));
             sent.push(payload);
         }
         let bytes = wire(&mut c);
@@ -886,28 +1280,26 @@ fn pick(m: &Multi, i: usize) -> Option<u32> {
 }
 
 struct Net {
-    m: [Multi; 2],
+    p: [Peer; 2],
     wire: [Vec<u8>; 2],
-    sent: [BTreeMap<u32, Vec<u8>>; 2],
     got: [BTreeMap<u32, Vec<u8>>; 2],
 }
 
 impl Net {
     fn new(wc: u32, wd: u32, budget: u64) -> Self {
         Self {
-            m: [
-                Multi::new(Side::Client, wc, ALL, budget).unwrap(),
-                Multi::new(Side::Daemon, wd, ALL, budget).unwrap(),
+            p: [
+                Peer::new(Side::Client, wc, ALL, budget),
+                Peer::new(Side::Daemon, wd, ALL, budget),
             ],
             wire: Default::default(),
-            sent: Default::default(),
             got: Default::default(),
         }
     }
 
     fn pump(&mut self) {
         for me in 0..2 {
-            let bytes = wire(&mut self.m[me]);
+            let bytes = wire(&mut self.p[me]);
             self.wire[1 - me].extend(bytes);
         }
     }
@@ -921,11 +1313,11 @@ impl Net {
         let n = n.min(self.wire[me].len());
         match place {
             true => {
-                prop_assert_eq!(self.m[me].fill(0), Ok(()));
+                prop_assert_eq!(self.p[me].fill(0), Ok(()));
                 let mut left = n;
                 loop {
                     self.collect(me);
-                    let s = self.m[me].spare();
+                    let s = self.p[me].spare();
                     let k = s.len().min(left);
                     if k == 0 {
                         break;
@@ -933,13 +1325,13 @@ impl Net {
                     s[..k].copy_from_slice(&self.wire[me][..k]);
                     self.wire[me].drain(..k);
                     left -= k;
-                    let r = self.m[me].fill(k);
+                    let r = self.p[me].fill(k);
                     prop_assert_eq!(r, Ok(()));
                 }
             }
             false => {
                 let chunk: Vec<u8> = self.wire[me].drain(..n).collect();
-                let r = self.m[me].feed(&chunk);
+                let r = self.p[me].feed(&chunk);
                 prop_assert_eq!(r, Ok(()));
             }
         }
@@ -948,7 +1340,7 @@ impl Net {
     }
 
     fn collect(&mut self, me: usize) {
-        while let Some(ev) = self.m[me].poll() {
+        while let Some(ev) = self.p[me].take() {
             if let Event::Data(id, d) = ev {
                 self.got[me].entry(id).or_default().extend(d);
             }
@@ -957,10 +1349,10 @@ impl Net {
 
     fn consume(&mut self) {
         for me in 0..2 {
-            let ids: Vec<u32> = self.m[me].ids().collect();
+            let ids: Vec<u32> = self.p[me].ids().collect();
             for id in ids {
-                let held = self.m[me].flow(id).unwrap().held();
-                self.m[me].consume(id, held).unwrap();
+                let held = self.p[me].flow(id).unwrap().held();
+                self.p[me].consume(id, held).unwrap();
             }
         }
     }
@@ -970,7 +1362,7 @@ impl Net {
             self.consume();
             self.pump();
             if self.wire.iter().all(Vec::is_empty)
-                && !self.m.iter().any(Multi::paused)
+                && !self.p.iter().any(|p| p.paused())
             {
                 return Ok(());
             }
@@ -981,23 +1373,24 @@ impl Net {
     }
 
     fn budget(&self, budget: u64) -> Result<(), TestCaseError> {
-        for m in &self.m {
-            let held: u64 = m
+        for p in &self.p {
+            let held: u64 = p
                 .ids()
-                .map(|id| u64::from(m.flow(id).unwrap().held()))
+                .map(|id| u64::from(p.flow(id).unwrap().held()))
                 .sum();
-            prop_assert_eq!(m.used(), held);
-            prop_assert!(m.used() <= budget);
+            prop_assert_eq!(p.used(), held);
+            prop_assert!(p.used() <= budget);
+            for id in p.ids() {
+                let lent: usize = p.held(id).map(<[u8]>::len).sum();
+                prop_assert_eq!(lent, p.flow(id).unwrap().held() as usize);
+            }
         }
         Ok(())
     }
 }
 
 proptest! {
-    // #58 — two honest muxes over one tunnel read in arbitrary pieces: no
-    // protocol error ever, no sender exceeds its credit, the receive budget
-    // is exact and bounded, every flow's bytes arrive in order with no
-    // cross-flow mixing, and closing everything empties both flow tables
+    // #58
     #[test]
     fn honest(
         wc in windows(),
@@ -1011,69 +1404,64 @@ proptest! {
             match op {
                 Op::Open(s, udp) => {
                     let proto = if udp { Proto::Udp } else { Proto::Tcp };
-                    match net.m[usize::from(s)].open(proto) {
+                    match net.p[usize::from(s)].open(proto) {
                         Ok(_) | Err(Error::Window(_)) => {}
                         Err(e) => prop_assert!(false, "open: {e}"),
                     }
                 }
                 Op::Accept(s, i) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    match net.m[me].accept(id) {
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    match net.p[me].accept(id) {
                         Ok(()) | Err(Error::Flow(_, flow::Error::State)) => {}
                         Err(Error::Flow(_, flow::Error::Window(_))) => {
-                            net.m[me].reset(id, REFUSED).unwrap();
+                            net.p[me].reset(id, REFUSED).unwrap();
                         }
                         Err(e) => prop_assert!(false, "accept: {e}"),
                     }
                 }
                 Op::Send(s, i, n) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
+                    let Some(id) = pick(&net.p[me], i) else { continue };
                     let payload: Vec<u8> = (0..n).map(|_| { seq = seq.wrapping_add(1); seq }).collect();
-                    let before = net.m[me].flow(id).unwrap().credit();
-                    match net.m[me].send(id, &payload) {
-                        Ok(used) => {
-                            prop_assert!(used as u64 <= u64::from(before));
-                            net.sent[me].entry(id).or_default().extend(&payload[..used]);
-                        }
-                        Err(Error::Flow(_, flow::Error::Blocked | flow::Error::Empty | flow::Error::Closed | flow::Error::State | flow::Error::Stopped)) => {}
+                    match net.p[me].send(id, &payload) {
+                        Ok(()) | Err(Error::Flow(_, flow::Error::Closed | flow::Error::State | flow::Error::Stopped)) => {}
                         Err(e) => prop_assert!(false, "send: {e}"),
                     }
                 }
                 Op::Deliver(s, n, p) => net.deliver(usize::from(s), n, p)?,
                 Op::Consume(s, i, n) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    let n = n.min(net.m[me].flow(id).unwrap().held());
-                    net.m[me].consume(id, n).unwrap();
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    let n = n.min(net.p[me].flow(id).unwrap().held());
+                    net.p[me].consume(id, n).unwrap();
                 }
                 Op::Close(s, i) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    match net.m[me].close(id) {
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    match net.p[me].close(id) {
                         Ok(()) | Err(Error::Flow(_, flow::Error::Closed | flow::Error::State)) => {}
                         Err(e) => prop_assert!(false, "close: {e}"),
                     }
                 }
                 Op::Reset(s, i) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    net.m[me].reset(id, ABORTED).unwrap();
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    net.p[me].reset(id, ABORTED).unwrap();
                 }
                 Op::Stop(s, i) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    match net.m[me].stop(id) {
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    match net.p[me].stop(id) {
                         Ok(()) | Err(Error::Flow(_, flow::Error::Closed | flow::Error::State)) => {}
                         Err(e) => prop_assert!(false, "stop: {e}"),
                     }
                 }
                 Op::Grow(s, i, n) => {
                     let me = usize::from(s);
-                    let Some(id) = pick(&net.m[me], i) else { continue };
-                    let w = net.m[me].flow(id).unwrap().window().saturating_add(n);
-                    net.m[me].grow(id, w).unwrap();
+                    let Some(id) = pick(&net.p[me], i) else { continue };
+                    let w = net.p[me].flow(id).unwrap().window().saturating_add(n);
+                    net.p[me].grow(id, w).unwrap();
                 }
             }
             net.pump();
@@ -1081,32 +1469,30 @@ proptest! {
         }
         for me in 0..2 {
             for (id, bytes) in &net.got[me] {
-                let from = net.sent[1 - me].get(id).map(Vec::as_slice).unwrap_or(&[]);
+                let from = net.p[1 - me].q.taken.get(id).map(Vec::as_slice).unwrap_or(&[]);
                 prop_assert!(from.starts_with(bytes), "flow {}", id);
             }
         }
         for _ in 0..3 {
             net.drain()?;
             for me in 0..2 {
-                let ids: Vec<u32> = net.m[me].ids().collect();
+                let ids: Vec<u32> = net.p[me].ids().collect();
                 for id in ids {
-                    if net.m[me].accept(id).is_err() && net.m[me].flow(id).unwrap().state() == State::Pending {
-                        net.m[me].reset(id, REFUSED).unwrap();
+                    if net.p[me].accept(id).is_err() && net.p[me].flow(id).unwrap().state() == State::Pending {
+                        net.p[me].reset(id, REFUSED).unwrap();
                         continue;
                     }
-                    let _ = net.m[me].close(id);
+                    let _ = net.p[me].close(id);
                 }
             }
         }
         net.drain()?;
         net.budget(budget)?;
-        prop_assert!(net.m[0].is_empty(), "client left {:?}", net.m[0].ids().collect::<Vec<_>>());
-        prop_assert!(net.m[1].is_empty(), "daemon left {:?}", net.m[1].ids().collect::<Vec<_>>());
+        prop_assert!(net.p[0].is_empty(), "client left {:?}", net.p[0].ids().collect::<Vec<_>>());
+        prop_assert!(net.p[1].is_empty(), "daemon left {:?}", net.p[1].ids().collect::<Vec<_>>());
     }
 
-    // #58 — flow isolation: a receiver that never drains some flows stalls
-    // only those; every other flow delivers all it is given, and a stalled
-    // flow never receives more than the window it was granted
+    // #58
     #[test]
     fn isolation(
         window in 1u32..200,
@@ -1116,29 +1502,26 @@ proptest! {
         let mut net = Net::new(window, window, ROOM);
         let mut ids = Vec::new();
         for _ in &mask {
-            let id = net.m[0].open(Proto::Tcp).unwrap();
+            let id = net.p[0].open(Proto::Tcp).unwrap();
             ids.push(id);
         }
         net.pump();
         net.deliver(1, usize::MAX, true)?;
         for &id in &ids {
-            net.m[1].accept(id).unwrap();
+            net.p[1].accept(id).unwrap();
         }
         net.pump();
         net.deliver(0, usize::MAX, false)?;
         let payload: Vec<u8> = (0..target).map(|i| i as u8).collect();
+        for &id in &ids {
+            net.p[0].send(id, &payload).unwrap();
+        }
         for _ in 0..(4 * target + 16) {
             for (&id, &live) in ids.iter().zip(&mask) {
-                let at = net.sent[0].get(&id).map_or(0, Vec::len);
-                if at < target {
-                    if let Ok(n) = net.m[0].send(id, &payload[at..]) {
-                        net.sent[0].entry(id).or_default().extend(&payload[at..at + n]);
-                    }
-                }
                 if live {
-                    let held = net.m[1].flow(id).unwrap().held();
-                    net.m[1].consume(id, held).unwrap();
-                    net.m[1].flush(id).unwrap();
+                    let held = net.p[1].flow(id).unwrap().held();
+                    net.p[1].consume(id, held).unwrap();
+                    net.p[1].flush(id).unwrap();
                 }
             }
             net.pump();
@@ -1155,4 +1538,21 @@ proptest! {
             }
         }
     }
+}
+
+// #58 "Receiving lends"
+#[test]
+fn resume() {
+    let mut c = Peer::new(Side::Client, MAX, ALL, ROOM);
+    let mut d = Peer::new(Side::Daemon, MAX, ALL, u64::from(MAX));
+    let a = established(&mut c, &mut d, Proto::Udp);
+    let b = established(&mut c, &mut d, Proto::Udp);
+    c.send(a, &[1; 40_000]).unwrap();
+    c.send(b, &[2; 30_000]).unwrap();
+    link(&mut c, &mut d);
+    assert_eq!(events(&mut d), vec![Event::Data(a, vec![1; 40_000])]);
+    assert!(d.paused());
+    d.consume(a, 40_000).unwrap();
+    assert!(!d.paused());
+    assert_eq!(events(&mut d), vec![Event::Data(b, vec![2; 30_000])]);
 }

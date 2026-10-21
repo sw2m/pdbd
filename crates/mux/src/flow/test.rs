@@ -23,7 +23,7 @@ fn data(proto: Proto, d: &[u8]) -> Frame<'_> {
     frame(proto, Body::Data(d))
 }
 
-// #58 — RFC 4254 §5.1: each side states its own initial receive window
+// #58 RFC 4254 §5.1
 #[test]
 fn handshake() {
     let (mut opener, open) = Flow::open(1, Proto::Tcp, 100).unwrap();
@@ -51,7 +51,7 @@ fn offer() {
     assert_eq!(Flow::offer(&close, 1).unwrap_err(), Error::State);
 }
 
-// #58 — a datagram flow's window holds at least one maximum datagram
+// #58
 #[test]
 fn small() {
     let w = MAX - 1;
@@ -67,7 +67,7 @@ fn small() {
     assert_eq!(opener.receive(accept), Err(Error::Window(w)));
 }
 
-// #58 — RFC 4254 §5.1: until the acceptor answers, neither side may write
+// #58 RFC 4254 §5.1
 #[test]
 fn unanswered() {
     let (mut opener, open) = Flow::open(1, Proto::Tcp, 100).unwrap();
@@ -85,7 +85,7 @@ fn unanswered() {
     assert_eq!(opener.receive(stop), Err(Error::State));
 }
 
-// #58 — an opener may abandon its open, and an acceptor may refuse it
+// #58
 #[test]
 fn refuse() {
     let (mut opener, open) = Flow::open(1, Proto::Udp, MAX).unwrap();
@@ -103,7 +103,7 @@ fn refuse() {
     assert!(acceptor.done());
 }
 
-// #58 — a received RESET code other than refused reads as aborted
+// #58
 #[test]
 fn codes() {
     for (code, want) in
@@ -115,7 +115,7 @@ fn codes() {
     }
 }
 
-// #58 — a stream splits at the credit edge
+// #58
 #[test]
 fn split() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 4);
@@ -127,7 +127,7 @@ fn split() {
     assert_eq!((b.granted(), b.held()), (0, 4));
 }
 
-// #58 — a stream chunk never exceeds one frame
+// #58
 #[test]
 fn chunk() {
     let (mut a, _) = pair(Proto::Tcp, 1, u32::MAX);
@@ -135,7 +135,7 @@ fn chunk() {
     assert_eq!(a.send(&big), Ok(MAX as usize));
 }
 
-// #58 — a datagram is never split: it waits for its whole length in credit
+// #58
 #[test]
 fn datagram() {
     let (mut a, _) = pair(Proto::Udp, MAX, MAX + 4);
@@ -155,7 +155,7 @@ fn empty() {
     assert_eq!(a.send(b"").unwrap_err(), Error::Empty);
 }
 
-// #58 — RFC 9113 §6.9.1: a peer that overruns its credit is an error
+// #58 RFC 9113 §6.9.1
 #[test]
 fn overrun() {
     let (_, mut b) = pair(Proto::Tcp, 10, 4);
@@ -164,7 +164,7 @@ fn overrun() {
     assert_eq!((b.granted(), b.held()), (4, 0));
 }
 
-// #58 — consumption replenishes at half the window, by exactly what was freed
+// #58
 #[test]
 fn replenish() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
@@ -197,7 +197,7 @@ fn flush() {
     assert_eq!(b.flush(), None);
 }
 
-// #58 — a receiver may enlarge its window by over-granting; it never shrinks
+// #58
 #[test]
 fn grow() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
@@ -212,7 +212,7 @@ fn grow() {
     assert_eq!(b.flush(), None);
 }
 
-// #58 — growing before the ACCEPT goes out enlarges the initial grant
+// #58
 #[test]
 fn early() {
     let (_, open) = Flow::open(1, Proto::Tcp, 10).unwrap();
@@ -222,7 +222,7 @@ fn early() {
     assert_eq!(b.accept(), Ok(frame(Proto::Tcp, Body::Accept(25))));
 }
 
-// #58 — RFC 4254 §5.2: the window never exceeds 2^32-1
+// #58 RFC 4254 §5.2
 #[test]
 fn overflow() {
     let (mut a, _) = pair(Proto::Tcp, 1, u32::MAX);
@@ -233,7 +233,7 @@ fn overflow() {
     assert_eq!(b.grow(u32::MAX), Ok(()));
 }
 
-// #58 — half-close each way, then done (yamux FIN, RFC 4254 §5.3)
+// #58 RFC 4254 §5.3
 #[test]
 fn halfclose() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
@@ -255,7 +255,7 @@ fn halfclose() {
     assert!(a.done());
 }
 
-// #58 — RFC 9113 §6.9: a WINDOW may cross or follow this side's CLOSE
+// #58 RFC 9113 §6.9
 #[test]
 fn crossing() {
     let (mut a, _) = pair(Proto::Tcp, 10, 10);
@@ -264,7 +264,7 @@ fn crossing() {
     assert_eq!(a.receive(w), Ok(Event::Window(3)));
 }
 
-// #58 — a closed receiver stops granting: no WINDOW after the peer's CLOSE
+// #58
 #[test]
 fn drained() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
@@ -275,8 +275,7 @@ fn drained() {
     assert_eq!(b.flush(), None);
 }
 
-// #58 — QUIC STOP_SENDING: a receiver stops reading one direction; data
-// already in flight is discarded but still charged against its credit
+// #58
 #[test]
 fn stop() {
     let (mut a, mut b) = pair(Proto::Tcp, 10, 10);
@@ -298,7 +297,7 @@ fn stop() {
     assert!(b.done());
 }
 
-// #58 — the stopped sender gets a terminal result, never Blocked
+// #58
 #[test]
 fn stopped() {
     let (mut a, _) = pair(Proto::Tcp, 10, 4);
@@ -317,8 +316,7 @@ fn stopped() {
     assert_eq!(a.receive(stop), Ok(Event::Stopped));
 }
 
-// #58 — a flow left opening, pending or half-closed past a deadline is
-// overdue; an open or finished one never is
+// #58
 #[test]
 fn overdue() {
     let (mut opener, open) = Flow::open(1, Proto::Tcp, 10).unwrap();
@@ -437,9 +435,7 @@ fn inflight(q: &VecDeque<Vec<u8>>) -> (u64, u64) {
 }
 
 proptest! {
-    // #58 — for an honest pair: a sender never exceeds credit, the receiver
-    // never rejects, granted+held+freed stays the window, and credit is
-    // conserved across the wire (updates replenish exactly)
+    // #58
     #[test]
     fn credit(
         udp in any::<bool>(),
@@ -536,7 +532,7 @@ proptest! {
         prop_assert!(ends[0].sent.starts_with(&ends[1].got));
     }
 
-    // #58 — a window update adds exactly its increment, or fails and adds nothing
+    // #58
     #[test]
     fn update(start in 0u32..=u32::MAX, inc in 1u32..=u32::MAX) {
         let (mut a, _) = pair(Proto::Tcp, 1, start);

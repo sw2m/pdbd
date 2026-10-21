@@ -1,5 +1,5 @@
 // see sw2m/pdbd-bench mux/README.md: ours, raced as `core` and `loopback` by the mux runner
-use mux::{Event, Multi, Proto, Side, Transmit};
+use mux::{Event, Multi, Proto, Pull, Side};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::exit;
@@ -130,6 +130,10 @@ impl Socket {
         self.out.extend_from_slice(bytes);
     }
 
+    fn busy(&self) -> bool {
+        self.at < self.out.len()
+    }
+
     fn write(&mut self) {
         while self.at < self.out.len() {
             match self.tcp.write(&self.out[self.at..]) {
@@ -156,26 +160,31 @@ struct Tally<'a> {
 }
 
 impl Tally<'_> {
+    fn find(&self, id: u32) -> Option<usize> {
+        let i = (id as usize).checked_sub(1)? / 2;
+        (self.ids.get(i) == Some(&id)).then_some(i)
+    }
+
     fn take(&mut self, m: &mut Multi) {
         while let Some(event) = m.poll() {
-            match event.map(<[u8]>::len) {
+            match event {
                 Event::Open(id, _) if self.side == 1 => {
                     m.accept(id)
                         .unwrap_or_else(|e| fail(&format!("accept: {e:?}")));
                     self.arrived.push(Instant::now());
                 }
                 Event::Accepted(id) if self.side == 0 => {
-                    if let Some(i) = self.ids.iter().position(|&x| x == id) {
+                    if let Some(i) = self.find(id) {
                         self.ends[i].accepted = true;
                     }
                 }
                 Event::Data(id, n) => {
-                    let Some(i) = self.ids.iter().position(|&x| x == id) else {
+                    let Some(i) = self.find(id) else {
                         continue;
                     };
-                    self.ends[i].got += n;
+                    self.ends[i].got += n as usize;
                     if !self.ends[i].stalled {
-                        m.consume(id, n as u32).unwrap_or_else(|e| {
+                        m.consume(id, n).unwrap_or_else(|e| {
                             fail(&format!("consume: {e:?}"))
                         });
                     }
@@ -183,27 +192,6 @@ impl Tally<'_> {
                 _ => {}
             }
         }
-        if m.paused() {
-            m.fill(0).unwrap_or_else(|e| fail(&format!("fill: {e:?}")));
-        }
-    }
-
-    fn give(&mut self, m: &mut Multi, mut bytes: &[u8]) -> usize {
-        let total = bytes.len();
-        while !bytes.is_empty() {
-            if m.spare().is_empty() {
-                self.take(m);
-                if m.spare().is_empty() {
-                    break;
-                }
-            }
-            let room = m.spare();
-            let n = room.len().min(bytes.len());
-            room[..n].copy_from_slice(&bytes[..n]);
-            m.fill(n).unwrap_or_else(|e| fail(&format!("fill: {e:?}")));
-            bytes = &bytes[n..];
-        }
-        total - bytes.len()
     }
 }
 
@@ -211,7 +199,9 @@ struct Duo {
     near: Multi,
     far: Multi,
     link: Option<[Socket; 2]>,
-    held: [Vec<u8>; 2],
+    pending: [Vec<usize>; 2],
+    unit: Vec<usize>,
+    out: Vec<u8>,
     data: Vec<u8>,
     p: Params,
     ids: Vec<u32>,
@@ -247,7 +237,9 @@ impl Duo {
             near: multi(Side::Client),
             far: multi(Side::Daemon),
             link,
-            held: [Vec::new(), Vec::new()],
+            pending: [Vec::new(), Vec::new()],
+            unit: Vec::new(),
+            out: vec![0; 1 << 18],
             data: vec![0x5a; p.chunk.max(p.datagram)],
             p,
             ids: Vec::new(),
@@ -263,13 +255,22 @@ impl Duo {
                 self.carry(1);
             }
             Some(link) => {
-                link[0].write();
-                while let Some(Transmit::Bytes(b)) = self.near.transmit() {
-                    link[0].send(b);
-                }
-                link[1].write();
-                while let Some(Transmit::Bytes(b)) = self.far.transmit() {
-                    link[1].send(b);
+                for (side, socket) in link.iter_mut().enumerate() {
+                    socket.write();
+                    let m = if side == 0 {
+                        &mut self.near
+                    } else {
+                        &mut self.far
+                    };
+                    let mut pull =
+                        source(&mut self.pending[side], &self.unit, &self.data);
+                    while !socket.busy() {
+                        let n = m.pull(&mut self.out, &mut pull);
+                        if n == 0 {
+                            break;
+                        }
+                        socket.send(&self.out[..n]);
+                    }
                 }
                 self.read(1);
                 self.read(0);
@@ -310,23 +311,25 @@ impl Duo {
         } else {
             (&mut self.far, &mut self.near)
         };
-        let (ends, held) = (&mut self.ends[to], &mut self.held[to]);
         let mut tally = Tally {
             side: to,
             ids: &self.ids,
-            ends,
+            ends: &mut self.ends[to],
             arrived: &mut self.arrived,
         };
-        let n = tally.give(dst, held);
-        held.drain(..n);
-        if !held.is_empty() {
-            return;
-        }
-        while let Some(Transmit::Bytes(b)) = src.transmit() {
-            let n = tally.give(dst, b);
-            if n < b.len() {
-                held.extend_from_slice(&b[n..]);
+        let mut pull = source(&mut self.pending[from], &self.unit, &self.data);
+        let mut retried = false;
+        loop {
+            let n = src.pull(dst.spare(), &mut pull);
+            if n > 0 {
+                dst.fill(n)
+                    .unwrap_or_else(|e| fail(&format!("fill: {e:?}")));
+                retried = false;
+            } else if retried {
                 return;
+            } else {
+                tally.take(dst);
+                retried = true;
             }
         }
     }
@@ -368,6 +371,12 @@ impl Duo {
             self.ids.push(id);
             self.ends[0].push(End::default());
             self.ends[1].push(End::default());
+            self.pending[0].push(0);
+            self.pending[1].push(0);
+            self.unit.push(match proto {
+                Proto::Tcp => 0,
+                Proto::Udp => self.p.datagram,
+            });
         }
         let idx: Vec<usize> = (first..first + n).collect();
         if !self.until(|d| idx.iter().all(|&i| d.ends[0][i].accepted)) {
@@ -402,20 +411,41 @@ impl Duo {
         } else {
             &mut self.far
         };
-        let n = n.min(self.data.len());
-        m.send(id, &self.data[..n]).unwrap_or(0)
+        self.pending[side][i] = self.pending[side][i].saturating_add(n);
+        m.ready(id)
+            .unwrap_or_else(|e| fail(&format!("ready: {e:?}")));
+        n
     }
 
     fn fill(&mut self, idx: &[usize], share: usize, sent: &mut [usize]) {
         for (k, &i) in idx.iter().enumerate() {
-            while sent[k] < share {
-                let n = self.send(0, i, self.p.chunk.min(share - sent[k]));
-                if n == 0 {
-                    break;
-                }
-                sent[k] += n;
+            if sent[k] < share {
+                self.send(0, i, share - sent[k]);
+                sent[k] = share;
             }
         }
+    }
+}
+
+fn source<'a>(
+    pending: &'a mut [usize],
+    unit: &'a [usize],
+    data: &'a [u8],
+) -> impl FnMut(u32, &mut [u8]) -> Pull + 'a {
+    move |id, buf| {
+        let i = (id as usize - 1) / 2;
+        let Some(left) = pending.get_mut(i) else {
+            return Pull::Wait;
+        };
+        let n = match unit[i] {
+            _ if *left == 0 => return Pull::Wait,
+            0 => (*left).min(buf.len()).min(data.len()),
+            u if u <= buf.len() => u,
+            _ => return Pull::Blocked,
+        };
+        buf[..n].copy_from_slice(&data[..n]);
+        *left -= n;
+        Pull::Bytes(n)
     }
 }
 

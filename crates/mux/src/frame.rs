@@ -128,6 +128,13 @@ impl Head {
         }
     }
 
+    pub fn data(out: &mut [u8], flow: u32, proto: Proto, len: usize) {
+        out[0] = 0;
+        out[1] = proto as u8;
+        out[2..6].copy_from_slice(&flow.to_be_bytes());
+        out[6..HEADER].copy_from_slice(&(len as u32).to_be_bytes());
+    }
+
     pub fn body<'a>(&self, payload: &'a [u8]) -> Body<'a> {
         match self.kind {
             0 => Body::Data(payload),
@@ -195,10 +202,52 @@ impl<'a> Frame<'a> {
     }
 }
 
-const ROOM: usize = 4 * WHOLE; // the read buffer holds four whole frames
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unit {
+    #[default]
+    Frame,
+    Datagram,
+    Bare,
+}
+
+impl Unit {
+    fn header(self) -> usize {
+        match self {
+            Self::Frame => HEADER,
+            Self::Datagram => 2,
+            Self::Bare => 0,
+        }
+    }
+
+    fn whole(self) -> usize {
+        match self {
+            Self::Frame => WHOLE,
+            Self::Datagram => 2 + MAX as usize,
+            Self::Bare => 0,
+        }
+    }
+
+    fn room(self) -> usize {
+        match self {
+            Self::Bare => 1 << 16, // one socket read
+            _ => 4 * self.whole(), // four whole units
+        }
+    }
+
+    pub fn size(self, buf: &[u8]) -> Result<Option<usize>, Error> {
+        match self {
+            Self::Frame => Ok(Head::parse(buf)?.map(|h| h.size())),
+            Self::Datagram => Ok(buf
+                .get(..2)
+                .map(|b| 2 + usize::from(u16::from_be_bytes([b[0], b[1]])))),
+            Self::Bare => Ok((!buf.is_empty()).then_some(buf.len())),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Reader {
+    unit: Unit,
     buf: Vec<u8>,
     end: usize,
     at: usize,
@@ -209,20 +258,27 @@ impl Reader {
         Self::default()
     }
 
+    pub fn with(unit: Unit) -> Self {
+        Self {
+            unit,
+            ..Self::default()
+        }
+    }
+
     pub fn spare(&mut self, keep: usize) -> &mut [u8] {
         if keep == self.end {
             self.end = 0;
             self.at = 0;
         }
         if self.buf.is_empty() {
-            self.buf.resize(ROOM, 0);
+            self.buf.resize(self.unit.room(), 0);
         }
         let limit = self.limit();
         &mut self.buf[self.end..limit]
     }
 
     fn limit(&self) -> usize {
-        let Some(edge) = self.buf.len().checked_sub(WHOLE) else {
+        let Some(edge) = self.buf.len().checked_sub(self.unit.whole()) else {
             return self.end;
         };
         if self.end < edge {
@@ -230,12 +286,10 @@ impl Reader {
         }
         let mut at = self.at;
         while at < self.end {
-            match Head::parse(&self.buf[at..self.end]) {
-                Ok(Some(head)) if at + head.size() < self.end => {
-                    at += head.size()
-                }
-                Ok(Some(head)) => return at + head.size(),
-                Ok(None) => return at + HEADER,
+            match self.unit.size(&self.buf[at..self.end]) {
+                Ok(Some(size)) if at + size < self.end => at += size,
+                Ok(Some(size)) => return at + size,
+                Ok(None) => return at + self.unit.header(),
                 Err(_) => break,
             }
         }
@@ -248,7 +302,7 @@ impl Reader {
     }
 
     pub fn grow(&mut self) {
-        let size = self.buf.len().max(ROOM) * 2;
+        let size = self.buf.len().max(self.unit.room()) * 2;
         self.buf.resize(size, 0);
     }
 
@@ -267,17 +321,24 @@ impl Reader {
         }
     }
 
-    pub fn step(&mut self) -> Result<Option<(Head, usize)>, Error> {
+    pub fn advance(&mut self) -> Result<Option<Range<usize>>, Error> {
         let rest = self.peek();
-        let Some(head) = Head::parse(rest)? else {
+        let Some(size) = self.unit.size(rest)? else {
             return Ok(None);
         };
-        if rest.len() < head.size() {
+        if rest.len() < size {
             return Ok(None);
         }
-        let payload = self.at + HEADER;
-        self.at += head.size();
-        Ok(Some((head, payload)))
+        let start = self.at;
+        self.at += size;
+        Ok(Some(start + self.unit.header()..start + size))
+    }
+
+    pub fn step(&mut self) -> Result<Option<(Head, usize)>, Error> {
+        let Some(head) = Head::parse(self.peek())? else {
+            return Ok(None);
+        };
+        Ok(self.advance()?.map(|range| (head, range.start)))
     }
 
     pub fn pull(&mut self) -> Result<Option<Frame<'_>>, Error> {
@@ -300,8 +361,8 @@ impl Reader {
         let rest = self.peek();
         let mut k = 0;
         while k < rest.len() {
-            match Head::parse(&rest[k..]) {
-                Ok(Some(head)) => k += head.size(),
+            match self.unit.size(&rest[k..]) {
+                Ok(Some(size)) => k += size,
                 _ => return false,
             }
         }

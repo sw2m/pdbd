@@ -53,6 +53,8 @@ pub struct Flow {
     stopped: bool,
     halted: bool,
     since: u64,
+    wants: bool,
+    queued: bool,
 }
 
 impl Flow {
@@ -84,6 +86,8 @@ impl Flow {
             stopped: false,
             halted: false,
             since: 0,
+            wants: false,
+            queued: false,
         }
     }
 
@@ -129,7 +133,7 @@ impl Flow {
         Ok(self.frame(Body::Accept(self.window)))
     }
 
-    pub fn send(&mut self, data: &[u8]) -> Result<usize, Error> {
+    pub fn ready(&self) -> Result<(), Error> {
         if self.sent || self.state == State::Reset {
             return Err(Error::Closed);
         }
@@ -139,6 +143,11 @@ impl Flow {
         if self.state == State::Pending {
             return Err(Error::State);
         }
+        Ok(())
+    }
+
+    pub fn send(&mut self, data: &[u8]) -> Result<usize, Error> {
+        self.ready()?;
         let len = data.len();
         if self.proto == Proto::Udp && len > MAX as usize {
             return Err(Error::Oversize(len));
@@ -303,6 +312,27 @@ impl Flow {
             State::Reset => false,
         };
         stuck && now.saturating_sub(self.since) >= deadline
+    }
+
+    pub fn sendable(&self) -> bool {
+        let credit = self.credit > 0 || self.proto == Proto::Udp;
+        self.state == State::Open && !self.sent && !self.halted && credit
+    }
+
+    pub fn wants(&self) -> bool {
+        self.wants
+    }
+
+    pub fn want(&mut self, on: bool) {
+        self.wants = on;
+    }
+
+    pub fn queued(&self) -> bool {
+        self.queued
+    }
+
+    pub fn queue(&mut self, on: bool) {
+        self.queued = on;
     }
 
     pub fn stopped(&self) -> bool {

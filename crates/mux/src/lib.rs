@@ -2,16 +2,18 @@
 
 pub mod flow;
 pub mod frame;
-mod lane;
+mod hold;
 pub mod multi;
 pub mod single;
 
 pub use flow::Flow;
-pub use frame::{Body, Frame, Proto, Reader};
+pub use frame::{Body, Frame, Proto, Reader, Unit};
 pub use multi::Multi;
 pub use single::Single;
 
+use std::collections::vec_deque;
 use std::fmt;
+use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -26,7 +28,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event<D> {
+pub enum Event<D = u32> {
     Open(u32, Proto),
     Accepted(u32),
     Data(u32, D),
@@ -36,11 +38,30 @@ pub enum Event<D> {
     Stopped(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Transmit<B> {
-    Bytes(B),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transmit {
+    Bytes(usize),
     Shutdown,
     Abort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pull {
+    Bytes(usize),
+    Wait,
+    Blocked,
+    End,
+    Fail,
+}
+
+pub trait Source {
+    fn pull(&mut self, id: u32, buf: &mut [u8]) -> Pull;
+}
+
+impl<F: FnMut(u32, &mut [u8]) -> Pull> Source for F {
+    fn pull(&mut self, id: u32, buf: &mut [u8]) -> Pull {
+        self(id, buf)
+    }
 }
 
 impl<D> Event<D> {
@@ -57,21 +78,39 @@ impl<D> Event<D> {
     }
 }
 
-#[cfg(test)]
-impl Event<&[u8]> {
-    pub fn owned(self) -> Event<Vec<u8>> {
-        self.map(<[u8]>::to_vec)
+#[derive(Debug, Clone)]
+pub struct Held<'a> {
+    first: &'a [u8],
+    head: Option<&'a Range<usize>>,
+    pieces: vec_deque::Iter<'a, Range<usize>>,
+    buf: &'a Reader,
+}
+
+impl<'a> Held<'a> {
+    fn new(
+        first: &'a [u8],
+        head: Option<&'a Range<usize>>,
+        pieces: vec_deque::Iter<'a, Range<usize>>,
+        buf: &'a Reader,
+    ) -> Self {
+        Self {
+            first,
+            head,
+            pieces,
+            buf,
+        }
     }
 }
 
-#[cfg(test)]
-impl Transmit<&[u8]> {
-    pub fn owned(self) -> Transmit<Vec<u8>> {
-        match self {
-            Self::Bytes(b) => Transmit::Bytes(b.to_vec()),
-            Self::Shutdown => Transmit::Shutdown,
-            Self::Abort => Transmit::Abort,
+impl<'a> Iterator for Held<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        if !self.first.is_empty() {
+            return Some(std::mem::take(&mut self.first));
         }
+        let range = self.head.take().or_else(|| self.pieces.next())?;
+        Some(self.buf.slice(range.clone()))
     }
 }
 
@@ -109,8 +148,8 @@ macro_rules! each {
 }
 
 impl Mux {
-    pub fn single() -> Self {
-        Self::Single(Single::new())
+    pub fn single(proto: Proto) -> Self {
+        Self::Single(Single::new(proto))
     }
 
     pub fn multi(
@@ -149,12 +188,27 @@ impl Mux {
         each!(self, m => m.fail())
     }
 
-    pub fn poll(&mut self) -> Option<Event<&[u8]>> {
+    pub fn poll(&mut self) -> Option<Event> {
         each!(self, m => m.poll())
     }
 
-    pub fn transmit(&mut self) -> Option<Transmit<&[u8]>> {
-        each!(self, m => m.transmit())
+    pub fn held(&self, id: u32) -> Held<'_> {
+        each!(self, m => m.held(id))
+    }
+
+    pub fn ready(&mut self, id: u32) -> Result<(), Error> {
+        each!(self, m => m.ready(id))
+    }
+
+    pub fn pull(
+        &mut self,
+        out: &mut [u8],
+        source: &mut impl Source,
+    ) -> Transmit {
+        match self {
+            Self::Single(m) => m.pull(out, source),
+            Self::Multi(m) => Transmit::Bytes(m.pull(out, source)),
+        }
     }
 
     pub fn open(&mut self, proto: Proto) -> Result<u32, Error> {
@@ -163,10 +217,6 @@ impl Mux {
 
     pub fn accept(&mut self, id: u32) -> Result<(), Error> {
         each!(self, m => m.accept(id))
-    }
-
-    pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
-        each!(self, m => m.send(id, data))
     }
 
     pub fn consume(&mut self, id: u32, n: u32) -> Result<(), Error> {
