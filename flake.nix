@@ -78,7 +78,9 @@
             pkgs.jq
             pkgs.python3
           ];
+          buildInputs = [ pkgs.glibc.static ]; # see README "Benchmarks": an artifact linked static against glibc
           MUSL_TARGET = musl;
+          GNU_TARGET = pkgs.stdenv.hostPlatform.config;
           BENCH_FIXTURE = pdbd-bench;
           BENCH_SETUP = "${bencher}/ci/setup.sh";
         };
@@ -102,7 +104,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-UXwbXfZp9iliCCzNcXDta5cPh4T8uLKnfL3qFCQ+hN0=";
+          "x86_64-linux" = "sha256-ynoGhxce4aP6kQV1NejbLGj4VyJ31DzYegZo5cXzyEc=";
         };
       };
 }

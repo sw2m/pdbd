@@ -16,8 +16,10 @@ benchmark:
           [ -n "$name" ] && [ -f "$dir/examples/$name.rs" ] || continue
           {nixsh} -c '
             set -eu
-            cargo build --release --locked -p "$1" --example "$2" --target "$MUSL_TARGET"
-            cp "${CARGO_TARGET_DIR:-target}/$MUSL_TARGET/release/examples/$2" "$3"
+            target=$MUSL_TARGET
+            [ "${BENCH_LIBC:-musl}" = musl ] || target=$GNU_TARGET RUSTFLAGS="-C target-feature=+crt-static"
+            cargo build --release --locked -p "$1" --example "$2" --target "$target"
+            cp "${CARGO_TARGET_DIR:-target}/$target/release/examples/$2" "$3"
           ' _ "$(basename "$dir")" "$name" "$dir/bench/$path"
         done <<END
         $artifacts

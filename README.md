@@ -870,9 +870,9 @@ bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
 [pdbd-bench](https://github.com/sw2m/pdbd-bench), which holds the harness code, and passes it
 the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
 `pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, jq, a Rust
-toolchain that also targets musl, and three variables the hook uses: `$MUSL_TARGET`,
-`$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP` (bencher's `ci/setup.sh`), plus the
-`python3` that the runners' `resolve` needs. The variables avoid the `BENCHER_` prefix, which
+toolchain that also targets musl, glibc's static libraries, and four variables the hook uses:
+`$MUSL_TARGET`, `$GNU_TARGET`, `$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP`
+(bencher's `ci/setup.sh`), plus the `python3` that the runners' `resolve` needs. The variables avoid the `BENCHER_` prefix, which
 bencher reads as its own settings.
 
 **Provisioning is cached.** Each `bench.toml` sets `cache = "provisioned"`: bencher keeps the
@@ -889,11 +889,15 @@ in by extending it and committing a `bench/`. It resolves the crate from `$LEFTH
 `$DIR`), the way `nix/lefthook.yml` does, and runs:
 
 1. **build**: every `[artifacts]` entry in `bench/bench.toml` named after one of the crate's
-   examples (`examples/<name>.rs`) is built static (`$MUSL_TARGET`) and copied to the artifact's
-   path, since it runs in bencher's Debian guest, not on the build host; `bench/fixture` is
+   examples (`examples/<name>.rs`) is built static and copied to the artifact's path, since it
+   runs in bencher's Debian guest, not on the build host. It links musl (`$MUSL_TARGET`) unless
+   the crate's `build` job sets `BENCH_LIBC: glibc`, which links glibc statically (`$GNU_TARGET`,
+   `crt-static`): a benchmark that races native comparators on glibc's allocator races ours on
+   it too, since musl's malloc made the mux's per-frame allocations 14× slower (`mux`); `bench/fixture` is
    linked to the pdbd-bench input, and when `bench.toml` names `resolved`, that file is written
    with the runner's `resolve` (`python3 bench/fixture/<runner>/resolve bench`). All are
-   gitignored. `transport` builds `linkup`, `socat` builds `verdict`;
+   gitignored. `transport` builds `linkup`, `socat` builds `verdict`, `mux` builds `muxbench`
+   (on glibc);
 2. **incus**: installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't
    there, which needs `sudo -n`, as the benchmark already does;
 3. **run**: `bencher run <crate>/bench`, then renders its report (`bench/report.jq`) into the

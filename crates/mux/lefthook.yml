@@ -6,3 +6,9 @@ test:
   jobs:
     - name: cargo
       run: cargo test -p mux --locked
+
+benchmark:
+  jobs:
+    - name: build
+      env:
+        BENCH_LIBC: glibc # see README "Benchmarks": ours links the allocator the native comparators use

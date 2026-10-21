@@ -293,7 +293,7 @@ impl Duo {
         true
     }
 
-    // opened opens n flows, each carrying one byte first so the far end has accepted it before any clock starts
+    // see sw2m/pdbd-bench mux/README.md "Scenarios"
     fn opened(&mut self, proto: Proto, n: usize) -> Vec<usize> {
         let first = self.ids.len();
         for _ in 0..n {
@@ -311,11 +311,15 @@ impl Duo {
         }
         if proto == Proto::Tcp {
             let mut primed = vec![false; n];
+            let mut echoed = vec![false; n];
             let end = Instant::now() + Duration::from_secs_f64(self.p.timeout);
-            while idx.iter().any(|&i| self.ends[1][i].got < 1) {
+            while idx.iter().any(|&i| self.ends[0][i].got < 1) {
                 for (k, &i) in idx.iter().enumerate() {
                     if !primed[k] {
                         primed[k] = self.send(0, i, 1) == 1;
+                    }
+                    if !echoed[k] && self.ends[1][i].got >= 1 {
+                        echoed[k] = self.send(1, i, 1) == 1;
                     }
                 }
                 self.pump();
@@ -559,15 +563,7 @@ fn churn(d: &mut Duo) -> Outcome {
 
 fn idle(d: &mut Duo) -> Outcome {
     let before = rss();
-    let idx = d.opened(Proto::Tcp, d.p.idle);
-    for &i in &idx {
-        while d.send(1, i, 1) == 0 {
-            d.pump();
-        }
-    }
-    if !d.until(|d| idx.iter().all(|&i| d.ends[0][i].got >= 1)) {
-        fail("touching the idle flows missed the deadline");
-    }
+    d.opened(Proto::Tcp, d.p.idle);
     std::thread::sleep(Duration::from_millis(50)); // see sw2m/pdbd-bench mux/README.md "Scenarios"
     let after = rss();
     Outcome {

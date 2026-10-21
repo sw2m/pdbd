@@ -18,7 +18,8 @@ def verdict($name; $impl):
    + "\($report.cache.level // "unknown") cache); see pdbd-bench's mux/README.md for each scenario, the fairness settings and the "
    + "statistics. Each cell is the median of \($repeat) repetitions, with its 95% confidence interval when there are enough. "
    + "Ours is `core` (two sessions fed into each other, no sockets; compare it with `nghttp2-core`) and `loopback` "
-   + "(a single-threaded busy-poll loop: a lower bound for #59's event loop). An HTTP/2 flow is a POST, so opening one sends headers."),
+   + "(a single-threaded busy-poll loop: a lower bound for #59's event loop), linked statically against glibc like the native comparators: "
+   + "on musl's allocator, its per-frame allocations ran 14× slower (#83). An HTTP/2 flow is a POST, so opening one sends headers."),
   "",
   ("Raced: " + ([$impls[] | if .version then "\(.impl) \(.version) (\(.mode), \(.toolchain))" else "\(.impl) (budget \(.budget) B)" end] | join("; ")) + "."),
   "",
