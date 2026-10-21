@@ -8,7 +8,7 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    bencher.url = "github:sw2m/bencher/v0.1.0"; # see README "Benchmarks"
+    bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
       url = "github:sw2m/pdbd-bench";
       flake = false;
@@ -76,6 +76,7 @@
             (rust.override { targets = [ musl ]; })
             bencher.packages.${system}.default
             pkgs.jq
+            pkgs.python3
           ];
           MUSL_TARGET = musl;
           BENCH_FIXTURE = pdbd-bench;
@@ -101,7 +102,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-A7IAgwPexItPGUJ82XBw2M9IGwc2xDlBzX3sobs6rZU=";
+          "x86_64-linux" = "sha256-JeI135KdyQlclzUHidrZvSlv8xfOYDejndhRwe7TjP8=";
         };
       };
 }

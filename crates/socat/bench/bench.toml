@@ -1,0 +1,17 @@
+cache = "provisioned"  # see README "Benchmarks": provisioning is cached, keyed on resolved.json
+resolved = "resolved.json"  # written by the benchmark hook with the fixture's resolve
+
+[fixture]
+path = "fixture"  # a symlink to the pdbd-bench flake input, made by the benchmark hook
+runner = "socat"
+
+[limits]
+cpu = 3  # a 4-vCPU GitHub runner: one for telemetry, two for the oracles, one left to the host
+memory = "4GiB"  # cargo builds tocat while provisioning
+provision = "PT45M"  # socat, Go, Rust and tocat build from source while provisioning
+run = 1800
+
+[artifacts]
+verdict = "verdict"  # examples/verdict.rs, built static by the benchmark hook
+hand = "hand.jsonl"
+alternatives = "alternatives.jsonl"

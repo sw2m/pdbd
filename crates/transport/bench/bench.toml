@@ -1,5 +1,8 @@
+cache = "provisioned"  # see README "Benchmarks": provisioning is cached, keyed on resolved.json
+resolved = "resolved.json"  # written by the benchmark hook with the fixture's resolve
+
 [fixture]
-path = "fixture"  # a symlink to the pdbd-bench flake input, made by benchmark:link
+path = "fixture"  # a symlink to the pdbd-bench flake input, made by the benchmark hook
 runner = "transport"
 
 [limits]
@@ -13,4 +16,4 @@ repeat = 3
 duration = 10
 
 [artifacts]
-linkup = "linkup"  # the static musl build benchmark:link copies here
+linkup = "linkup"  # examples/linkup.rs, built static by the benchmark hook

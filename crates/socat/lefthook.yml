@@ -1,0 +1,10 @@
+extends:
+  - nix/lefthook.yml
+  - bench/lefthook.yml
+
+test:
+  jobs:
+    - name: cargo
+      run: cargo test -p socat --locked
+    - name: cargo-ascii
+      run: cargo test -p socat --locked --no-default-features

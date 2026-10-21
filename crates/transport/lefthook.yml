@@ -1,5 +1,6 @@
 extends:
   - nix/lefthook.yml
+  - bench/lefthook.yml
   - crates/transport/lefthook.*.yml
 
 # Datapath test — #12-A
@@ -10,10 +11,3 @@ test:
     - name: datapath
       run: lefthook run test:datapath
       tags: [privileged]
-
-benchmark:
-  jobs:
-    - name: link
-      run: lefthook run benchmark:link
-      tags:
-        - privileged

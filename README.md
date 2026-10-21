@@ -82,6 +82,54 @@ Transports are named with a **socat / [websocat](https://docs.rs/websocat)-style
 
 Each `TYPE` maps to an existing `AsyncRead + AsyncWrite` backend (`tokio` TCP/unix/UDP, `tokio-serial`, `tokio-vsock`, `tokio-tungstenite`+`ws_stream_tungstenite` for `ws`/`wss`, `wtransport` for `webtransport`), so L1 is largely assembly. `pdbd` implements this socat-style address dialect **natively** — the inject-and-play goal is **one** binary on the target, never `pdbd` *plus* a `socat` binary. `EXEC:` is the sleeper feature — the link can ride over anything that produces a pipe — but it runs *whatever program is already there*; it is never a dependency on `socat` being present. **`WSS` and `WEBTRANSPORT` are the built-in *secure* transports** (see *Crypto*): a substrate explosion, though possible, is *unreasonable* for them — their web overhead only pays off with routers between the ends — so their substrate stays stable. The lower-overhead secured pipes (TLS, SSH, raw QUIC) are what exploded traffic actually favors, so they compose *externally* via `EXEC:`.
 
+**The address dialect is socat's whole grammar, minus what no universal L1 can be defined for** (crate `socat`, #57). Every address type in socat 1.8's manual parses, prints canonically and round-trips, with socat's own alias table (`socat -hhh`), reimplemented from that documentation (§License). An alias prints as the type it names:
+
+| Group | Types |
+| --- | --- |
+| streams | `TCP` (alias `INET`), `UDP`, `UDPLITE`, `SCTP`, `DCCP`: `-CONNECT` (the bare type), `-LISTEN` with pdbd's optional bind host |
+| datagrams | `-SENDTO` (alias `-SEND`), `-DATAGRAM` (alias `-DGRAM`), `-RECVFROM`, `-RECV` for `UDP`, `UDPLITE` and `IP` (a protocol number; bare `IP` is `IP-SENDTO`); `-SENDTO` (`UNIX-SEND` too), `-RECVFROM`, `-RECV`, `-CLIENT` for `UNIX` and `ABSTRACT` |
+| local | `UNIX` and `ABSTRACT`, `-CONNECT`/`-LISTEN`; bare `UNIX` and `ABSTRACT` are the `-CLIENT` forms (connect, or send datagrams to a datagram socket), and `LOCAL` is `UNIX-CONNECT`; `VSOCK-CONNECT:cid:port` (bare `VSOCK`), `VSOCK-LISTEN:port` |
+| web | `WS` / `WSS` / `WEBTRANSPORT`, `-CONNECT`/`-LISTEN` with an optional resource path (`WS-CONNECT:host:443/socket`), and `ws://`, `wss://`, `https://` (WebTransport) URLs |
+| generic | `SOCKET-CONNECT`/`-LISTEN:<domain>:<protocol>:<address>`, `SOCKET-SENDTO`/`-RECVFROM`/`-RECV`/`-DATAGRAM:<domain>:<type>:<protocol>:<address>`, the address in socat's dalan (`x7f000001`, typed integers like `S80`, `"strings"`), whose items continue across whitespace as socat's do (`x2f74 6d70` is `x2f746d70`) |
+| proxies | `SOCKS4`, `SOCKS4A`, `SOCKS5-CONNECT`/`-LISTEN` (an optional SOCKS port), `PROXY` (HTTP `CONNECT`) |
+| descriptors | `FD:<n>` and its bare shorthand (`3`), `ACCEPT-FD` (alias `ACCEPT`) |
+| processes | `EXEC`, `SYSTEM`, `SHELL` (its command optional) |
+| files and streams | `OPEN` (alias `FILE`) and `GOPEN` (distinct), a bare path (= `GOPEN`), `CREATE`; `STDIO` (`-`), `STDIN`, `STDOUT`, `STDERR`, `PTY` |
+| pipes and queues | `PIPE` (named or bare; aliases `ECHO`, `FIFO`), `SOCKETPAIR`, `POSIXMQ-READ`/`-RECEIVE`/`-SEND`/`-WRITE`/`-BIDIRECTIONAL` and `POSIXMQ`, whose queue name is a `/` and up to 254 more characters, none of them `/` (`mq_overview(7)`) |
+| others | `TUN[:<IPv4>/<bits>]`, `READLINE`, `STALL`, `TEXT` |
+| dual | `<read>!!<write>`: two single addresses, the first read from and the second written to, each with its own options |
+
+**Where a standard governs a part, the standard decides, through a library rather than a hand-rolled check:**
+
+| Part | Standard | Checked by |
+| --- | --- | --- |
+| host name | RFC 1123 §2.1: letters, digits and hyphens, never an all-numeric top label (so `1`, `0x7f.1` and `01.2.3.4` are not names), and a root dot is kept (`a.` is not `a`); with the default `idn` feature, UTS #46 nontransitional (so `bücher.de`, `BÜCHER.DE` and `xn--bcher-kva.de` are one host, printed in Unicode) | [`hostname-validator`](https://crates.io/crates/hostname-validator), [`idna`](https://crates.io/crates/idna) |
+| IPv4 / IPv6 | strict dotted-decimal (RFC 1123 §2.1); RFC 4291, RFC 5952 | `core::net` |
+| `%zone` | RFC 4007 §11 in the address form; RFC 9844 §6 leaves the charset to us: 1–15 of `A-Z a-z 0-9 . - _` (Linux `IFNAMSIZ`), none of which the printer must quote | — |
+| service-name port | RFC 6335 §5.1 | — |
+| resource path | RFC 3986 `path-abempty [ "?" query ]` (RFC 6455 §3), no fragment | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
+| `ws://` / `wss://` / `https://` URL | RFC 3986, RFC 6455 §3, RFC 9110 §4.2.2; digits-only port, a percent-decoded host (RFC 3986 §3.2.2) that must then be a host name above, an IDN host as its A-label or percent-encoded, no userinfo, no IPvFuture, no fragment, and no zone (RFC 9844 §3) | [`fluent-uri`](https://crates.io/crates/fluent-uri) |
+
+Strict IDNA2008 (RFC 5891's rejection of the NV8/XV8 code points UTS #46 still maps, such as `⁄`) is deliberately not applied, matching browsers and the WHATWG URL Standard. Without `idn`, a host name is ASCII RFC 1123 only. The three libraries build without `std` (#29); the `socat` crate itself does not yet.
+
+Each direction-bearing type but `IP`, `SOCKET` and `SOCKS5` also takes websocat's short forms (`TCP-L`, `L-TCP`, `LISTEN-TCP`, `C-TCP`, …), while socat's alias roots take only socat's own suffixes (`INET-L`, not `INET-C` or `LOCAL-L`). Options are `,mux` (alias `,fork`) and `max-children=N`, on the types socat forks for (every `-LISTEN` and `-RECVFROM`, `ACCEPT-FD`, the `POSIXMQ` receive and send forms), and `rdonly`/`wronly` on `OPEN` (`FILE`), `GOPEN` and a named `PIPE`. All other options are carried, unchecked, to the backend that opens the address, which must reject any it doesn't implement: a serial line's `b115200,rawer` among them.
+
+**Left out, each with its own positioned error:**
+
+- **excluded, because no universal L1 can be defined for it:** `OPENSSL*` and `DTLS*`. SSL-based transports are orchestrated in countless ways (raw TLS or QUIC on a socket, IPsec, VPNs), so secured pipes compose externally through `EXEC:` (see *Crypto*);
+- **excluded, as an accepted exception:** the address-family pins (`TCP4`/`TCP6`, `UDP4`/`UDP6`, `UDPLITE4`/`6`, `SCTP4`/`6`, `DCCP4`/`6`, `IP4-*`/`IP6-*`). The unpinned type with a literal of that family covers the use; the error names it;
+- **deferred:** `INTERFACE` (raw Ethernet frames), after the first release (#80);
+- **invalid, because a standard or socat's own quirk says so:**
+  - the `\0` escape: socat truncates its string there, and we refuse to copy that silent data loss;
+  - socat's base-0 numbers (`010`, `0x50`, any `0`-led alphanumeric) for VSOCK ids, file descriptors, socket numbers and `max-children`;
+  - socat's `inet_aton` host forms whose top label is all-numeric (`1`, `0x7f.1`, `01.2.3.4`): a name's top label never is (RFC 1123 §2.1), so spell the dotted quad (`0.0.0.1`, `127.0.0.1`, `1.2.3.4`). Forms whose top label carries hex letters (`0x50`, `0xff.0xff.0xff.0xff`) are valid host names and parse as names, which socat's resolver would read as IPv4;
+  - in a URL, userinfo, IPvFuture, a fragment, and an IPv6 zone (RFC 9844 §3: use the `TCP`-style form, `WS-CONNECT:[fe80::1%lo]:80`);
+  - an empty parameter (`TCP:h:80:`, `STDIO:`, `SHELL:`); empty *option* fields are skipped instead.
+
+**Which addresses can be an L1.** Every address above is valid wherever socat's rules apply (the `socat` command, a bridge end). Only some can carry the PPP link, and the crate says which (`Channel::link`), with a reason when not: a single address that both reads and writes to a peer, or a dual pairing a readable half with a writable one. So `STDIN!!STDOUT` and `PIPE:/tmp/a!!PIPE:/tmp/b` qualify, while a bare `STDIN` (one-way), a lone named `PIPE` (it echoes), `SOCKETPAIR`, `STALL`, `TEXT` and `READLINE` (it edits its input) don't.
+
+Changing what's left out is a deliberate spec change here (#57's scope revision), not a parser tweak; opening an address is #59's. Which forms the prior-art parsers accept, and how we compare, is in [`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md) and the `socat` benchmark.
+
 ### L2 — PPP, in userspace
 
 [`ppproto`](https://docs.rs/ppproto)-style **sans-IO PPP** runs HDLC framing (+FCS), LCP, and IPCP entirely in userspace. This is the part that makes a *lossy* serial usable:
@@ -281,9 +329,9 @@ The artifact that makes cross-language real is a **published, versioned `pdbd.pr
 - **`Hello`** — the capability/version handshake a peer runs first. It exchanges an `implementation` id (`"pdbd"`, `"gopdb"`, …), a `wire_version` (the `pdbd.v1` revision the peer speaks), and optional `features` tokens (`"pty"`, `"socat"`, `"bind"`, …), so a mixed-implementation link degrades knowably instead of guessing.
 - **`Exec`** / **`Shell`** — start a command; each returns a **stream of command events**. `Exec` is a structured `execve`: `argv[0]` is the program (no shell, no word-splitting), with `env` pairs, a `cwd`, and `clear_env` to start from an empty environment instead of inheriting. `Shell` is the same but allocates a PTY — an empty `argv` runs the target's login shell — and its request carries an initial PTY window size.
 - **`Resize`** — change a running shell's PTY window size (the SIGWINCH path), keyed by the shell's tunnel id.
-- **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is any socat-style address — or the alias **`bind`** (= listen) / **`forward`** (= connect):
+- **`Socat`** — the **one bridge**; `forward`/`bind` are aliases *within* it, not separate RPCs. It bridges two endpoints across the link and returns a tunnel **id** for `Drop`. Each endpoint is `<side>:<addr>` where `<side>` ∈ `client | daemon` and `<addr>` is an address in the dialect above (*L1 — the transport*) — or the alias **`bind`** (= listen) / **`forward`** (= connect):
   - **port-forward** (the common case): `pdb client:bind:<ip>:<port> daemon:forward:<ip>:<port>` (swap the sides for reverse; either order). The alias carries **no proto** — it forwards **both TCP and UDP**; for a single protocol, drop to a raw `TCP-LISTEN:` / `UDP-LISTEN:` address. `bind` and `forward` come as a **pair** — a bridge has exactly two ends, one ingress + one egress, never two of a kind.
-  - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any socat address types, for the cases a TCP port-forward can't express.
+  - **general bridge**: `pdb client:TCP-LISTEN:… daemon:EXEC:'…'` — any address type the dialect supports (*L1 — the transport*), for the cases a TCP port-forward can't express.
   - **One tunnel; muxed on demand.** A bridge rides **one reliable TCP tunnel** owned by a sole **pdb/pdbd worker pair** — ssh's architecture (the worker's internal model is implementation-defined, the shared backpressure contract is not — see *Concurrency & flow control*). A raw `LISTEN` bridges **one connection by default**; append **`,mux`** — pdbd-native, with **`,fork`** as its socat-adoption alias — to **multiplex many connections over the one tunnel** (emulated in the event loop, never a process fork; a socat `max-children` becomes a mux cap). The `bind`/`forward` aliases are always muxed and carry both protocols, so a single port-forward multiplexes all its TCP and UDP flows over that one tunnel. Raw *lossy* UDP, if ever wanted, crosses natively over the general-purpose PPP network instead.
 - **`Drop`** / **`List`** — tear down one tunnel by id; snapshot the active tunnel table.
 
@@ -360,7 +408,7 @@ pdb list                                                       # show the tunnel
     pdb daemon:bind:0.0.0.0:8080  client:forward:127.0.0.1:3000  # reverse — just swap the sides
     ```
 
-  - **raw socat** — any address type, for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
+  - **raw socat** — any address type the dialect supports (*L1 — the transport*: socat's whole grammar, minus what's left out there), for what a port-forward can't express; a LISTEN bridges **one connection by default**, `,mux` (pdbd-native) or socat's `,fork` to multiplex:
 
     ```
     pdb client:TCP-LISTEN:8080      daemon:EXEC:'/usr/local/bin/sensor'  # one connection, bridged, done
@@ -540,6 +588,7 @@ Candidate Rust dependencies, by layer — versions verified against crates.io on
 - vsock: [`tokio-vsock`](https://crates.io/crates/tokio-vsock) `0.7.2` — the VM-guest transport.
 - UDP: `tokio`'s `UdpSocket` with a datagram framing — a lossy datagram L1 (no extra crate); the archetypal pipe PPP + kernel-TCP is designed to recover over.
 - WebSocket (`ws`/`wss`): [`tokio-tungstenite`](https://crates.io/crates/tokio-tungstenite) `0.30.0` (establishes `ws://` and, with [`tokio-rustls`](https://crates.io/crates/tokio-rustls) `0.26.6`, `wss://`) + [`ws_stream_tungstenite`](https://crates.io/crates/ws_stream_tungstenite) `0.15.0` (adapts the WebSocket to `AsyncRead`/`AsyncWrite`). `wss` is the primary built-in **secure** transport (see *Crypto*). Feature-gated.
+- The address dialect: [`fluent-uri`](https://crates.io/crates/fluent-uri) `0.4.1` (RFC 3986), [`idna`](https://crates.io/crates/idna) `1.1.0` (UTS #46, the default `idn` feature) and [`hostname-validator`](https://crates.io/crates/hostname-validator) `1.1.1` (RFC 1123), each without `std`.
 - WebTransport (`webtransport`, built-in secure): [`wtransport`](https://crates.io/crates/wtransport) `0.7.2` — WebTransport over HTTP/3 on `quinn`; built in because its web architecture is OSI-bound (see *Crypto*), a datagram session the default exposure. Needs UDP reachability. Feature-gated.
 
 **Kernel plumbing:**
@@ -678,14 +727,15 @@ sudo podman rm -f "$cid"
 
 ### Benchmarks
 
-`benchmark` is a hook like `test`: a crate opts in by defining `benchmark:` in its own
-`lefthook.yml`, and the fanout finds it. It's slow and noisy, so the `ci` job that runs
+`benchmark` is a hook like `test`: a crate opts in by extending `bench/lefthook.yml` (below),
+and the fanout finds it. It's slow and noisy, so the `ci` job that runs
 it is tagged `benchmark` and the git hooks exclude it; GitHub CI excludes nothing, so
 each opted-in crate surfaces as a `benchmark (<crate>)` check. Run it locally with:
 
 ```
 nix develop --no-update-lock-file -c lefthook run benchmark            # benchmarks only
-LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite with them
+LEFTHOOK_CONFIG=crates/socat/lefthook.yml nix develop --no-update-lock-file -c lefthook run benchmark  # one crate's
+LEFTHOOK_EXCLUDE=privileged nix develop --no-update-lock-file -c lefthook run ci  # the suite, benchmarks excluded
 ```
 
 **A benchmark reports; it gates only on expectations it publishes.** A benchmark check
@@ -712,24 +762,76 @@ get a read-only token, so `report` skips them; the job summaries still carry the
 
 **Comparators float.** A benchmark that races another implementation resolves that
 comparator's latest release at run time, outside the workspace `Cargo.lock` and the root
-`flake.lock`, and reports the version it raced. Pinning one is a deliberate "stop racing
+`flake.lock`, and reports the version it raced. The hook's `build` writes what it resolved to
+`bench/resolved.json` (gitignored) with the runner's own `resolve`, before every run. Pinning one is a deliberate "stop racing
 it" decision, committed beside the benchmark. `transport` races `pppd` built from ppp's
-latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it.
+latest release; `params.pins.pppd` in `crates/transport/bench/bench.toml` pins it. `socat`
+races socat, websocat, oittaa/socat and tocat at their latest releases;
+`params.pins.<oracle>` in `crates/socat/bench/bench.toml` pins one.
 
 **Benchmarks run on [bencher](https://github.com/sw2m/bencher).** A crate's benchmark is a
 bencher consumer: `crates/<crate>/bench/bench.toml` names a runner in
 [pdbd-bench](https://github.com/sw2m/pdbd-bench), which holds the harness code, and passes it
 the crate's artifacts. Both are pinned by the root `flake.lock` (the `bencher` and
-`pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, a Rust
-toolchain that also targets musl, and the paths below. Its variables avoid the `BENCHER_`
-prefix, which bencher reads as its own settings. `transport`'s `benchmark:link`:
+`pdbd-bench` inputs), and `nix develop .#benchmark` is the shell with bencher, jq, a Rust
+toolchain that also targets musl, and three variables the hook uses: `$MUSL_TARGET`,
+`$BENCH_FIXTURE` (the pdbd-bench input) and `$BENCH_SETUP` (bencher's `ci/setup.sh`), plus the
+`python3` that the runners' `resolve` needs. The variables avoid the `BENCHER_` prefix, which
+bencher reads as its own settings.
 
-1. builds `linkup` static (`$MUSL_TARGET`), since it runs in bencher's Debian VM, not on the
-   build host, and links `bench/fixture` to the pdbd-bench input (both gitignored);
-2. installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't there, which
-   needs `sudo -n`, as the benchmark already does;
-3. runs `bencher run bench` and renders its report (`bench/report.jq`) into the `### transport`
-   section. With no `expect.tsv`, the check fails only when bencher reports an error.
+**Provisioning is cached.** Each `bench.toml` sets `cache = "provisioned"`: bencher keeps the
+runner's image after provisioning (the oracles and toolchains it builds) in its L2 cache,
+`~/.cache/bencher/images`, keyed on the runner, its params and `bench/resolved.json`. A run with
+the same comparators reuses the image and skips provisioning; a new upstream release changes
+`resolved.json`, so the next run misses and provisions it afresh. On GitHub, the `check` job
+restores and saves that cache per crate's `bench/` through bencher's `cache` sub-action, at the
+same ref as the bencher flake input, which saves only when the images changed and warns when it
+restored one, since a hit races what that image was provisioned with.
+
+The `benchmark` hook is shared, like `build`: it lives in `bench/lefthook.yml`, and a crate opts
+in by extending it and committing a `bench/`. It resolves the crate from `$LEFTHOOK_CONFIG` (or
+`$DIR`), the way `nix/lefthook.yml` does, and runs:
+
+1. **build**: every `[artifacts]` entry in `bench/bench.toml` named after one of the crate's
+   examples (`examples/<name>.rs`) is built static (`$MUSL_TARGET`) and copied to the artifact's
+   path, since it runs in bencher's Debian guest, not on the build host; `bench/fixture` is
+   linked to the pdbd-bench input, and when `bench.toml` names `resolved`, that file is written
+   with the runner's `resolve` (`python3 bench/fixture/<runner>/resolve bench`). All are
+   gitignored. `transport` builds `linkup`, `socat` builds `verdict`;
+2. **incus**: installs Incus with bencher's own `ci/setup.sh` (`$BENCH_SETUP`) when it isn't
+   there, which needs `sudo -n`, as the benchmark already does;
+3. **run**: `bencher run <crate>/bench`, then renders its report (`bench/report.jq`) into the
+   crate's `### <crate>` section. bencher's report stays at `bench/report.json` (gitignored), the
+   input `bencher bless` takes.
+
+`transport` has no `expect.tsv`, so its check fails only when bencher reports an error.
+
+**`socat`'s matrix.** `socat` races the dialect against the prior-art parsers
+([`crates/socat/PRIOR_ART.md`](crates/socat/PRIOR_ART.md)) on pdbd-bench's `socat` runner, as
+per-input verdicts, and its `expect.tsv` is the expected-results matrix, so any difference fails
+the check. Its `bench/` holds `bench.toml`, `expect.tsv`, `hand.jsonl` (hand-written corpus
+entries, one JSON string per line, `# section` lines naming their family), `alternatives.jsonl`
+(`[input, form, fit]`: an input we reject, the form we accept instead, and whether that form is a
+`full` or `partial` stand-in, each chosen explicitly) and `report.jq` (the oracles raced, class
+counts, missed rules, and coverage per corpus, per socat type family and per socat option group).
+`examples/verdict.rs` is ours in the race: one JSON string per line in, parsed as a dual-capable
+`Channel`, and `{"ok": true, "canonical": …}` or `{"ok": false, "class": …, "kind": …, "at": …}`
+out, where `class` is `excluded-openssl`, `excluded-family`, `deferred` or `invalid` (*L1 — the
+transport*, "Left out").
+
+- **A row's class follows from its rules.** `supported` is `parse {impl: ours} == "ok"` plus a
+  `print {input, canonical}` row, so a changed canonical print leaves a stale rule and fails;
+  a rejection is `parse {impl: ours} == "err"` plus a `class {input}` row naming why (excluded,
+  deferred or invalid), so a type moving between classes fails too; `alternative` adds an
+  `alternative {input, form, fit}` row that must be `"ok"`. Oracle rows record only verdicts, so a new oracle release fails the
+  check only when it changes one. `parse {} rules >= 1` and `print {} rules >= 1` count only exact
+  rules, so a new corpus entry or canonical print fails until someone decides it.
+- **Resolving a failure is a developer decision.** Run the crate's benchmark, then
+  `nix develop .#benchmark --no-update-lock-file -c bencher bless crates/socat/bench --report crates/socat/bench/report.json`,
+  which updates every exact rule and appends one for every undecided row. Read the diff and decide
+  each changed row: support it (a change to *L1 — the transport* and to the crate), leave it out
+  deliberately (#57's scope revision), or add an alternative to `alternatives.jsonl`, full or
+  partial, chosen explicitly. Commit with the reason.
 
 ### Git hooks
 

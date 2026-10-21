@@ -53,11 +53,28 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — component reuse means build pollution is possible"
+      - id: bench
+        if: matrix.check.hook == 'benchmark'
+        env:
+          CONFIG: ${{ matrix.check.config }}
+        run: echo "dir=$(dirname "$CONFIG")/bench" >> "$GITHUB_OUTPUT"
+      - id: images
+        if: matrix.check.hook == 'benchmark'
+        uses: sw2m/bencher/cache@e18d27e4738d334d7f956a8a3d4445b5c07daa89 # v0.4.1, the same ref as the bencher flake input
+        with:
+          mode: restore
+          bench: ${{ steps.bench.outputs.dir }}
       - env:
           LEFTHOOK_CONFIG: ${{ matrix.check.config }}
         run: |
           [ "${{ matrix.check.hook }}" != benchmark ] || export BENCHMARK_REPORT="$RUNNER_TEMP/benchmark.md" # see README "Benchmarks"
           nix develop --no-update-lock-file -c lefthook run ${{ matrix.check.hook }}
+      - if: always() && matrix.check.hook == 'benchmark'
+        uses: sw2m/bencher/cache@e18d27e4738d334d7f956a8a3d4445b5c07daa89 # v0.4.1
+        with:
+          mode: save
+          report: ${{ steps.bench.outputs.dir }}/report.json
+          key: ${{ steps.images.outputs.key }}
       - name: summarize benchmark report
         if: always() && matrix.check.hook == 'benchmark'
         run: '[ ! -f "$RUNNER_TEMP/benchmark.md" ] || cat "$RUNNER_TEMP/benchmark.md" >> "$GITHUB_STEP_SUMMARY"'
