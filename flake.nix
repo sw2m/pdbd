@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench/fix/socket"; # sw2m/pdbd-bench#6, until it merges
+      url = "github:sw2m/pdbd-bench/feat/mux"; # sw2m/pdbd-bench#7, until it merges
       flake = false;
     };
   };
@@ -102,7 +102,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-JeI135KdyQlclzUHidrZvSlv8xfOYDejndhRwe7TjP8=";
+          "x86_64-linux" = "sha256-fTanX/uIPnSLw+6YF6t+qK1XzB8R6AeI+P0vfMCZfE0=";
         };
       };
 }

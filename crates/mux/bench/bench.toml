@@ -1,0 +1,15 @@
+cache = "provisioned"  # see README "Benchmarks": provisioning is cached, keyed on resolved.json
+resolved = "resolved.json"  # written by the benchmark hook with the fixture's resolve
+
+[fixture]
+path = "fixture"  # a symlink to the pdbd-bench flake input, made by the benchmark hook
+runner = "mux"
+
+[limits]
+cpu = 3  # a 4-vCPU GitHub runner: one for telemetry, two for the harnesses, one left to the host
+memory = "4GiB"  # cargo and dotnet build the harnesses while provisioning
+provision = "PT45M"  # Go, Rust, .NET, Node, a JDK and nghttp2 install or build while provisioning
+run = 3600
+
+[artifacts]
+muxbench = "muxbench"  # examples/muxbench.rs, built static by the benchmark hook

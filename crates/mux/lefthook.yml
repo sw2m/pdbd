@@ -1,5 +1,6 @@
 extends:
   - nix/lefthook.yml
+  - bench/lefthook.yml
 
 test:
   jobs:
