@@ -1,6 +1,6 @@
 # crates/mux
 
-The bridge tunnel's multiplexer (#58, PR #68). It's a sans-IO state machine: `feed` bytes in, `poll` events, `transmit` bytes out. #59 drives it over the one reliable TCP tunnel a bridge rides. The wire contract is the README's §"The bridge tunnel's wire contract". This file records how the design compares with the multiplexers we reviewed, so the next change reuses that research instead of redoing it.
+The bridge tunnel's multiplexer (#58, PR #68). It's a sans-IO state machine: read into `spare` and `fill` it, `poll` events, `transmit` bytes out. Per #58 "Minimal copy", `send` makes the one copy of a payload byte: `transmit` lends the frames it wrote, and `poll` lends each payload from the buffer `spare` gave out, both valid until the next call. `feed` is `spare` and `fill` plus a copy. #59 drives it over the one reliable TCP tunnel a bridge rides. The wire contract is the README's §"The bridge tunnel's wire contract". This file records how the design compares with the multiplexers we reviewed, so the next change reuses that research instead of redoing it.
 
 - `Single`: one flow, no frame, the raw stream (flow id `0`).
 - `Multi::new(side, window, cap, budget)`: framed flows. `cap` (max-children) and `budget` are required; the budget must hold one maximum frame (≥ 65535), or `new` returns `Error::Budget`. A 10-byte header (type, proto, id, length/credit). Types are `DATA 0`, `OPEN 1`, `ACCEPT 2`, `WINDOW 3`, `CLOSE 4`, `RESET 5`, `STOP 6`. Proto is `6` TCP or `17` UDP.

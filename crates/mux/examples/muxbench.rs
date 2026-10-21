@@ -113,6 +113,23 @@ struct Socket {
 }
 
 impl Socket {
+    fn send(&mut self, mut bytes: &[u8]) {
+        if self.at < self.out.len() {
+            self.out.extend_from_slice(bytes);
+            return;
+        }
+        while !bytes.is_empty() {
+            match self.tcp.write(bytes) {
+                Ok(n) => bytes = &bytes[n..],
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => fail(&format!("loopback write: {e}")),
+            }
+        }
+        self.out.clear();
+        self.at = 0;
+        self.out.extend_from_slice(bytes);
+    }
+
     fn write(&mut self) {
         while self.at < self.out.len() {
             match self.tcp.write(&self.out[self.at..]) {
@@ -121,27 +138,9 @@ impl Socket {
                 Err(e) => fail(&format!("loopback write: {e}")),
             }
         }
-        if self.at == self.out.len() {
-            self.out.clear();
-            self.at = 0;
-        }
-    }
-
-    fn read(&mut self, scratch: &mut [u8], into: &mut Multi) {
-        loop {
-            match self.tcp.read(scratch) {
-                Ok(0) => break,
-                Ok(n) => into
-                    .feed(&scratch[..n])
-                    .unwrap_or_else(|e| fail(&format!("feed: {e:?}"))),
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) => fail(&format!("loopback read: {e}")),
-            }
-        }
     }
 }
 
-// per flow, per end: bytes received, and whether that end consumes what it receives
 #[derive(Clone, Default)]
 struct End {
     got: usize,
@@ -149,11 +148,70 @@ struct End {
     accepted: bool,
 }
 
+struct Tally<'a> {
+    side: usize,
+    ids: &'a [u32],
+    ends: &'a mut [End],
+    arrived: &'a mut Vec<Instant>,
+}
+
+impl Tally<'_> {
+    fn take(&mut self, m: &mut Multi) {
+        while let Some(event) = m.poll() {
+            match event.map(<[u8]>::len) {
+                Event::Open(id, _) if self.side == 1 => {
+                    m.accept(id)
+                        .unwrap_or_else(|e| fail(&format!("accept: {e:?}")));
+                    self.arrived.push(Instant::now());
+                }
+                Event::Accepted(id) if self.side == 0 => {
+                    if let Some(i) = self.ids.iter().position(|&x| x == id) {
+                        self.ends[i].accepted = true;
+                    }
+                }
+                Event::Data(id, n) => {
+                    let Some(i) = self.ids.iter().position(|&x| x == id) else {
+                        continue;
+                    };
+                    self.ends[i].got += n;
+                    if !self.ends[i].stalled {
+                        m.consume(id, n as u32).unwrap_or_else(|e| {
+                            fail(&format!("consume: {e:?}"))
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        if m.paused() {
+            m.fill(0).unwrap_or_else(|e| fail(&format!("fill: {e:?}")));
+        }
+    }
+
+    fn give(&mut self, m: &mut Multi, mut bytes: &[u8]) -> usize {
+        let total = bytes.len();
+        while !bytes.is_empty() {
+            if m.spare().is_empty() {
+                self.take(m);
+                if m.spare().is_empty() {
+                    break;
+                }
+            }
+            let room = m.spare();
+            let n = room.len().min(bytes.len());
+            room[..n].copy_from_slice(&bytes[..n]);
+            m.fill(n).unwrap_or_else(|e| fail(&format!("fill: {e:?}")));
+            bytes = &bytes[n..];
+        }
+        total - bytes.len()
+    }
+}
+
 struct Duo {
     near: Multi,
     far: Multi,
     link: Option<[Socket; 2]>,
-    scratch: Vec<u8>,
+    held: [Vec<u8>; 2],
     data: Vec<u8>,
     p: Params,
     ids: Vec<u32>,
@@ -189,7 +247,7 @@ impl Duo {
             near: multi(Side::Client),
             far: multi(Side::Daemon),
             link,
-            scratch: vec![0; 1 << 18],
+            held: [Vec::new(), Vec::new()],
             data: vec![0x5a; p.chunk.max(p.datagram)],
             p,
             ids: Vec::new(),
@@ -201,85 +259,91 @@ impl Duo {
     fn pump(&mut self) {
         match &mut self.link {
             None => {
-                while let Some(Transmit::Bytes(b)) = self.near.transmit() {
-                    self.far
-                        .feed(&b)
-                        .unwrap_or_else(|e| fail(&format!("feed: {e:?}")));
-                }
-                while let Some(Transmit::Bytes(b)) = self.far.transmit() {
-                    self.near
-                        .feed(&b)
-                        .unwrap_or_else(|e| fail(&format!("feed: {e:?}")));
-                }
+                self.carry(0);
+                self.carry(1);
             }
             Some(link) => {
-                while let Some(Transmit::Bytes(b)) = self.near.transmit() {
-                    link[0].out.extend(b);
-                }
-                while let Some(Transmit::Bytes(b)) = self.far.transmit() {
-                    link[1].out.extend(b);
-                }
                 link[0].write();
+                while let Some(Transmit::Bytes(b)) = self.near.transmit() {
+                    link[0].send(b);
+                }
                 link[1].write();
-                link[1].read(&mut self.scratch, &mut self.far);
-                link[0].read(&mut self.scratch, &mut self.near);
+                while let Some(Transmit::Bytes(b)) = self.far.transmit() {
+                    link[1].send(b);
+                }
+                self.read(1);
+                self.read(0);
             }
         }
         self.drain(1);
         self.drain(0);
     }
 
-    // drain takes one end's events: data is counted, and consumed unless that end is stalled
-    fn drain(&mut self, side: usize) {
+    fn read(&mut self, side: usize) {
         loop {
             let m = if side == 0 {
                 &mut self.near
             } else {
                 &mut self.far
             };
-            let Some(event) = m.poll() else { break };
-            match event {
-                Event::Open(id, _) if side == 1 => {
-                    self.far
-                        .accept(id)
-                        .unwrap_or_else(|e| fail(&format!("accept: {e:?}")));
-                    self.arrived.push(Instant::now());
+            let Some(link) = &mut self.link else { return };
+            let room = m.spare();
+            if room.is_empty() {
+                return;
+            }
+            match link[side].tcp.read(room) {
+                Ok(0) => return,
+                Ok(n) => {
+                    m.fill(n).unwrap_or_else(|e| fail(&format!("fill: {e:?}")))
                 }
-                Event::Accepted(id) if side == 0 => {
-                    if let Some(i) = self.ids.iter().position(|&x| x == id) {
-                        self.ends[0][i].accepted = true;
-                    }
-                }
-                Event::Data(id, bytes) => {
-                    let Some(i) = self.ids.iter().position(|&x| x == id) else {
-                        continue;
-                    };
-                    let end = &mut self.ends[side][i];
-                    end.got += bytes.len();
-                    if !end.stalled {
-                        let m = if side == 0 {
-                            &mut self.near
-                        } else {
-                            &mut self.far
-                        };
-                        m.consume(id, bytes.len() as u32).unwrap_or_else(|e| {
-                            fail(&format!("consume: {e:?}"))
-                        });
-                    }
-                }
-                _ => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(e) => fail(&format!("loopback read: {e}")),
+            }
+            self.drain(side);
+        }
+    }
+
+    fn carry(&mut self, from: usize) {
+        let to = 1 - from;
+        let (src, dst) = if from == 0 {
+            (&mut self.near, &mut self.far)
+        } else {
+            (&mut self.far, &mut self.near)
+        };
+        let (ends, held) = (&mut self.ends[to], &mut self.held[to]);
+        let mut tally = Tally {
+            side: to,
+            ids: &self.ids,
+            ends,
+            arrived: &mut self.arrived,
+        };
+        let n = tally.give(dst, held);
+        held.drain(..n);
+        if !held.is_empty() {
+            return;
+        }
+        while let Some(Transmit::Bytes(b)) = src.transmit() {
+            let n = tally.give(dst, b);
+            if n < b.len() {
+                held.extend_from_slice(&b[n..]);
+                return;
             }
         }
-        if self.far.paused() {
-            self.far
-                .feed(&[])
-                .unwrap_or_else(|e| fail(&format!("feed: {e:?}")));
+    }
+
+    fn drain(&mut self, side: usize) {
+        let (m, ends) = if side == 0 {
+            (&mut self.near, &mut self.ends[0])
+        } else {
+            (&mut self.far, &mut self.ends[1])
+        };
+        Tally {
+            side,
+            ids: &self.ids,
+            ends,
+            arrived: &mut self.arrived,
         }
-        if self.near.paused() {
-            self.near
-                .feed(&[])
-                .unwrap_or_else(|e| fail(&format!("feed: {e:?}")));
-        }
+        .take(m);
     }
 
     fn until(&mut self, mut done: impl FnMut(&Duo) -> bool) -> bool {
@@ -331,7 +395,6 @@ impl Duo {
         idx
     }
 
-    // send queues up to n bytes on one end of a flow, as far as its credit allows, and reports how many it took
     fn send(&mut self, side: usize, i: usize, n: usize) -> usize {
         let id = self.ids[i];
         let m = if side == 0 {

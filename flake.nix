@@ -78,8 +78,8 @@
             pkgs.jq
             pkgs.python3
           ];
-          buildInputs = [ pkgs.glibc.static ]; # see README "Benchmarks": an artifact linked static against glibc
           MUSL_TARGET = musl;
+          GLIBC_STATIC = "${pkgs.glibc.static}/lib"; # target-only: on the shell's link path it breaks build scripts
           GNU_TARGET = pkgs.stdenv.hostPlatform.config;
           BENCH_FIXTURE = pdbd-bench;
           BENCH_SETUP = "${bencher}/ci/setup.sh";

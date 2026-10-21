@@ -2,16 +2,23 @@ use crate::flow::{self, ABORTED};
 use crate::frame::Proto;
 use crate::{Error, Event, Transmit};
 use std::collections::VecDeque;
+use std::ops::Range;
 
 pub const ID: u32 = 0; // never a multi-channel flow id, which starts at 1
+const ROOM: usize = 1 << 16; // one socket read
 
 #[derive(Debug, Default)]
 pub struct Single {
     sent: bool,
     received: bool,
     reset: bool,
-    events: VecDeque<Event>,
-    out: VecDeque<Transmit>,
+    events: VecDeque<Event<Range<usize>>>,
+    inbox: Vec<u8>,
+    end: usize,
+    out: Vec<u8>,
+    at: usize,
+    shut: bool,
+    abort: bool,
 }
 
 impl Single {
@@ -34,18 +41,57 @@ impl Single {
         }
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if self.received || self.reset {
+    fn dead(&self) -> bool {
+        self.received || self.reset
+    }
+
+    pub fn spare(&mut self) -> &mut [u8] {
+        if self.dead() {
+            return &mut [];
+        }
+        if !self.events.iter().any(|e| matches!(e, Event::Data(..))) {
+            self.end = 0;
+        }
+        if self.inbox.is_empty() {
+            self.inbox.resize(ROOM, 0);
+        }
+        &mut self.inbox[self.end..]
+    }
+
+    pub fn fill(&mut self, n: usize) -> Result<(), Error> {
+        if self.dead() {
             return Err(Error::Dead);
         }
-        if !bytes.is_empty() {
-            self.events.push_back(Event::Data(ID, bytes.to_vec()));
+        assert!(self.end + n <= self.inbox.len(), "filled past spare()");
+        if n > 0 {
+            self.events
+                .push_back(Event::Data(ID, self.end..self.end + n));
+            self.end += n;
+        }
+        Ok(())
+    }
+
+    pub fn feed(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        if self.dead() {
+            return Err(Error::Dead);
+        }
+        while !bytes.is_empty() {
+            let room = self.spare();
+            if room.is_empty() {
+                let size = self.inbox.len() * 2;
+                self.inbox.resize(size, 0);
+                continue;
+            }
+            let n = room.len().min(bytes.len());
+            room[..n].copy_from_slice(&bytes[..n]);
+            bytes = &bytes[n..];
+            self.fill(n)?;
         }
         Ok(())
     }
 
     pub fn end(&mut self) -> Result<(), Error> {
-        if self.received || self.reset {
+        if self.dead() {
             return Err(Error::Dead);
         }
         self.received = true;
@@ -58,16 +104,32 @@ impl Single {
             return;
         }
         self.reset = true;
-        self.out.clear();
+        self.discard();
         self.events.push_back(Event::Reset(ID, ABORTED));
     }
 
-    pub fn poll(&mut self) -> Option<Event> {
-        self.events.pop_front()
+    fn discard(&mut self) {
+        self.out.clear();
+        self.at = 0;
+        self.shut = false;
     }
 
-    pub fn transmit(&mut self) -> Option<Transmit> {
-        self.out.pop_front()
+    pub fn poll(&mut self) -> Option<Event<&[u8]>> {
+        let event = self.events.pop_front()?;
+        Some(event.map(|range| &self.inbox[range]))
+    }
+
+    pub fn transmit(&mut self) -> Option<Transmit<&[u8]>> {
+        if self.at < self.out.len() {
+            let at = std::mem::replace(&mut self.at, self.out.len());
+            return Some(Transmit::Bytes(&self.out[at..]));
+        }
+        self.out.clear();
+        self.at = 0;
+        if std::mem::take(&mut self.shut) {
+            return Some(Transmit::Shutdown);
+        }
+        std::mem::take(&mut self.abort).then_some(Transmit::Abort)
     }
 
     pub fn open(&mut self, _: Proto) -> Result<u32, Error> {
@@ -83,10 +145,11 @@ impl Single {
         if data.is_empty() {
             return Err(Error::Flow(ID, flow::Error::Empty));
         }
-        match self.out.back_mut() {
-            Some(Transmit::Bytes(b)) => b.extend_from_slice(data),
-            _ => self.out.push_back(Transmit::Bytes(data.to_vec())),
+        if self.at == self.out.len() {
+            self.out.clear();
+            self.at = 0;
         }
+        self.out.extend_from_slice(data);
         Ok(data.len())
     }
 
@@ -101,7 +164,7 @@ impl Single {
     pub fn close(&mut self, id: u32) -> Result<(), Error> {
         self.writable(id)?;
         self.sent = true;
-        self.out.push_back(Transmit::Shutdown);
+        self.shut = true;
         Ok(())
     }
 
@@ -111,8 +174,8 @@ impl Single {
             return Err(Error::Flow(ID, flow::Error::Closed));
         }
         self.reset = true;
-        self.out.clear();
-        self.out.push_back(Transmit::Abort);
+        self.discard();
+        self.abort = true;
         Ok(())
     }
 

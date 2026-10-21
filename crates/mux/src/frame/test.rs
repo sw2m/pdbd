@@ -7,7 +7,7 @@ fn bytes(f: &Frame) -> Vec<u8> {
     out
 }
 
-fn frame(flow: u32, proto: Proto, body: Body) -> Frame {
+fn frame(flow: u32, proto: Proto, body: Body<'_>) -> Frame<'_> {
     Frame { flow, proto, body }
 }
 
@@ -16,7 +16,7 @@ fn frame(flow: u32, proto: Proto, body: Body) -> Frame {
 fn layout() {
     let cases = [
         (
-            frame(1, Proto::Tcp, Body::Data(b"hi".to_vec())),
+            frame(1, Proto::Tcp, Body::Data(b"hi")),
             vec![0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 2, b'h', b'i'],
         ),
         (
@@ -40,7 +40,7 @@ fn layout() {
             vec![0x05, 0x06, 0, 0, 0, 5, 0, 0, 0, 1],
         ),
         (
-            frame(9, Proto::Udp, Body::Data(vec![])),
+            frame(9, Proto::Udp, Body::Data(&[])),
             vec![0x00, 0x11, 0, 0, 0, 9, 0, 0, 0, 0],
         ),
         (
@@ -57,7 +57,7 @@ fn layout() {
 // #58 — a short buffer is "need more", never an error
 #[test]
 fn partial() {
-    let whole = bytes(&frame(1, Proto::Tcp, Body::Data(b"hello".to_vec())));
+    let whole = bytes(&frame(1, Proto::Tcp, Body::Data(b"hello")));
     for n in 0..whole.len() {
         assert_eq!(Frame::decode(&whole[..n]), Ok(None), "{n}");
     }
@@ -101,7 +101,7 @@ fn header() {
 // #58
 #[test]
 fn order() {
-    let a = frame(1, Proto::Tcp, Body::Data(b"ab".to_vec()));
+    let a = frame(1, Proto::Tcp, Body::Data(b"ab"));
     let b = frame(2, Proto::Udp, Body::Close);
     let mut wire = bytes(&a);
     wire.extend(bytes(&b));
@@ -119,39 +119,35 @@ fn empty() {
     let tcp = [0x00, 0x06, 0, 0, 0, 1, 0, 0, 0, 0];
     assert_eq!(Frame::decode(&tcp), Err(Error::Empty));
     let udp = [0x00, 0x11, 0, 0, 0, 1, 0, 0, 0, 0];
-    let want = frame(1, Proto::Udp, Body::Data(vec![]));
+    let want = frame(1, Proto::Udp, Body::Data(&[]));
     assert_eq!(Frame::decode(&udp), Ok(Some((want, 10))));
 }
 
-// #58 — DATA is written from the caller's payload, byte-identical to encode
+// #58 — DATA is written from the caller's payload, byte-identical to encode,
+// into exactly the frame's size
 #[test]
-fn write() {
-    let mut out = vec![0xaa];
-    Frame::write(&mut out, 7, Proto::Tcp, b"abc").unwrap();
-    let mut want = vec![0xaa];
-    frame(7, Proto::Tcp, Body::Data(b"abc".to_vec())).encode(&mut want);
-    assert_eq!(out, want);
+fn put() {
+    let f = Frame::data(7, Proto::Tcp, b"abc").unwrap();
+    let mut out = vec![0xaa; f.size() + 1];
+    f.put(&mut out[..f.size()]);
+    assert_eq!(
+        out[..f.size()],
+        bytes(&frame(7, Proto::Tcp, Body::Data(b"abc")))
+    );
+    assert_eq!(out[f.size()], 0xaa);
 }
 
-// #58 — write refuses a frame the decoder would reject, writing nothing
+// #58 — a DATA frame the decoder would reject can't be built
 #[test]
 fn checked() {
-    let mut out = vec![0xaa];
     let big = vec![0u8; MAX as usize + 1];
     assert_eq!(
-        Frame::write(&mut out, 7, Proto::Udp, &big),
+        Frame::data(7, Proto::Udp, &big),
         Err(Error::Oversize(MAX + 1))
     );
-    assert_eq!(
-        Frame::write(&mut out, 7, Proto::Tcp, b""),
-        Err(Error::Empty)
-    );
-    assert_eq!(
-        Frame::write(&mut out, 0, Proto::Tcp, b"x"),
-        Err(Error::Flow)
-    );
-    assert_eq!(out, vec![0xaa]);
-    assert_eq!(Frame::write(&mut out, 7, Proto::Udp, b""), Ok(()));
+    assert_eq!(Frame::data(7, Proto::Tcp, b""), Err(Error::Empty));
+    assert_eq!(Frame::data(0, Proto::Tcp, b"x"), Err(Error::Flow));
+    assert!(Frame::data(7, Proto::Udp, b"").is_ok());
 }
 
 // #58 — parsing a coalesced burst is linear in its bytes, not quadratic
@@ -188,34 +184,61 @@ fn proto() -> impl Strategy<Value = Proto> {
     prop_oneof![Just(Proto::Tcp), Just(Proto::Udp)]
 }
 
-fn body() -> impl Strategy<Value = Body> {
+#[derive(Debug, Clone)]
+pub struct Any {
+    flow: u32,
+    proto: Proto,
+    body: Body<'static>,
+    data: Vec<u8>,
+}
+
+impl Any {
+    pub fn frame(&self) -> Frame<'_> {
+        let body = match self.body {
+            Body::Data(_) => Body::Data(&self.data),
+            b => b,
+        };
+        frame(self.flow, self.proto, body)
+    }
+}
+
+fn body() -> impl Strategy<Value = (Body<'static>, Vec<u8>)> {
     prop_oneof![
-        prop::collection::vec(any::<u8>(), 0..512).prop_map(Body::Data),
-        any::<u32>().prop_map(Body::Open),
-        any::<u32>().prop_map(Body::Accept),
-        (1..=u32::MAX).prop_map(Body::Window),
-        Just(Body::Close),
-        any::<u32>().prop_map(Body::Reset),
-        Just(Body::Stop),
+        prop::collection::vec(any::<u8>(), 0..512)
+            .prop_map(|d| (Body::Data(&[]), d)),
+        any::<u32>().prop_map(|n| (Body::Open(n), vec![])),
+        any::<u32>().prop_map(|n| (Body::Accept(n), vec![])),
+        (1..=u32::MAX).prop_map(|n| (Body::Window(n), vec![])),
+        Just((Body::Close, vec![])),
+        any::<u32>().prop_map(|n| (Body::Reset(n), vec![])),
+        Just((Body::Stop, vec![])),
     ]
 }
 
-pub fn arbitrary() -> impl Strategy<Value = Frame> {
-    (1..=u32::MAX, proto(), body()).prop_map(|(flow, proto, body)| {
-        let body = match body {
-            Body::Data(d) if d.is_empty() && proto == Proto::Tcp => {
-                Body::Data(vec![0])
+pub fn arbitrary() -> impl Strategy<Value = Any> {
+    (1..=u32::MAX, proto(), body()).prop_map(
+        |(flow, proto, (body, mut data))| {
+            if matches!(body, Body::Data(_))
+                && data.is_empty()
+                && proto == Proto::Tcp
+            {
+                data.push(0);
             }
-            b => b,
-        };
-        Frame { flow, proto, body }
-    })
+            Any {
+                flow,
+                proto,
+                body,
+                data,
+            }
+        },
+    )
 }
 
 proptest! {
     // #58 — decode ∘ encode is the identity, consuming exactly the frame
     #[test]
     fn roundtrip(f in arbitrary()) {
+        let f = f.frame();
         let b = bytes(&f);
         prop_assert_eq!(Frame::decode(&b), Ok(Some((f, b.len()))));
     }
@@ -223,6 +246,7 @@ proptest! {
     // #58 — trailing bytes are left for the next frame
     #[test]
     fn trailing(f in arbitrary(), tail in prop::collection::vec(any::<u8>(), 0..32)) {
+        let f = f.frame();
         let mut b = bytes(&f);
         let n = b.len();
         b.extend(tail);
@@ -235,6 +259,7 @@ proptest! {
         frames in prop::collection::vec(arbitrary(), 0..16),
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..32),
     ) {
+        let frames: Vec<Frame> = frames.iter().map(Any::frame).collect();
         let mut wire = Vec::new();
         for f in &frames {
             f.encode(&mut wire);
@@ -248,10 +273,10 @@ proptest! {
         for w in at.windows(2) {
             r.feed(&wire[w[0]..w[1]]);
             while let Some(f) = r.pull().unwrap() {
-                got.push(f);
+                got.push(bytes(&f));
             }
         }
-        prop_assert_eq!(got, frames);
+        prop_assert_eq!(got, frames.iter().map(bytes).collect::<Vec<_>>());
         prop_assert_eq!(r.pending(), 0);
     }
 

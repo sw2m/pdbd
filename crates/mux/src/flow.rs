@@ -15,7 +15,7 @@ pub enum State {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Accepted,
-    Data(Vec<u8>),
+    Data(u32),
     Window(u32),
     Closed,
     Reset(u32),
@@ -87,7 +87,7 @@ impl Flow {
         }
     }
 
-    fn frame(&self, body: Body) -> Frame {
+    fn frame(&self, body: Body<'static>) -> Frame<'static> {
         Frame {
             flow: self.id,
             proto: self.proto,
@@ -99,14 +99,14 @@ impl Flow {
         id: u32,
         proto: Proto,
         window: u32,
-    ) -> Result<(Self, Frame), Error> {
+    ) -> Result<(Self, Frame<'static>), Error> {
         Self::floor(proto, window)?;
         let flow = Self::new(id, proto, State::Opening, 0, window);
         let frame = flow.frame(Body::Open(window));
         Ok((flow, frame))
     }
 
-    pub fn offer(open: &Frame, window: u32) -> Result<Self, Error> {
+    pub fn offer(open: &Frame<'_>, window: u32) -> Result<Self, Error> {
         let Body::Open(credit) = open.body else {
             return Err(Error::State);
         };
@@ -120,7 +120,7 @@ impl Flow {
         ))
     }
 
-    pub fn accept(&mut self) -> Result<Frame, Error> {
+    pub fn accept(&mut self) -> Result<Frame<'static>, Error> {
         if self.state != State::Pending {
             return Err(Error::State);
         }
@@ -160,7 +160,7 @@ impl Flow {
         Ok(n)
     }
 
-    pub fn receive(&mut self, frame: Frame) -> Result<Event, Error> {
+    pub fn receive(&mut self, frame: Frame<'_>) -> Result<Event, Error> {
         if frame.flow != self.id {
             return Err(Error::State);
         }
@@ -207,7 +207,7 @@ impl Flow {
                     return Ok(Event::Dropped(len));
                 }
                 self.held += len;
-                Ok(Event::Data(d))
+                Ok(Event::Data(len))
             }
             Body::Window(inc) => {
                 self.credit =
@@ -222,7 +222,7 @@ impl Flow {
         }
     }
 
-    pub fn consume(&mut self, n: u32) -> Result<Option<Frame>, Error> {
+    pub fn consume(&mut self, n: u32) -> Result<Option<Frame<'static>>, Error> {
         if n > self.held {
             return Err(Error::Consume { n, held: self.held });
         }
@@ -234,7 +234,7 @@ impl Flow {
         Ok(None)
     }
 
-    pub fn flush(&mut self) -> Option<Frame> {
+    pub fn flush(&mut self) -> Option<Frame<'static>> {
         if self.freed == 0
             || self.received
             || self.stopped
@@ -247,7 +247,7 @@ impl Flow {
         Some(self.frame(Body::Window(inc)))
     }
 
-    pub fn close(&mut self) -> Result<Frame, Error> {
+    pub fn close(&mut self) -> Result<Frame<'static>, Error> {
         if self.sent || self.state == State::Reset {
             return Err(Error::Closed);
         }
@@ -258,7 +258,7 @@ impl Flow {
         Ok(self.frame(Body::Close))
     }
 
-    pub fn reset(&mut self, code: u32) -> Result<Frame, Error> {
+    pub fn reset(&mut self, code: u32) -> Result<Frame<'static>, Error> {
         if self.state == State::Reset {
             return Err(Error::Closed);
         }
@@ -266,7 +266,7 @@ impl Flow {
         Ok(self.frame(Body::Reset(code)))
     }
 
-    pub fn stop(&mut self) -> Result<Frame, Error> {
+    pub fn stop(&mut self) -> Result<Frame<'static>, Error> {
         if self.state == State::Reset || self.stopped || self.received {
             return Err(Error::Closed);
         }

@@ -2,12 +2,12 @@ use super::*;
 use crate::flow::{self, ABORTED};
 use proptest::prelude::*;
 
-fn events(s: &mut Single) -> Vec<Event> {
-    std::iter::from_fn(|| s.poll()).collect()
+fn events(s: &mut Single) -> Vec<Event<Vec<u8>>> {
+    std::iter::from_fn(|| s.poll().map(Event::owned)).collect()
 }
 
-fn transmits(s: &mut Single) -> Vec<Transmit> {
-    std::iter::from_fn(|| s.transmit()).collect()
+fn transmits(s: &mut Single) -> Vec<Transmit<Vec<u8>>> {
+    std::iter::from_fn(|| s.transmit().map(Transmit::owned)).collect()
 }
 
 // #58 — one channel, open from creation; it can never gain another
@@ -160,4 +160,37 @@ proptest! {
         }
         prop_assert_eq!(got, reads.concat());
     }
+}
+
+// #58 "Minimal copy" — a read into spare() is delivered in place, not copied
+#[test]
+fn place() {
+    let mut s = Single::new();
+    let b = s.spare();
+    b[..3].copy_from_slice(b"raw");
+    let at = b.as_ptr() as usize;
+    s.fill(3).unwrap();
+    let Some(Event::Data(ID, data)) = s.poll() else {
+        panic!("no data")
+    };
+    assert_eq!(data, b"raw");
+    assert_eq!(data.as_ptr() as usize, at);
+}
+
+// #58 "Minimal copy" — reading on before polling keeps the unpolled bytes
+#[test]
+fn held() {
+    let mut s = Single::new();
+    for chunk in [&b"first"[..], b"second"] {
+        let b = s.spare();
+        b[..chunk.len()].copy_from_slice(chunk);
+        s.fill(chunk.len()).unwrap();
+    }
+    assert_eq!(
+        events(&mut s),
+        vec![
+            Event::Data(ID, b"first".to_vec()),
+            Event::Data(ID, b"second".to_vec())
+        ]
+    );
 }

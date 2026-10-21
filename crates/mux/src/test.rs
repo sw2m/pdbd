@@ -32,7 +32,10 @@ fn single() {
     assert_eq!(m.send(single::ID, b"raw"), Ok(3));
     assert_eq!(bytes(&mut m), b"raw");
     m.feed(b"back").unwrap();
-    assert_eq!(m.poll(), Some(Event::Data(single::ID, b"back".to_vec())));
+    assert_eq!(
+        m.poll().map(Event::owned),
+        Some(Event::Data(single::ID, b"back".to_vec()))
+    );
     m.close(single::ID).unwrap();
     assert_eq!(m.transmit(), Some(Transmit::Shutdown));
     m.end().unwrap();
@@ -58,7 +61,10 @@ fn multi() {
     let wire = bytes(&mut c);
     assert_eq!(wire.len(), frame::HEADER + 1);
     d.feed(&wire).unwrap();
-    assert_eq!(d.poll(), Some(Event::Data(a, b"x".to_vec())));
+    assert_eq!(
+        d.poll().map(Event::owned),
+        Some(Event::Data(a, b"x".to_vec()))
+    );
     c.fail();
     assert!(c.done());
 }

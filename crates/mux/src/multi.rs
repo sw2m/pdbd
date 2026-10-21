@@ -1,9 +1,40 @@
 use crate::flow::{self, Flow, State, ABORTED, REFUSED};
-use crate::frame::{Body, Frame, Head, Proto, Reader, HEADER, MAX};
+use crate::frame::{Body, Frame, Head, Proto, Reader, HEADER, MAX, WHOLE};
+use crate::lane::Lane;
 use crate::{Error, Event, Side, Transmit};
 use std::collections::{BTreeMap, VecDeque};
+use std::ops::Range;
 
-const QUANTUM: usize = HEADER + MAX as usize; // one full DATA frame per flow per transmit
+const QUANTUM: usize = WHOLE; // one full DATA frame per flow per transmit
+
+#[derive(Debug, Default)]
+struct Control {
+    buf: Vec<u8>,
+    sent: usize,
+}
+
+impl Control {
+    fn push(&mut self, frame: &Frame) {
+        if self.sent == self.buf.len() {
+            self.clear();
+        }
+        frame.encode(&mut self.buf);
+    }
+
+    fn ready(&self) -> bool {
+        self.sent < self.buf.len()
+    }
+
+    fn lend(&mut self) -> &[u8] {
+        let at = std::mem::replace(&mut self.sent, self.buf.len());
+        &self.buf[at..]
+    }
+
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.sent = 0;
+    }
+}
 
 #[derive(Debug)]
 pub struct Multi {
@@ -18,10 +49,11 @@ pub struct Multi {
     peer: u32,
     flows: BTreeMap<u32, Flow>,
     reader: Reader,
-    events: VecDeque<Event>,
-    control: Vec<u8>,
-    lanes: BTreeMap<u32, Vec<u8>>,
+    events: VecDeque<Event<Range<usize>>>,
+    control: Control,
+    lanes: BTreeMap<u32, Lane>,
     ring: VecDeque<u32>,
+    lent: Option<u32>,
     dead: bool,
 }
 
@@ -52,9 +84,10 @@ impl Multi {
             flows: BTreeMap::new(),
             reader: Reader::new(),
             events: VecDeque::new(),
-            control: Vec::new(),
+            control: Control::default(),
             lanes: BTreeMap::new(),
             ring: VecDeque::new(),
+            lent: None,
             dead: false,
         })
     }
@@ -83,14 +116,15 @@ impl Multi {
     }
 
     fn signal(&mut self, frame: Frame) {
-        frame.encode(&mut self.control);
+        self.control.push(&frame);
     }
 
-    fn lane(&mut self, id: u32) -> &mut Vec<u8> {
-        if !self.lanes.contains_key(&id) {
+    fn queue(&mut self, id: u32, frame: &Frame) {
+        let lane = self.lanes.entry(id).or_default();
+        if lane.is_empty() {
             self.ring.push_back(id);
         }
-        self.lanes.entry(id).or_default()
+        frame.put(lane.reserve(frame.size()));
     }
 
     fn discard(&mut self, id: u32) {
@@ -103,6 +137,14 @@ impl Multi {
         if let Some(flow) = self.flows.get(&id).filter(|f| f.done()) {
             self.used -= u64::from(flow.held());
             self.flows.remove(&id);
+            self.prune(id);
+        }
+    }
+
+    fn prune(&mut self, id: u32) {
+        let idle = self.lanes.get(&id).is_some_and(Lane::is_empty);
+        if idle && !self.flows.contains_key(&id) {
+            self.lanes.remove(&id);
         }
     }
 
@@ -119,9 +161,20 @@ impl Multi {
         self.control.clear();
         self.lanes.clear();
         self.ring.clear();
+        self.lent = None;
         let flows = std::mem::take(&mut self.flows);
         self.events
             .extend(flows.into_keys().map(|id| Event::Reset(id, ABORTED)));
+    }
+
+    fn keep(&self) -> usize {
+        self.events
+            .iter()
+            .find_map(|e| match e {
+                Event::Data(_, range) => Some(range.start),
+                _ => None,
+            })
+            .unwrap_or(self.reader.at())
     }
 
     fn blocked(&self) -> bool {
@@ -139,9 +192,10 @@ impl Multi {
         held && self.used + u64::from(head.field) > self.budget
     }
 
-    fn route(&mut self, frame: Frame) -> Result<(), Error> {
-        let id = frame.flow;
-        if let Body::Open(_) = frame.body {
+    fn route(&mut self, head: Head, at: usize) -> Result<(), Error> {
+        let id = head.flow;
+        let payload = at..at + head.size() - HEADER;
+        if let Body::Open(window) = head.body(&[]) {
             if self.mine(id) {
                 return Err(Error::Parity(id));
             }
@@ -149,6 +203,11 @@ impl Multi {
                 return Err(Error::Duplicate(id));
             }
             self.peer = id;
+            let frame = Frame {
+                flow: id,
+                proto: head.proto,
+                body: Body::Open(window),
+            };
             if self.full().is_some() {
                 self.signal(Frame {
                     body: Body::Reset(REFUSED),
@@ -160,7 +219,7 @@ impl Multi {
                 .map_err(|e| Error::Peer(id, e))?;
             flow.mark(self.now);
             self.flows.insert(id, flow);
-            self.events.push_back(Event::Open(id, frame.proto));
+            self.events.push_back(Event::Open(id, head.proto));
             return Ok(());
         }
         let Some(flow) = self.flows.get_mut(&id) else {
@@ -169,17 +228,22 @@ impl Multi {
                 false => Err(Error::Stray(id)),
             };
         };
+        let frame = Frame {
+            flow: id,
+            proto: head.proto,
+            body: head.body(self.reader.slice(payload.clone())),
+        };
         let event = match flow.receive(frame).map_err(|e| Error::Peer(id, e))? {
             flow::Event::Accepted => {
                 flow.mark(self.now);
                 if let Some(grant) = flow.flush() {
-                    grant.encode(&mut self.control);
+                    self.control.push(&grant);
                 }
                 Event::Accepted(id)
             }
-            flow::Event::Data(d) => {
-                self.used += d.len() as u64;
-                Event::Data(id, d)
+            flow::Event::Data(n) => {
+                self.used += u64::from(n);
+                Event::Data(id, payload)
             }
             flow::Event::Dropped(_) => return Ok(()),
             flow::Event::Window(n) => Event::Window(id, n),
@@ -195,7 +259,7 @@ impl Multi {
                 if let Ok(close) = flow.close() {
                     flow.mark(self.now);
                     self.discard(id);
-                    close.encode(self.lane(id));
+                    self.queue(id, &close);
                 }
                 Event::Stopped(id)
             }
@@ -205,27 +269,55 @@ impl Multi {
         Ok(())
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Error> {
+    pub fn spare(&mut self) -> &mut [u8] {
+        if self.dead {
+            return &mut [];
+        }
+        let keep = self.keep();
+        self.reader.spare(keep)
+    }
+
+    pub fn fill(&mut self, n: usize) -> Result<(), Error> {
         if self.dead {
             return Err(Error::Dead);
         }
-        self.reader.feed(bytes);
+        self.reader.fill(n);
         loop {
             self.paused = self.blocked();
             if self.paused {
                 return Ok(());
             }
-            let frame = match self.reader.pull() {
-                Ok(Some(frame)) => frame,
+            let (head, at) = match self.reader.step() {
+                Ok(Some(next)) => next,
                 Ok(None) => return Ok(()),
                 Err(e) => {
                     self.abort();
                     return Err(Error::Frame(e));
                 }
             };
-            if let Err(e) = self.route(frame) {
+            if let Err(e) = self.route(head, at) {
                 self.abort();
                 return Err(e);
+            }
+        }
+    }
+
+    pub fn feed(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        if self.dead {
+            return Err(Error::Dead);
+        }
+        loop {
+            let room = self.spare();
+            if room.is_empty() && !bytes.is_empty() {
+                self.reader.grow();
+                continue;
+            }
+            let n = room.len().min(bytes.len());
+            room[..n].copy_from_slice(&bytes[..n]);
+            bytes = &bytes[n..];
+            self.fill(n)?;
+            if bytes.is_empty() {
+                return Ok(());
             }
         }
     }
@@ -247,34 +339,40 @@ impl Multi {
         }
     }
 
-    pub fn poll(&mut self) -> Option<Event> {
-        self.events.pop_front()
+    pub fn poll(&mut self) -> Option<Event<&[u8]>> {
+        let event = self.events.pop_front()?;
+        Some(event.map(|range| self.reader.slice(range)))
     }
 
-    pub fn transmit(&mut self) -> Option<Transmit> {
-        let mut out = std::mem::take(&mut self.control);
-        for _ in 0..self.ring.len() {
-            let Some(id) = self.ring.pop_front() else {
-                break;
-            };
+    pub fn transmit(&mut self) -> Option<Transmit<&[u8]>> {
+        if let Some(id) = self.lent.take() {
+            self.prune(id);
+        }
+        if self.control.ready() {
+            return Some(Transmit::Bytes(self.control.lend()));
+        }
+        self.control.clear();
+        while let Some(id) = self.ring.pop_front() {
             let Some(lane) = self.lanes.get_mut(&id) else {
                 continue;
             };
+            let front = lane.front();
             let mut k = 0;
-            while let Ok(Some(head)) = Head::parse(&lane[k..]) {
+            while let Ok(Some(head)) = Head::parse(&front[k..]) {
                 let size = head.size();
                 if k > 0 && k + size > QUANTUM {
                     break;
                 }
                 k += size;
             }
-            out.extend(lane.drain(..k));
-            match lane.is_empty() {
-                true => _ = self.lanes.remove(&id),
-                false => self.ring.push_back(id),
+            let range = lane.take(k);
+            if !lane.is_empty() {
+                self.ring.push_back(id);
             }
+            self.lent = Some(id);
+            return Some(Transmit::Bytes(self.lanes[&id].slice(range)));
         }
-        (!out.is_empty()).then_some(Transmit::Bytes(out))
+        None
     }
 
     pub fn open(&mut self, proto: Proto) -> Result<u32, Error> {
@@ -307,9 +405,9 @@ impl Multi {
     pub fn send(&mut self, id: u32, data: &[u8]) -> Result<usize, Error> {
         let flow = self.get(id)?;
         let n = flow.send(data).map_err(|e| Error::Flow(id, e))?;
-        let proto = flow.proto();
-        Frame::write(self.lane(id), id, proto, &data[..n])
-            .map_err(Error::Frame)?;
+        let frame =
+            Frame::data(id, flow.proto(), &data[..n]).map_err(Error::Frame)?;
+        self.queue(id, &frame);
         Ok(n)
     }
 
@@ -332,7 +430,7 @@ impl Multi {
     pub fn close(&mut self, id: u32) -> Result<(), Error> {
         let frame = self.get(id)?.close().map_err(|e| Error::Flow(id, e))?;
         self.mark(id);
-        frame.encode(self.lane(id));
+        self.queue(id, &frame);
         self.reap(id);
         Ok(())
     }

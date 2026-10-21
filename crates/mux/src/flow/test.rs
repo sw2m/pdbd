@@ -11,7 +11,7 @@ fn pair(proto: Proto, a: u32, b: u32) -> (Flow, Flow) {
     (opener, acceptor)
 }
 
-fn frame(proto: Proto, body: Body) -> Frame {
+fn frame(proto: Proto, body: Body<'_>) -> Frame<'_> {
     Frame {
         flow: 1,
         proto,
@@ -19,8 +19,8 @@ fn frame(proto: Proto, body: Body) -> Frame {
     }
 }
 
-fn data(proto: Proto, d: &[u8]) -> Frame {
-    frame(proto, Body::Data(d.to_vec()))
+fn data(proto: Proto, d: &[u8]) -> Frame<'_> {
+    frame(proto, Body::Data(d))
 }
 
 // #58 — RFC 4254 §5.1: each side states its own initial receive window
@@ -78,10 +78,10 @@ fn unanswered() {
     assert_eq!(acceptor.send(b"x").unwrap_err(), Error::State);
     assert_eq!(acceptor.close().unwrap_err(), Error::State);
     let d = data(Proto::Tcp, b"x");
-    assert_eq!(acceptor.receive(d.clone()), Err(Error::State));
+    assert_eq!(acceptor.receive(d), Err(Error::State));
     assert_eq!(opener.receive(d), Err(Error::State));
     let stop = frame(Proto::Tcp, Body::Stop);
-    assert_eq!(acceptor.receive(stop.clone()), Err(Error::State));
+    assert_eq!(acceptor.receive(stop), Err(Error::State));
     assert_eq!(opener.receive(stop), Err(Error::State));
 }
 
@@ -123,7 +123,7 @@ fn split() {
     assert_eq!(a.credit(), 0);
     assert_eq!(a.send(b"ef").unwrap_err(), Error::Blocked);
     let got = b.receive(data(Proto::Tcp, b"abcd"));
-    assert_eq!(got, Ok(Event::Data(b"abcd".to_vec())));
+    assert_eq!(got, Ok(Event::Data(4)));
     assert_eq!((b.granted(), b.held()), (0, 4));
 }
 
@@ -242,13 +242,13 @@ fn halfclose() {
     assert_eq!(a.send(b"x").unwrap_err(), Error::Closed);
     assert_eq!(a.close().unwrap_err(), Error::Closed);
     assert!(!a.done());
-    assert_eq!(b.receive(fin.clone()), Ok(Event::Closed));
+    assert_eq!(b.receive(fin), Ok(Event::Closed));
     assert_eq!(b.receive(fin), Err(Error::State));
     let late = data(Proto::Tcp, b"x");
     assert_eq!(b.receive(late), Err(Error::Closed));
     assert_eq!(b.send(b"still"), Ok(5));
     let got = a.receive(data(Proto::Tcp, b"still"));
-    assert_eq!(got, Ok(Event::Data(b"still".to_vec())));
+    assert_eq!(got, Ok(Event::Data(5)));
     let fin = b.close().unwrap();
     assert!(b.done());
     assert_eq!(a.receive(fin), Ok(Event::Closed));
@@ -305,7 +305,7 @@ fn stopped() {
     a.send(b"abcd").unwrap();
     assert_eq!(a.send(b"e").unwrap_err(), Error::Blocked);
     let stop = frame(Proto::Tcp, Body::Stop);
-    assert_eq!(a.receive(stop.clone()), Ok(Event::Stopped));
+    assert_eq!(a.receive(stop), Ok(Event::Stopped));
     assert_eq!(a.send(b"e").unwrap_err(), Error::Stopped);
     assert_eq!(a.receive(stop), Err(Error::State));
     assert_eq!(a.close(), Ok(frame(Proto::Tcp, Body::Close)));
@@ -361,7 +361,7 @@ fn reset() {
     assert!(a.done());
     assert_eq!(a.send(b"x").unwrap_err(), Error::Closed);
     assert_eq!(a.reset(ABORTED).unwrap_err(), Error::Closed);
-    assert_eq!(b.receive(rst.clone()), Ok(Event::Reset(ABORTED)));
+    assert_eq!(b.receive(rst), Ok(Event::Reset(ABORTED)));
     assert!(b.done());
     assert_eq!(b.state(), State::Reset);
     assert_eq!(b.receive(rst), Err(Error::Closed));
@@ -413,13 +413,23 @@ fn op() -> impl Strategy<Value = Op> {
 
 struct End {
     flow: Flow,
-    inbox: VecDeque<Frame>,
+    inbox: VecDeque<Vec<u8>>,
     sent: Vec<u8>,
     got: Vec<u8>,
 }
 
-fn inflight(q: &VecDeque<Frame>) -> (u64, u64) {
-    q.iter().fold((0, 0), |(d, w), f| match &f.body {
+fn encode(f: &Frame) -> Vec<u8> {
+    let mut out = Vec::new();
+    f.encode(&mut out);
+    out
+}
+
+fn decode(bytes: &[u8]) -> Frame<'_> {
+    Frame::decode(bytes).unwrap().unwrap().0
+}
+
+fn inflight(q: &VecDeque<Vec<u8>>) -> (u64, u64) {
+    q.iter().fold((0, 0), |(d, w), b| match &decode(b).body {
         Body::Data(x) => (d + x.len() as u64, w),
         Body::Window(n) => (d, w + u64::from(*n)),
         _ => (d, w),
@@ -461,7 +471,7 @@ proptest! {
                                 prop_assert_eq!(used, payload.len());
                             }
                             ends[me].sent.extend(&payload[..used]);
-                            ends[peer].inbox.push_back(data(proto, &payload[..used]));
+                            ends[peer].inbox.push_back(encode(&data(proto, &payload[..used])));
                         }
                         Err(Error::Blocked) => {
                             prop_assert!(
@@ -476,9 +486,13 @@ proptest! {
                 }
                 Op::Deliver(s) => {
                     let me = usize::from(s);
-                    if let Some(f) = ends[me].inbox.pop_front() {
+                    if let Some(b) = ends[me].inbox.pop_front() {
+                        let f = decode(&b);
                         match ends[me].flow.receive(f).unwrap() {
-                            Event::Data(d) => ends[me].got.extend(d),
+                            Event::Data(_) => {
+                                let Body::Data(d) = f.body else { unreachable!() };
+                                ends[me].got.extend(d);
+                            }
                             Event::Window(_) => {}
                             e => prop_assert!(false, "event: {e:?}"),
                         }
@@ -488,13 +502,13 @@ proptest! {
                     let (me, peer) = (usize::from(s), usize::from(!s));
                     let n = n.min(ends[me].flow.held());
                     if let Some(w) = ends[me].flow.consume(n).unwrap() {
-                        ends[peer].inbox.push_back(w);
+                        ends[peer].inbox.push_back(encode(&w));
                     }
                 }
                 Op::Flush(s) => {
                     let (me, peer) = (usize::from(s), usize::from(!s));
                     if let Some(w) = ends[me].flow.flush() {
-                        ends[peer].inbox.push_back(w);
+                        ends[peer].inbox.push_back(encode(&w));
                     }
                 }
                 Op::Grow(s, n) => {

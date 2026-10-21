@@ -2,6 +2,7 @@
 
 pub mod flow;
 pub mod frame;
+mod lane;
 pub mod multi;
 pub mod single;
 
@@ -25,10 +26,10 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub enum Event<D> {
     Open(u32, Proto),
     Accepted(u32),
-    Data(u32, Vec<u8>),
+    Data(u32, D),
     Window(u32, u32),
     Closed(u32),
     Reset(u32, u32),
@@ -36,10 +37,42 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Transmit {
-    Bytes(Vec<u8>),
+pub enum Transmit<B> {
+    Bytes(B),
     Shutdown,
     Abort,
+}
+
+impl<D> Event<D> {
+    pub fn map<E>(self, f: impl FnOnce(D) -> E) -> Event<E> {
+        match self {
+            Self::Open(id, proto) => Event::Open(id, proto),
+            Self::Accepted(id) => Event::Accepted(id),
+            Self::Data(id, d) => Event::Data(id, f(d)),
+            Self::Window(id, n) => Event::Window(id, n),
+            Self::Closed(id) => Event::Closed(id),
+            Self::Reset(id, code) => Event::Reset(id, code),
+            Self::Stopped(id) => Event::Stopped(id),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Event<&[u8]> {
+    pub fn owned(self) -> Event<Vec<u8>> {
+        self.map(<[u8]>::to_vec)
+    }
+}
+
+#[cfg(test)]
+impl Transmit<&[u8]> {
+    pub fn owned(self) -> Transmit<Vec<u8>> {
+        match self {
+            Self::Bytes(b) => Transmit::Bytes(b.to_vec()),
+            Self::Shutdown => Transmit::Shutdown,
+            Self::Abort => Transmit::Abort,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +129,14 @@ impl Mux {
         }
     }
 
+    pub fn spare(&mut self) -> &mut [u8] {
+        each!(self, m => m.spare())
+    }
+
+    pub fn fill(&mut self, n: usize) -> Result<(), Error> {
+        each!(self, m => m.fill(n))
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), Error> {
         each!(self, m => m.feed(bytes))
     }
@@ -108,11 +149,11 @@ impl Mux {
         each!(self, m => m.fail())
     }
 
-    pub fn poll(&mut self) -> Option<Event> {
+    pub fn poll(&mut self) -> Option<Event<&[u8]>> {
         each!(self, m => m.poll())
     }
 
-    pub fn transmit(&mut self) -> Option<Transmit> {
+    pub fn transmit(&mut self) -> Option<Transmit<&[u8]>> {
         each!(self, m => m.transmit())
     }
 

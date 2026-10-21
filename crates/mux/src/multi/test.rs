@@ -23,14 +23,18 @@ fn link(a: &mut Multi, b: &mut Multi) {
     b.feed(&bytes).unwrap();
 }
 
-fn events(m: &mut Multi) -> Vec<Event> {
-    std::iter::from_fn(|| m.poll()).collect()
+fn events(m: &mut Multi) -> Vec<Event<Vec<u8>>> {
+    std::iter::from_fn(|| m.poll().map(Event::owned)).collect()
 }
 
-fn frames(bytes: &[u8]) -> Vec<Frame> {
-    let mut r = Reader::new();
-    r.feed(bytes);
-    std::iter::from_fn(|| r.pull().unwrap()).collect()
+fn frames(mut bytes: &[u8]) -> Vec<Frame<'_>> {
+    let mut out = Vec::new();
+    while let Some((f, n)) = Frame::decode(bytes).unwrap() {
+        out.push(f);
+        bytes = &bytes[n..];
+    }
+    assert!(bytes.is_empty(), "{} trailing bytes", bytes.len());
+    out
 }
 
 fn encode(frames: &[Frame]) -> Vec<u8> {
@@ -201,7 +205,7 @@ fn violations() {
         (encode(&[tcp(7, Body::Window(1))]), Error::Stray(7)),
         (encode(&[tcp(4, Body::Close)]), Error::Stray(4)),
         (
-            encode(&[tcp(1, Body::Open(1)), tcp(1, Body::Data(vec![0; 5]))]),
+            encode(&[tcp(1, Body::Open(1)), tcp(1, Body::Data(&[0; 5]))]),
             Error::Peer(1, flow::Error::State),
         ),
         (
@@ -224,8 +228,7 @@ fn violations() {
 fn empty() {
     let (mut c, mut d) = pair(10, 10);
     let id = established(&mut c, &mut d, Proto::Tcp);
-    let blank =
-        encode(&[tcp(id, Body::Data(vec![])), tcp(id, Body::Data(vec![]))]);
+    let blank = encode(&[tcp(id, Body::Data(&[])), tcp(id, Body::Data(&[]))]);
     assert_eq!(d.feed(&blank), Err(Error::Frame(frame::Error::Empty)));
     assert_eq!(events(&mut d), vec![Event::Reset(id, ABORTED)]);
     assert_eq!(d.feed(&blank), Err(Error::Dead));
@@ -261,7 +264,7 @@ fn crossing() {
 fn overrun() {
     let (mut c, mut d) = pair(10, 4);
     let id = established(&mut c, &mut d, Proto::Tcp);
-    let over = encode(&[tcp(id, Body::Data(vec![0; 5]))]);
+    let over = encode(&[tcp(id, Body::Data(&[0; 5]))]);
     assert_eq!(
         d.feed(&over),
         Err(Error::Peer(id, flow::Error::Credit { len: 5, credit: 4 }))
@@ -300,7 +303,7 @@ fn stale() {
     d.close(id).unwrap();
     assert!(d.is_empty());
     d.feed(&late).unwrap();
-    d.feed(&encode(&[tcp(id, Body::Data(vec![1]))])).unwrap();
+    d.feed(&encode(&[tcp(id, Body::Data(&[1]))])).unwrap();
     d.feed(&encode(&[tcp(id, Body::Reset(ABORTED))])).unwrap();
     assert!(events(&mut d).is_empty());
     let never = encode(&[tcp(5, Body::Close)]);
@@ -524,11 +527,11 @@ fn guilty() {
     c.close(b).unwrap();
     link(&mut c, &mut d);
     events(&mut d);
-    let late = encode(&[tcp(b, Body::Data(vec![2; 20_000]))]);
+    let late = encode(&[tcp(b, Body::Data(&[2; 20_000]))]);
     assert_eq!(d.feed(&late), Err(Error::Peer(b, flow::Error::Closed)));
 
     let (_, mut d, b) = spent();
-    let over = encode(&[tcp(b, Body::Data(vec![2; 35_000]))]);
+    let over = encode(&[tcp(b, Body::Data(&[2; 35_000]))]);
     let credit = flow::Error::Credit {
         len: 35_000,
         credit: 30_000,
@@ -536,7 +539,7 @@ fn guilty() {
     assert_eq!(d.feed(&over), Err(Error::Peer(b, credit)));
 
     let (_, mut d, b) = spent();
-    let fair = encode(&[tcp(b, Body::Data(vec![2; 20_000]))]);
+    let fair = encode(&[tcp(b, Body::Data(&[2; 20_000]))]);
     assert_eq!(d.feed(&fair), Ok(()));
     assert!(d.paused() && !d.done());
 }
@@ -570,7 +573,8 @@ fn opening() {
     d.accept(id).unwrap();
     link(&mut d, &mut c);
     assert_eq!(events(&mut c), vec![Event::Accepted(id)]);
-    let grant = frames(&wire(&mut c));
+    let bytes = wire(&mut c);
+    let grant = frames(&bytes);
     assert_eq!(grant, vec![tcp(id, Body::Window(40))]);
     d.feed(&encode(&grant)).unwrap();
     assert_eq!(d.flow(id).unwrap().credit(), 50);
@@ -669,7 +673,8 @@ fn expire() {
             Event::Reset(opening, ABORTED)
         ]
     );
-    let resets: Vec<Frame> = frames(&wire(&mut c));
+    let bytes = wire(&mut c);
+    let resets: Vec<Frame> = frames(&bytes);
     assert!(resets.contains(&tcp(pending, Body::Reset(ABORTED))));
     assert!(resets.contains(&tcp(opening, Body::Reset(ABORTED))));
     c.expire(150, 100);
@@ -692,24 +697,20 @@ fn schedule() {
     }
     c.send(quiet, b"hi").unwrap();
     c.reset(doomed, ABORTED).unwrap();
-    let Some(Transmit::Bytes(first)) = c.transmit() else {
-        panic!()
-    };
-    let got = frames(&first);
-    assert_eq!(got[0], tcp(doomed, Body::Reset(ABORTED)));
-    assert!(got.contains(&tcp(quiet, Body::Data(b"hi".to_vec()))));
-    let bulk: usize = got
-        .iter()
-        .filter(|f| f.flow == busy)
-        .map(|f| match &f.body {
-            Body::Data(d) => d.len(),
-            _ => 0,
+    let sent: Vec<Vec<u8>> = std::iter::from_fn(|| {
+        c.transmit().map(|t| match t {
+            Transmit::Bytes(b) => b.to_vec(),
+            t => panic!("{t:?}"),
         })
-        .sum();
-    assert!(bulk > 0 && bulk <= MAX as usize, "{bulk}");
-    assert!(first.len() <= 2 * (HEADER + MAX as usize) + 64);
-    let rest = wire(&mut c);
-    assert_eq!(rest.len(), 3 * (HEADER + MAX as usize));
+    })
+    .collect();
+    let chunk = HEADER + MAX as usize;
+    assert_eq!(frames(&sent[0]), vec![tcp(doomed, Body::Reset(ABORTED))]);
+    assert!(frames(&sent[1]).iter().all(|f| f.flow == busy));
+    assert_eq!(frames(&sent[2]), vec![tcp(quiet, Body::Data(b"hi"))]);
+    assert!(sent[1..].iter().all(|b| b.len() <= chunk));
+    let total: usize = sent[1..].iter().map(Vec::len).sum();
+    assert_eq!(total, 4 * chunk + HEADER + 2);
 }
 
 // #58 — a coalesced burst of tiny frames parses in linear time
@@ -726,12 +727,130 @@ fn many() {
     assert!(spent.as_secs() < 5, "{n} frames took {spent:?}"); // linear is well under 1s in debug; the quadratic parser took ~20s
 }
 
+// #58 "Minimal copy" — a read into spare() is delivered in place, not copied
+#[test]
+fn place() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    c.send(id, b"in place").unwrap();
+    let bytes = wire(&mut c);
+    let s = d.spare();
+    s[..bytes.len()].copy_from_slice(&bytes);
+    let at = s.as_ptr() as usize;
+    d.fill(bytes.len()).unwrap();
+    let Some(Event::Data(got, data)) = d.poll() else {
+        panic!("no data")
+    };
+    assert_eq!((got, data), (id, &b"in place"[..]));
+    assert_eq!(data.as_ptr() as usize, at + HEADER);
+}
+
+// #58 "Minimal copy" — reading on before polling keeps the unpolled payloads
+#[test]
+fn held() {
+    let (mut c, mut d) = pair(MAX, MAX);
+    let id = established(&mut c, &mut d, Proto::Tcp);
+    for chunk in [&b"first"[..], b"second"] {
+        c.send(id, chunk).unwrap();
+        let bytes = wire(&mut c);
+        let s = d.spare();
+        s[..bytes.len()].copy_from_slice(&bytes);
+        d.fill(bytes.len()).unwrap();
+    }
+    assert_eq!(
+        events(&mut d),
+        vec![
+            Event::Data(id, b"first".to_vec()),
+            Event::Data(id, b"second".to_vec())
+        ]
+    );
+}
+
+// #58 "Minimal copy" — spare() offers no room once the budget pauses decoding
+// and the buffer fills, and decoding resumes after consumption refunds it
+#[test]
+fn backpressure() {
+    let mut c = Multi::new(Side::Client, MAX, ALL, ROOM).unwrap();
+    let mut d = Multi::new(Side::Daemon, MAX, ALL, u64::from(MAX)).unwrap();
+    let ids: Vec<u32> = (0..8)
+        .map(|_| established(&mut c, &mut d, Proto::Tcp))
+        .collect();
+    for (i, &id) in ids.iter().enumerate() {
+        assert_eq!(c.send(id, &[i as u8; MAX as usize]), Ok(MAX as usize));
+    }
+    let mut bytes = wire(&mut c);
+    loop {
+        let s = d.spare();
+        let n = s.len().min(bytes.len());
+        if n == 0 {
+            break;
+        }
+        s[..n].copy_from_slice(&bytes[..n]);
+        d.fill(n).unwrap();
+        bytes.drain(..n);
+    }
+    assert!(d.paused());
+    assert!(!bytes.is_empty());
+    assert_eq!(
+        events(&mut d),
+        vec![Event::Data(ids[0], vec![0; MAX as usize])]
+    );
+    d.consume(ids[0], MAX).unwrap();
+    d.fill(0).unwrap();
+    assert_eq!(
+        events(&mut d),
+        vec![Event::Data(ids[1], vec![1; MAX as usize])]
+    );
+}
+
+fn datagrams() -> impl Strategy<Value = Vec<usize>> {
+    prop::collection::vec(
+        prop_oneof![0usize..64, 0usize..=MAX as usize, Just(MAX as usize)],
+        1..40,
+    )
+}
+
+proptest! {
+    // #58 "Minimal copy" — reads of any size into spare() deliver every
+    // datagram whole, in one lent slice, and spare() always has room while
+    // every event is polled and decoding is not paused
+    #[test]
+    fn pieces(sizes in datagrams(), reads in prop::collection::vec(1usize..70_000, 1..16)) {
+        let total: usize = sizes.iter().sum();
+        let window = u32::try_from(total).unwrap().max(MAX);
+        let (mut c, mut d) = pair(window, window);
+        let id = established(&mut c, &mut d, Proto::Udp);
+        let mut sent = Vec::new();
+        for (i, &n) in sizes.iter().enumerate() {
+            let payload: Vec<u8> = (0..n).map(|k| (i + k) as u8).collect();
+            prop_assert_eq!(c.send(id, &payload), Ok(n));
+            sent.push(payload);
+        }
+        let bytes = wire(&mut c);
+        let mut got = Vec::new();
+        let mut at = 0;
+        let mut turn = 0;
+        while at < bytes.len() {
+            let s = d.spare();
+            prop_assert!(!s.is_empty(), "no room at {} of {}", at, bytes.len());
+            let n = s.len().min(reads[turn % reads.len()]).min(bytes.len() - at);
+            turn += 1;
+            s[..n].copy_from_slice(&bytes[at..at + n]);
+            at += n;
+            d.fill(n).unwrap();
+            got.extend(events(&mut d));
+        }
+        let want: Vec<_> = sent.into_iter().map(|p| Event::Data(id, p)).collect();
+        prop_assert_eq!(got, want);
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     Open(bool, bool),
     Accept(bool, usize),
     Send(bool, usize, usize),
-    Deliver(bool, usize),
+    Deliver(bool, usize, bool),
     Consume(bool, usize, u32),
     Close(bool, usize),
     Reset(bool, usize),
@@ -745,7 +864,8 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (any::<bool>(), any::<usize>()).prop_map(|(s, i)| Op::Accept(s, i)),
         3 => (any::<bool>(), any::<usize>(), 0usize..200)
             .prop_map(|(s, i, n)| Op::Send(s, i, n)),
-        4 => (any::<bool>(), 0usize..96).prop_map(|(s, n)| Op::Deliver(s, n)),
+        4 => (any::<bool>(), 0usize..96, any::<bool>())
+            .prop_map(|(s, n, p)| Op::Deliver(s, n, p)),
         2 => (any::<bool>(), any::<usize>(), 0u32..200)
             .prop_map(|(s, i, n)| Op::Consume(s, i, n)),
         1 => (any::<bool>(), any::<usize>()).prop_map(|(s, i)| Op::Close(s, i)),
@@ -792,17 +912,47 @@ impl Net {
         }
     }
 
-    fn deliver(&mut self, me: usize, n: usize) -> Result<(), TestCaseError> {
+    fn deliver(
+        &mut self,
+        me: usize,
+        n: usize,
+        place: bool,
+    ) -> Result<(), TestCaseError> {
         let n = n.min(self.wire[me].len());
-        let chunk: Vec<u8> = self.wire[me].drain(..n).collect();
-        let r = self.m[me].feed(&chunk);
-        prop_assert_eq!(r, Ok(()));
+        match place {
+            true => {
+                prop_assert_eq!(self.m[me].fill(0), Ok(()));
+                let mut left = n;
+                loop {
+                    self.collect(me);
+                    let s = self.m[me].spare();
+                    let k = s.len().min(left);
+                    if k == 0 {
+                        break;
+                    }
+                    s[..k].copy_from_slice(&self.wire[me][..k]);
+                    self.wire[me].drain(..k);
+                    left -= k;
+                    let r = self.m[me].fill(k);
+                    prop_assert_eq!(r, Ok(()));
+                }
+            }
+            false => {
+                let chunk: Vec<u8> = self.wire[me].drain(..n).collect();
+                let r = self.m[me].feed(&chunk);
+                prop_assert_eq!(r, Ok(()));
+            }
+        }
+        self.collect(me);
+        Ok(())
+    }
+
+    fn collect(&mut self, me: usize) {
         while let Some(ev) = self.m[me].poll() {
             if let Event::Data(id, d) = ev {
                 self.got[me].entry(id).or_default().extend(d);
             }
         }
-        Ok(())
     }
 
     fn consume(&mut self) {
@@ -825,7 +975,7 @@ impl Net {
                 return Ok(());
             }
             for me in 0..2 {
-                self.deliver(me, usize::MAX)?;
+                self.deliver(me, usize::MAX, me == 0)?;
             }
         }
     }
@@ -891,7 +1041,7 @@ proptest! {
                         Err(e) => prop_assert!(false, "send: {e}"),
                     }
                 }
-                Op::Deliver(s, n) => net.deliver(usize::from(s), n)?,
+                Op::Deliver(s, n, p) => net.deliver(usize::from(s), n, p)?,
                 Op::Consume(s, i, n) => {
                     let me = usize::from(s);
                     let Some(id) = pick(&net.m[me], i) else { continue };
@@ -970,12 +1120,12 @@ proptest! {
             ids.push(id);
         }
         net.pump();
-        net.deliver(1, usize::MAX)?;
+        net.deliver(1, usize::MAX, true)?;
         for &id in &ids {
             net.m[1].accept(id).unwrap();
         }
         net.pump();
-        net.deliver(0, usize::MAX)?;
+        net.deliver(0, usize::MAX, false)?;
         let payload: Vec<u8> = (0..target).map(|i| i as u8).collect();
         for _ in 0..(4 * target + 16) {
             for (&id, &live) in ids.iter().zip(&mask) {
@@ -993,7 +1143,7 @@ proptest! {
             }
             net.pump();
             for me in 0..2 {
-                net.deliver(me, usize::MAX)?;
+                net.deliver(me, usize::MAX, me == 1)?;
             }
         }
         for (&id, &live) in ids.iter().zip(&mask) {
