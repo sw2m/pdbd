@@ -247,6 +247,8 @@ fn eof() {
     e.send(b"y").unwrap();
     assert_eq!(e.wire(), b"y");
     e.s.close(ID).unwrap();
+    assert!(!e.s.done());
+    assert_eq!(e.transmits(), vec![Transmit::Shutdown]);
     assert!(e.s.done());
 }
 
@@ -482,5 +484,9 @@ fn unread() {
     s.end().unwrap();
     assert!(!s.done());
     s.consume(ID, 4).unwrap();
+    assert!(!s.done());
+    let mut out = [0; 8];
+    let mut none = |_: u32, _: &mut [u8]| Pull::Wait;
+    assert_eq!(s.pull(&mut out, &mut none), crate::Transmit::Shutdown);
     assert!(s.done());
 }

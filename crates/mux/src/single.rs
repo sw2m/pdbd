@@ -276,7 +276,8 @@ impl Single {
     }
 
     pub fn done(&self) -> bool {
-        self.reset || (self.sent && self.received && self.held == 0)
+        self.reset
+            || (self.sent && !self.shut && self.received && self.held == 0)
     }
 }
 

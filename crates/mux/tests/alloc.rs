@@ -4,6 +4,8 @@ use std::cell::Cell;
 
 thread_local! {
     static COUNT: Cell<u64> = const { Cell::new(0) };
+    static SEEN: Cell<usize> = const { Cell::new(0) };
+    static GOT: Cell<usize> = const { Cell::new(0) };
 }
 
 struct Counter;
@@ -41,16 +43,26 @@ fn count() -> u64 {
     COUNT.with(Cell::get)
 }
 
+const DATAGRAM: usize = 1400; // a typical UDP payload under a 1500-byte MTU
+
 struct Tap {
     left: Vec<usize>,
     data: Vec<u8>,
+    unit: usize,
 }
 
 impl Tap {
     fn source(&mut self) -> impl FnMut(u32, &mut [u8]) -> Pull + '_ {
         |id, buf| {
             let left = &mut self.left[(id as usize - 1) / 2];
-            let n = (*left).min(buf.len()).min(self.data.len());
+            if self.unit > 0 && *left > 0 && buf.len() < self.unit {
+                return Pull::Blocked;
+            }
+            let most = match self.unit {
+                0 => buf.len().min(self.data.len()),
+                unit => unit,
+            };
+            let n = (*left).min(most);
             if n == 0 {
                 return Pull::Wait;
             }
@@ -69,7 +81,16 @@ fn drain(m: &mut Multi, keep: Option<u32>) {
                 assert!(held >= n as usize);
                 if keep != Some(id) {
                     m.consume(id, n).unwrap();
+                    continue;
                 }
+                GOT.with(|g| g.set(g.get() + n as usize));
+                let seen = SEEN.with(|s| s.get()) + n as usize;
+                let take = match seen >= WINDOW as usize / 2 {
+                    true => seen - DATAGRAM,
+                    false => 0,
+                };
+                m.consume(id, take as u32).unwrap();
+                SEEN.with(|s| s.set(seen - take));
             }
             Event::Open(id, _) => m.accept(id).unwrap(),
             _ => {}
@@ -100,7 +121,7 @@ fn round(
     keep: Option<u32>,
 ) {
     let sending = || ids.iter().copied().filter(move |&id| Some(id) != keep);
-    for id in sending() {
+    for &id in ids {
         tap.left[(id as usize - 1) / 2] = tap.data.len();
         c.ready(id).unwrap();
     }
@@ -113,28 +134,29 @@ fn round(
 }
 
 fn steady(flows: usize, size: usize) -> u64 {
-    held(flows, size, None)
+    held(flows, size, None, Proto::Tcp)
 }
 
-fn held(flows: usize, size: usize, keep: Option<u32>) -> u64 {
+fn held(flows: usize, size: usize, keep: Option<u32>, proto: Proto) -> u64 {
     let mut c = Multi::new(Side::Client, WINDOW, u32::MAX, u64::MAX).unwrap();
     let mut d = Multi::new(Side::Daemon, WINDOW, u32::MAX, u64::MAX).unwrap();
-    let ids: Vec<u32> =
-        (0..flows).map(|_| c.open(Proto::Tcp).unwrap()).collect();
+    let ids: Vec<u32> = (0..flows).map(|_| c.open(proto).unwrap()).collect();
+    let unit = match proto {
+        Proto::Tcp => 0,
+        Proto::Udp => DATAGRAM,
+    };
     let mut tap = Tap {
         left: vec![0; flows],
         data: vec![7u8; size],
+        unit,
     };
     let mut back = Tap {
         left: Vec::new(),
         data: Vec::new(),
+        unit: 0,
     };
     pump(&mut c, &mut d, &mut tap, keep);
     pump(&mut d, &mut c, &mut back, keep);
-    if let Some(id) = keep {
-        tap.left[(id as usize - 1) / 2] = WINDOW as usize;
-        c.ready(id).unwrap();
-    }
     for _ in 0..WARM {
         round(&mut c, &mut d, &ids, &mut tap, &mut back, keep);
     }
@@ -160,7 +182,17 @@ fn many() {
 // #58 "A holding flow never stalls another"
 #[test]
 fn hold() {
-    assert_eq!(held(4, WINDOW as usize, Some(1)), 0);
+    assert_eq!(held(4, WINDOW as usize, Some(1), Proto::Tcp), 0);
+    assert!(
+        GOT.with(Cell::get) > 32 * WINDOW as usize,
+        "the holder stalled"
+    );
+}
+
+// #58 "Data path"
+#[test]
+fn datagrams() {
+    assert_eq!(held(8, 100 * DATAGRAM, None, Proto::Udp), 0);
 }
 
 // #58 "Data path"

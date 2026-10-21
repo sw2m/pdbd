@@ -1,4 +1,4 @@
-// see README §"Concurrency & flow control" (the bridge wire contract)
+// see README §"The bridge tunnel's wire contract"
 
 pub mod flow;
 pub mod frame;
