@@ -53,49 +53,28 @@ jobs:
       - name: warn on reused components
         if: steps.cache.outputs.hit == 'true'
         run: echo "::warning title=non-clean runner::restored a cached /nix store from a prior run — component reuse means build pollution is possible"
-      - id: images
+      - id: bench
         if: matrix.check.hook == 'benchmark'
         env:
           CONFIG: ${{ matrix.check.config }}
-        run: |
-          crate=$(basename "$(dirname "$CONFIG")")
-          mkdir -p ~/.cache/bencher/images
-          echo "prefix=bencher-images-$RUNNER_OS-$crate-" >> "$GITHUB_OUTPUT"
-          echo "report=$(dirname "$CONFIG")/bench/report.json" >> "$GITHUB_OUTPUT"
-      - id: restore
+        run: echo "dir=$(dirname "$CONFIG")/bench" >> "$GITHUB_OUTPUT"
+      - id: images
         if: matrix.check.hook == 'benchmark'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: sw2m/bencher/cache@e18d27e4738d334d7f956a8a3d4445b5c07daa89 # v0.4.1, the same ref as the bencher flake input
         with:
-          path: ~/.cache/bencher/images
-          key: ${{ steps.images.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: ${{ steps.images.outputs.prefix }}
-      - name: warn on reused images
-        if: steps.restore.outputs.cache-matched-key != ''
-        run: |
-          echo "::warning title=cached runner image::restored bencher images from ${{ steps.restore.outputs.cache-matched-key }}: a hit races the oracles that image was provisioned with — see README \"Benchmarks\""
-          ls ~/.cache/bencher/images > "$RUNNER_TEMP/bencher.restored"
+          mode: restore
+          bench: ${{ steps.bench.outputs.dir }}
       - env:
           LEFTHOOK_CONFIG: ${{ matrix.check.config }}
         run: |
           [ "${{ matrix.check.hook }}" != benchmark ] || export BENCHMARK_REPORT="$RUNNER_TEMP/benchmark.md" # see README "Benchmarks"
           nix develop --no-update-lock-file -c lefthook run ${{ matrix.check.hook }}
-      - id: keep
-        if: always() && matrix.check.hook == 'benchmark'
-        env:
-          REPORT: ${{ steps.images.outputs.report }}
-        run: |
-          key=$(jq -r '.cache.key // ""' "$REPORT" 2>/dev/null || true)
-          base=$(jq -r '.cache.base.key // ""' "$REPORT" 2>/dev/null || true)
-          [ -n "$key" ] || exit 0
-          cd ~/.cache/bencher/images
-          find . -maxdepth 1 -type f ! -name "$key.tar" ! -name "$key.sha256" \
-            ! -name "${base:-$key}.tar" ! -name "${base:-$key}.sha256" -delete
-          ls | cmp -s - "$RUNNER_TEMP/bencher.restored" 2>/dev/null || echo "changed=true" >> "$GITHUB_OUTPUT"
-      - if: always() && steps.keep.outputs.changed == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - if: always() && matrix.check.hook == 'benchmark'
+        uses: sw2m/bencher/cache@e18d27e4738d334d7f956a8a3d4445b5c07daa89 # v0.4.1
         with:
-          path: ~/.cache/bencher/images
-          key: ${{ steps.images.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          mode: save
+          report: ${{ steps.bench.outputs.dir }}/report.json
+          key: ${{ steps.images.outputs.key }}
       - name: summarize benchmark report
         if: always() && matrix.check.hook == 'benchmark'
         run: '[ ! -f "$RUNNER_TEMP/benchmark.md" ] || cat "$RUNNER_TEMP/benchmark.md" >> "$GITHUB_STEP_SUMMARY"'

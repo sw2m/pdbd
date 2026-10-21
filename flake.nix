@@ -8,9 +8,9 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    bencher.url = "github:sw2m/bencher/v0.4.0"; # see README "Benchmarks"
+    bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench/feat/class"; # sw2m/pdbd-bench#5, until it merges
+      url = "github:sw2m/pdbd-bench";
       flake = false;
     };
   };

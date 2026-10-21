@@ -784,9 +784,9 @@ runner's image after provisioning (the oracles and toolchains it builds) in its 
 `~/.cache/bencher/images`, keyed on the runner, its params and `bench/resolved.json`. A run with
 the same comparators reuses the image and skips provisioning; a new upstream release changes
 `resolved.json`, so the next run misses and provisions it afresh. On GitHub, the `check` job
-restores and saves that cache per crate (`bencher-images-<os>-<crate>-`), saves only when the
-images changed, and warns when it restored one, since a hit races what that image was
-provisioned with.
+restores and saves that cache per crate's `bench/` through bencher's `cache` sub-action, at the
+same ref as the bencher flake input, which saves only when the images changed and warns when it
+restored one, since a hit races what that image was provisioned with.
 
 The `benchmark` hook is shared, like `build`: it lives in `bench/lefthook.yml`, and a crate opts
 in by extending it and committing a `bench/`. It resolves the crate from `$LEFTHOOK_CONFIG` (or
