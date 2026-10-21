@@ -764,8 +764,22 @@ So, for anything a benchmark measures:
   standard (the prior art to race, the corpus, the classes a result falls into), then write the
   spec to that;
 - **mind the gap**: authoring or reviewing an issue or spec includes comparing it with that
-  benchmark. A spec shorter than its benchmark is a short spec. Widen it before the work starts,
-  not on the PR.
+  benchmark. A spec shorter than its benchmark is a short spec. The spec is what the work answers
+  to, so its integrity comes first, and a lazy rewrite to close the gap is the most destructive
+  thing that can happen to it. Rewrite it deliberately: think it through, plan it, and choose on
+  purpose how it grows. The expectation is that most rewrites add requirements, often hundreds of
+  them, each small and detailed, and leave the ones already there as tight as they were. Widening a
+  requirement (rewording it to cover more ground, or trading a list of exact cases for one sweeping
+  phrase) is sound when the widening itself was discussed with the author and the outcome is
+  recorded in the spec's intent. When the author raises a widening, the discussion has begun; when
+  the agent raises it, it has not, because of how the author takes in what the agent says. Working
+  with an agent feels like a live conversation, and in person a listener can hardly miss part of
+  what was said, but this conversation is text, and text is easy to skim: the author can pass over a
+  point without ever taking it in. If the conversation moves on without the widening being taken up,
+  it was not agreed. Treat a point the author never engaged with as unread, never as consent. A
+  widening without that discussion is the lazy rewrite, and the spec reaches the benchmark on paper
+  while saying less about any part of it. Without that discussion, or when it is unclear how a spec
+  should grow, prefer more small requirements over fewer loose ones.
 
 **Reporting contract.** A benchmark job appends a markdown section (headed by its crate,
 e.g. `### transport`) to the file named by `$BENCHMARK_REPORT`, or to stdout when it's
