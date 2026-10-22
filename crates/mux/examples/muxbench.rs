@@ -379,29 +379,28 @@ impl Duo {
         if !self.until(|d| idx.iter().all(|&i| d.ends[0][i].accepted)) {
             fail(&format!("accepting {n} flows missed the deadline"));
         }
-        if proto == Proto::Tcp {
-            let mut primed = vec![false; n];
-            let mut echoed = vec![false; n];
-            let end = Instant::now() + Duration::from_secs_f64(self.p.timeout);
-            while idx.iter().any(|&i| self.ends[0][i].got < 1) {
-                for (k, &i) in idx.iter().enumerate() {
-                    if !primed[k] {
-                        primed[k] = self.send(0, i, 1) == 1;
-                    }
-                    if !echoed[k] && self.ends[1][i].got >= 1 {
-                        echoed[k] = self.send(1, i, 1) == 1;
-                    }
+        let one = self.unit[first].max(1);
+        for &i in &idx {
+            self.send(0, i, one);
+        }
+        let mut echoed = vec![false; n];
+        let end = Instant::now() + Duration::from_secs_f64(self.p.timeout);
+        while idx.iter().any(|&i| self.ends[0][i].got < one) {
+            for (k, &i) in idx.iter().enumerate() {
+                if !echoed[k] && self.ends[1][i].got >= one {
+                    self.send(1, i, one);
+                    echoed[k] = true;
                 }
-                self.pump();
-                if Instant::now() > end {
-                    fail(&format!("priming {n} flows missed the deadline"));
-                }
+            }
+            self.pump();
+            if Instant::now() > end {
+                fail(&format!("priming {n} flows missed the deadline"));
             }
         }
         idx
     }
 
-    fn send(&mut self, side: usize, i: usize, n: usize) -> usize {
+    fn send(&mut self, side: usize, i: usize, n: usize) {
         let id = self.ids[i];
         let m = if side == 0 {
             &mut self.near
@@ -411,7 +410,6 @@ impl Duo {
         self.pending[side][i] = self.pending[side][i].saturating_add(n);
         m.ready(id)
             .unwrap_or_else(|e| fail(&format!("ready: {e:?}")));
-        n
     }
 
     fn fill(&mut self, idx: &[usize], share: usize, sent: &mut [usize]) {
@@ -592,17 +590,15 @@ fn pingpong(d: &mut Duo, load: usize) -> Outcome {
             d.ends[1][ping].got + d.p.message,
             d.ends[0][ping].got + d.p.message,
         );
-        let mut sent = 0;
-        while sent < d.p.message {
-            sent += d.send(0, ping, d.p.message - sent);
-            d.pump();
-        }
-        let mut echoed = 0;
+        d.send(0, ping, d.p.message);
+        d.pump();
+        let mut echoed = false;
         let mut fresh = vec![0; busy.len()];
         while d.ends[0][ping].got < back {
             d.fill(&busy, usize::MAX, &mut fresh);
-            if d.ends[1][ping].got >= out && echoed < d.p.message {
-                echoed += d.send(1, ping, d.p.message - echoed);
+            if d.ends[1][ping].got >= out && !echoed {
+                d.send(1, ping, d.p.message);
+                echoed = true;
             }
             d.pump();
             if start.elapsed().as_secs_f64() > d.p.timeout {
@@ -627,9 +623,7 @@ fn churn(d: &mut Duo) -> Outcome {
         let i = d.opened(Proto::Tcp, 1)[0];
         waits.push((d.arrived[before] - opened).as_secs_f64() * 1e6);
         let back = d.ends[0][i].got + 1;
-        while d.send(1, i, 1) == 0 {
-            d.pump();
-        }
+        d.send(1, i, 1);
         if !d.until(|d| d.ends[0][i].got >= back) {
             fail("an echo missed the deadline");
         }
@@ -663,16 +657,16 @@ fn idle(d: &mut Duo) -> Outcome {
 }
 
 fn udp(d: &mut Duo) -> Outcome {
-    let i = d.opened(Proto::Udp, 1)[0];
     let (size, total) = (d.p.datagram, d.p.datagrams);
+    if size == 0 {
+        fail("udp needs datagrams of at least 1 byte");
+    }
+    let i = d.opened(Proto::Udp, 1)[0];
     let start = Instant::now();
-    let mut sent = 0;
     let mut datagrams = 0;
-    let mut seen = 0;
+    let mut seen = d.ends[1][i].got;
+    d.send(0, i, size * total);
     while datagrams < total {
-        while sent < total && d.send(0, i, size) == size {
-            sent += 1;
-        }
         d.pump();
         let got = d.ends[1][i].got;
         datagrams += (got - seen) / size;
