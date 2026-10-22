@@ -71,7 +71,7 @@ Swept 2026-10-15 (Claude and Kimi k3 osint passes), with a Rust pass on 2026-10-
 - **Odd/even ids by side, never reused**, with skipped lower ids retired (HTTP/2, yamux).
 - **Peer violations are fatal to the tunnel** (yamux): an overrun or an empty TCP DATA frame means a broken or hostile peer.
 - **TCP head-of-line blocking is accepted.** Per-flow credit stops one *slow reader* from blocking others, but a lost segment on the one TCP tunnel still delays every flow. Fixing that takes a different transport (QUIC), not another frame type.
-- **Sans-IO** removes the writer/mutex deadlock class seen in yamux and smux. It doesn't give fairness, deadlines or buffer bounds for free, which is why the control queue, round-robin lanes, `tick`/`expire` and `budget` exist.
+- **Sans-IO** removes the writer/mutex deadlock class seen in yamux and smux. It doesn't give fairness, deadlines or buffer bounds for free, which is why the control queue, round-robin pulls, `tick`/`expire` and `budget` exist.
 
 ## Tests: the tripwires
 
