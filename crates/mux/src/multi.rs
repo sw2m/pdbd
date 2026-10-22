@@ -158,11 +158,12 @@ impl Multi {
         if !self.flows.get(&id).is_some_and(Slot::over) {
             return;
         }
-        if let Some(slot) = self.flows.remove(&id) {
-            self.used -= u64::from(slot.flow.held());
+        let held = self.flows.remove(&id).map_or(0, |s| s.flow.held());
+        if held > 0 {
+            self.used -= u64::from(held);
+            self.events
+                .retain(|e| !matches!(e, Event::Data(i, _) if *i == id));
         }
-        self.events
-            .retain(|e| !matches!(e, Event::Data(i, _) if *i == id));
     }
 
     fn mark(&mut self, id: u32) {
