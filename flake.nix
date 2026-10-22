@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench/fix/socket"; # sw2m/pdbd-bench#6, until it merges
+      url = "github:sw2m/pdbd-bench";
       flake = false;
     };
   };
@@ -79,6 +79,8 @@
             pkgs.python3
           ];
           MUSL_TARGET = musl;
+          GLIBC_STATIC = "${pkgs.glibc.static}/lib"; # target-only: on the shell's link path it breaks build scripts
+          GNU_TARGET = pkgs.stdenv.hostPlatform.config;
           BENCH_FIXTURE = pdbd-bench;
           BENCH_SETUP = "${bencher}/ci/setup.sh";
         };
@@ -102,7 +104,7 @@
         };
       }) // {
         output = { # expected build output per system; `lefthook run build:update` rewrites it
-          "x86_64-linux" = "sha256-JeI135KdyQlclzUHidrZvSlv8xfOYDejndhRwe7TjP8=";
+          "x86_64-linux" = "sha256-XqLqX2u3wVbnE/9IX57Q9HwOmjisXIgO0YVcX64JTrU=";
         };
       };
 }
