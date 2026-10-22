@@ -72,16 +72,15 @@
     "pdbd-bench": {
       "flake": false,
       "locked": {
-        "lastModified": 1792655898,
+        "lastModified": 1792663046,
         "narHash": "sha256-9oNsfkXPlvsiexWthpDbOm9QFlSbWUfi61XuTtfui8Y=",
         "owner": "sw2m",
         "repo": "pdbd-bench",
-        "rev": "b71e7cf6b4b91d715e81804523df43c94a7cc219",
+        "rev": "f532e5c0525fae1e87f08c7469ba1d55aa8487f7",
         "type": "github"
       },
       "original": {
         "owner": "sw2m",
-        "ref": "feat/mux",
         "repo": "pdbd-bench",
         "type": "github"
       }

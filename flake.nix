@@ -10,7 +10,7 @@
     };
     bencher.url = "github:sw2m/bencher/v0.4.1"; # see README "Benchmarks"
     pdbd-bench = {
-      url = "github:sw2m/pdbd-bench/feat/mux"; # sw2m/pdbd-bench#7, until it merges
+      url = "github:sw2m/pdbd-bench";
       flake = false;
     };
   };
