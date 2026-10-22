@@ -20,6 +20,7 @@ struct Params {
     idle: usize,
     datagrams: usize,
     datagram: usize,
+    limit: u32,
     timeout: f64,
 }
 
@@ -50,13 +51,9 @@ impl Params {
             idle: field("idle", 1000.0) as usize,
             datagrams: field("datagrams", 200000.0) as usize,
             datagram: field("datagram", 512.0) as usize,
+            limit: field("limit", 1001.0) as u32,
             timeout: field("timeout", 60.0),
         }
-    }
-
-    fn cap(&self) -> u32 {
-        (self.flows.max(self.load + 1).max(self.idle).max(self.churn) + 1)
-            as u32
     }
 }
 
@@ -212,7 +209,7 @@ struct Duo {
 impl Duo {
     fn new(loopback: bool, p: Params) -> Self {
         let multi = |side| {
-            Multi::new(side, p.window, p.cap(), p.budget)
+            Multi::new(side, p.window, p.limit, p.budget)
                 .unwrap_or_else(|e| fail(&format!("{e:?}")))
         };
         let link = loopback.then(|| {
