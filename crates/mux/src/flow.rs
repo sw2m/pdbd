@@ -413,3 +413,6 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod test;
+
+#[cfg(kani)]
+mod proof;
